@@ -1,4 +1,4 @@
-//
+﻿//
 // FolderNodeBuilder.cs
 //
 // Author:
@@ -47,6 +47,7 @@ using MonoDevelop.Ide.Gui.Dialogs;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Ide.Gui.Components;
 using MonoDevelop.Ide.Projects;
+using MonoDevelop.Ide.Projects.FileNesting;
 
 namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 {
@@ -67,7 +68,7 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			if (project == null)
 				return;
 
-			ProjectFileCollection files;
+			List<ProjectFile> files;
 			List<string> folders;
 
 			GetFolderContent (project, path, out files, out folders);
@@ -76,11 +77,11 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			builder.AddChildren (folders.Select (f => new ProjectFolder (f, project, dataObject)));
 		}
 				
-		void GetFolderContent (Project project, string folder, out ProjectFileCollection files, out List<string> folders)
+		void GetFolderContent (Project project, string folder, out List<ProjectFile> files, out List<string> folders)
 		{
 			string folderPrefix = folder + Path.DirectorySeparatorChar;
 
-			files = new ProjectFileCollection ();
+			files = new List<ProjectFile> ();
 			folders = new List<string> ();
 			
 			foreach (ProjectFile file in project.Files)
@@ -91,7 +92,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 					continue;
 				
 				if (file.Subtype != Subtype.Directory) {
-					if (file.DependsOnFile != null)
+					// If file depends on something other than a directory, continue
+					if ((file.DependsOnFile != null && file.DependsOnFile.Subtype != Subtype.Directory) || FileNestingService.HasParent (file))
 						continue;
 					
 					dir = file.IsLink
@@ -272,10 +274,10 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			}
 			else if (dataObject is SolutionFolderFileNode) {
 				var sff = (SolutionFolderFileNode)dataObject;
-				sff.Parent.Files.Remove (sff.FileName);
+				sff.Parent.Files.Remove (sff.Path);
 
 				await IdeApp.ProjectOperations.SaveAsync (sff.Parent.ParentSolution);
-				source = ((SolutionFolderFileNode)dataObject).FileName;
+				source = ((SolutionFolderFileNode)dataObject).Path;
 				sourceProject = null;
 				what = null;
 			} else
@@ -366,7 +368,7 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 				if (res == AlertButton.Save) {
 					try {
 						foreach (Document doc in filesToSave) {
-							doc.Save ();
+							await doc.Save ();
 						}
 					} catch (Exception ex) {
 						MessageService.ShowError (GettextCatalog.GetString ("Save operation failed."), ex);
@@ -424,20 +426,43 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		}
 		
 		[CommandHandler (ProjectCommands.AddNewFiles)]
-		public async void AddNewFileToProject()
+		public void AddNewFileToProject()
 		{
 			Project project = (Project) CurrentNode.GetParentDataItem (typeof(Project), true);
-			IdeApp.ProjectOperations.CreateProjectFile (project, GetFolderPath (CurrentNode.DataItem));
+			if (!IdeApp.ProjectOperations.CreateProjectFile (project, GetFolderPath (CurrentNode.DataItem))) {
+				return;
+			}
 			CurrentNode.Expanded = true;
 			if (IdeApp.Workbench.ActiveDocument != null)
-				IdeApp.Workbench.ActiveDocument.Window.SelectWindow ();
-			await IdeApp.ProjectOperations.SaveAsync (project);
+				IdeApp.Workbench.ActiveDocument.Select ();
 		}
-		
+
+		[CommandHandler (ProjectCommands.AddEmptyClass)]
+		protected void OnAddEmptyClass ()
+		{
+			var project = (Project)CurrentNode.GetParentDataItem (typeof (Project), true);
+			if (project != null) {
+				if (IdeApp.ProjectOperations.CreateProjectFile (project, GetFolderPath (CurrentNode.DataItem), "EmptyClass")) {
+					CurrentNode.Expanded = true;
+				}
+			}
+		}
+
+		[CommandUpdateHandler (ProjectCommands.AddEmptyClass)]
+		protected void UpdateAddEmptyClass (CommandInfo info)
+		{
+			var project = (Project)CurrentNode.GetParentDataItem (typeof (Project), true);
+			if (project != null) {
+				info.Visible = IdeApp.ProjectOperations.CanCreateProjectFile (project, GetFolderPath (CurrentNode.DataItem), "EmptyClass");
+			} else {
+				info.Visible = false;
+			}
+		}
+
+
 		void OnFileInserted (ITreeNavigator nav)
 		{
 			nav.Selected = true;
-			Tree.StartLabelEdit ();
 		}
 
 		///<summary>Imports files and folders from a target folder into the current folder</summary>
@@ -544,28 +569,24 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		[CommandHandler (ProjectCommands.NewFolder)]
 		public async void AddNewFolder ()
 		{
-			Project project = CurrentNode.GetParentDataItem (typeof(Project), true) as Project;
-			
-			string baseFolderPath = GetFolderPath (CurrentNode.DataItem);
-			string directoryName = Path.Combine (baseFolderPath, GettextCatalog.GetString("New Folder"));
-			int index = -1;
+			// Expand the project node before adding the file to the project. This fixes a problem where if the
+			// project node is collapsed and Refresh was used the project node would not expand and the new folder
+			// node would not be selected.
+			CurrentNode.Expanded = true;
 
-			if (Directory.Exists(directoryName)) {
-				while (Directory.Exists(directoryName + (++index + 1))) ;
-			}
-			
-			if (index >= 0) {
-				directoryName += index + 1;
-			}
-			
-			Directory.CreateDirectory (directoryName);
-			
-			ProjectFile newFolder = new ProjectFile (directoryName);
+			var project = CurrentNode.GetParentDataItem (typeof (Project), true) as Project;
+			string baseFolderPath = GetFolderPath (CurrentNode.DataItem);
+
+			FilePath folder = await NewFolderDialog.Open (baseFolderPath);
+
+			if (folder.IsNull)
+				return;
+
+			var newFolder = new ProjectFile (folder);
 			newFolder.Subtype = Subtype.Directory;
 			project.Files.Add (newFolder);
 
-			CurrentNode.Expanded = true;
-			Tree.AddNodeInsertCallback (new ProjectFolder (directoryName, project), new TreeNodeCallback (OnFileInserted));
+			Tree.AddNodeInsertCallback (new ProjectFolder (folder, project), new TreeNodeCallback (OnFileInserted));
 
 			await IdeApp.ProjectOperations.SaveAsync (project);
 		}

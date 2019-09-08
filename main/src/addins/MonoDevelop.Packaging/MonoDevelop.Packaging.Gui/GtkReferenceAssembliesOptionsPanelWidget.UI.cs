@@ -40,8 +40,8 @@ namespace MonoDevelop.Packaging.Gui
 
 		void Build ()
 		{
-			Stetic.Gui.Initialize (this);
-			Stetic.BinContainer.Attach (this);
+			MonoDevelop.Components.Gui.Initialize (this);
+			MonoDevelop.Components.BinContainer.Attach (this);
 
 			var vbox = new VBox ();
 			vbox.Spacing = 6;
@@ -59,7 +59,7 @@ namespace MonoDevelop.Packaging.Gui
 			learnMoreLabel.Xalign = 0F;
 			learnMoreLabel.LabelProp = GettextCatalog.GetString ("<a href=\"https://docs.nuget.org\">Learn more</a>");
 			learnMoreLabel.UseMarkup = true;
-			learnMoreLabel.SetLinkHandler (DesktopService.ShowUrl);
+			learnMoreLabel.SetLinkHandler (IdeServices.DesktopService.ShowUrl);
 			referenceAssembliesLabelHBox.PackStart (learnMoreLabel, false, false, 0);
 
 			vbox.PackStart (referenceAssembliesLabelHBox, false, false, 5);

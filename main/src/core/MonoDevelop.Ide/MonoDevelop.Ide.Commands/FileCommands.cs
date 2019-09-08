@@ -1,4 +1,4 @@
-// NewFileCommands.cs
+﻿// NewFileCommands.cs
 //
 // Author:
 //   Carlo Kok (ck@remobjects.com)
@@ -82,7 +82,7 @@ namespace MonoDevelop.Ide.Commands
 		protected override void Run ()
 		{
 			var dlg = new OpenFileDialog (GettextCatalog.GetString ("File to Open"), MonoDevelop.Components.FileChooserAction.Open) {
-				TransientFor = IdeApp.Workbench.RootWindow,
+				TransientFor = IdeServices.DesktopService.GetFocusedTopLevelWindow (),
 				ShowEncodingSelector = true,
 				ShowViewerSelector = true,
 			};
@@ -97,20 +97,32 @@ namespace MonoDevelop.Ide.Commands
 			}
 			
 			if (Services.ProjectService.IsWorkspaceItemFile (file) || Services.ProjectService.IsSolutionItemFile (file)) {
+				WarnIfWorkspaceItemIsAlreadyOpen (file);
 				IdeApp.Workspace.OpenWorkspaceItem (file, dlg.CloseCurrentWorkspace);
 			}
 			else
 				IdeApp.Workbench.OpenDocument (file, null, dlg.Encoding, OpenDocumentOptions.DefaultInternal);
 		}
-		
+
+		internal static bool WarnIfWorkspaceItemIsAlreadyOpen (FilePath file)
+		{
+			var item = IdeApp.Workspace.GetAllItems<WorkspaceItem> ().FirstOrDefault (w => w.FileName == file.FullPath);
+			if (item != null) {
+				if (IdeApp.IsInitialized)
+					IdeApp.Workbench.StatusBar.ShowWarning (GettextCatalog.GetString ("{0} is already opened", item.FileName.FileName));
+				return true;
+			}
+			return false;
+		}
 	}
+
 	// MonoDevelop.Ide.Commands.FileCommands.NewFile
 	public class NewFileHandler : CommandHandler
 	{
 		protected override void Run ()
 		{
 			using (var dlg = new NewFileDialog (null, null)) // new file seems to fail if I pass the project IdeApp.ProjectOperations.CurrentSelectedProject
-				MessageService.ShowCustomDialog (dlg, IdeApp.Workbench.RootWindow);
+				MessageService.ShowCustomDialog (dlg, IdeServices.DesktopService.GetFocusedTopLevelWindow ());
 		}
 	}
 
@@ -132,7 +144,7 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Run ()
 		{
-			IdeApp.ProjectOperations.NewSolution ();
+			IdeApp.ProjectOperations.NewSolution ().Ignore ();
 		}
 	}
 	
@@ -141,22 +153,29 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Run ()
 		{
-			IdeApp.ProjectOperations.NewSolution ("MonoDevelop.Workspace");
+			IdeApp.ProjectOperations.NewSolution ("MonoDevelop.Workspace").Ignore ();
 		}
 	}
 
 	// MonoDevelop.Ide.Commands.FileCommands.CloseAllFiles
 	public class CloseAllFilesHandler : CommandHandler
 	{
-		protected override void Run ()
+		static bool isRunning;
+
+		protected override async void Run ()
 		{
-			IdeApp.Workbench.CloseAllDocuments (false);
+			try {
+				isRunning = true;
+				await IdeApp.Workbench.CloseAllDocuments (false);
+			} finally {
+				isRunning = false;
+			}
 		}
 
 		protected override void Update (CommandInfo info)
 		{
 			// No point in closing all when there are no documents open
-			info.Enabled = IdeApp.Workbench.Documents.Count != 0;
+			info.Enabled = !isRunning && IdeApp.Workbench.Documents.Count != 0;
 		}
 	}
 
@@ -166,7 +185,7 @@ namespace MonoDevelop.Ide.Commands
 		protected override void Run ()
 		{
 			if (IdeApp.Workbench.ActiveDocument != null)
-				IdeApp.Workbench.ActiveDocument.Close ();
+				IdeApp.Workbench.ActiveDocument.Close ().Ignore();
 		}
 
 		protected override void Update (CommandInfo info)
@@ -181,7 +200,7 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Run ()
 		{
-			IdeApp.Workspace.Close ();
+			IdeApp.Workspace.Close ().Ignore();
 		}
 
 		protected override void Update (CommandInfo info)
@@ -205,7 +224,7 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Run ()
 		{
-			IdeApp.Workbench.ActiveDocument.GetContent<IPrintable> ().PrintDocument (PrintingSettings.Instance);
+			IdeApp.Workbench.ActiveDocument.GetContent<IPrintable> (true).PrintDocument (PrintingSettings.Instance);
 		}
 
 		protected override void Update (CommandInfo info)
@@ -269,7 +288,7 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Update (CommandArrayInfo info)
 		{
-			var files = DesktopService.RecentFiles.GetFiles ();
+			var files = IdeServices.DesktopService.RecentFiles.GetFiles ();
 			if (files.Count == 0)
 				return;
 			
@@ -284,7 +303,7 @@ namespace MonoDevelop.Ide.Commands
 				var cmd = new CommandInfo (commandText) {
 					Description = string.Format (descFormat, ri.FileName)
 				};
-/*				Gdk.Pixbuf icon = DesktopService.GetIconForFile (ri.FileName, IconSize.Menu);
+/*				Gdk.Pixbuf icon = IdeServices.DesktopService.GetIconForFile (ri.FileName, IconSize.Menu);
 				#pragma warning disable 618
 				if (icon != null)
 					cmd.Icon = ImageService.GetStockId (icon, IconSize.Menu);
@@ -314,7 +333,7 @@ namespace MonoDevelop.Ide.Commands
 					question,
 					AlertButton.No,
 					AlertButton.Yes) == AlertButton.Yes) {
-					DesktopService.RecentFiles.ClearFiles ();
+					IdeServices.DesktopService.RecentFiles.ClearFiles ();
 				}
 			} catch (Exception ex) {
 				LoggingService.LogError ("Error clearing recent files list", ex);
@@ -323,7 +342,7 @@ namespace MonoDevelop.Ide.Commands
 		
 		protected override void Update (CommandInfo info)
 		{
-			info.Enabled = DesktopService.RecentFiles.GetFiles ().Count > 0;
+			info.Enabled = IdeServices.DesktopService.RecentFiles.GetFiles ().Count > 0;
 		}
 	}
 	
@@ -332,7 +351,7 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Update (CommandArrayInfo info)
 		{
-			var projects = DesktopService.RecentFiles.GetProjects ();
+			var projects = IdeServices.DesktopService.RecentFiles.GetProjects ();
 			if (projects.Count == 0)
 				return;
 				
@@ -346,7 +365,7 @@ namespace MonoDevelop.Ide.Commands
 					if (!File.Exists (ri.FileName))
 						continue;
 
-					icon = IdeApp.Services.ProjectService.FileIsObjectOfType (ri.FileName, typeof(Solution)) ? "md-solution": "md-workspace";
+					icon = IdeServices.ProjectService.FileIsObjectOfType (ri.FileName, typeof(Solution)) ? "md-solution": "md-workspace";
 				}
 				catch (UnauthorizedAccessException exAccess) {
 					LoggingService.LogWarning ("Error building recent solutions list (Permissions)", exAccess);
@@ -381,6 +400,7 @@ namespace MonoDevelop.Ide.Commands
 			string filename = (string)dataItem;
 			Gdk.ModifierType mtype = GtkWorkarounds.GetCurrentKeyModifiers ();
 			bool inWorkspace = (mtype & Gdk.ModifierType.ControlMask) != 0;
+			OpenFileHandler.WarnIfWorkspaceItemIsAlreadyOpen (filename);
 			IdeApp.Workspace.OpenWorkspaceItem (filename, !inWorkspace);
 		}
 	}
@@ -399,7 +419,7 @@ namespace MonoDevelop.Ide.Commands
 					question,
 					AlertButton.No,
 					AlertButton.Yes) == AlertButton.Yes) {
-					DesktopService.RecentFiles.ClearProjects ();
+					IdeServices.DesktopService.RecentFiles.ClearProjects ();
 				}
 			} catch (Exception ex) {
 				LoggingService.LogError ("Error clearing recent projects list", ex);
@@ -408,7 +428,7 @@ namespace MonoDevelop.Ide.Commands
 	
 		protected override void Update (CommandInfo info)
 		{
-			info.Enabled = DesktopService.RecentFiles.GetProjects ().Count > 0;
+			info.Enabled = IdeServices.DesktopService.RecentFiles.GetProjects ().Count > 0;
 		}
 	}
 	
@@ -417,11 +437,12 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Run ()
 		{
-			IdeApp.Exit ();
+			IdeApp.Exit ().Ignore();
 		}
 	}
 	// MonoDevelop.Ide.Commands.FileTabCommands.CloseAllButThis    Implemented in FileTabCommands.cs
 	// MonoDevelop.Ide.Commands.CopyPathNameHandler                Implemented in FileTabCommands.cs
 	// MonoDevelop.Ide.Commands.FileTabCommands.ToggleMaximize     Implemented in FileTabCommands.cs
 	// MonoDevelop.Ide.Commands.FileTabCommands.ReopenClosedTab    Implemented in FileTabCommands.cs
+	// MonoDevelop.Ide.Commands.FileTabCommands.CloseAllExceptPinned    Implemented in FileTabCommands.cs
 }

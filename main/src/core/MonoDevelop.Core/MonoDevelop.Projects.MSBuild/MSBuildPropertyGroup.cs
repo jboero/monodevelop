@@ -30,16 +30,14 @@ using System.Collections.Generic;
 using System.Xml;
 
 using MonoDevelop.Core;
-using System.Xml.Linq;
-using Microsoft.Build.BuildEngine;
 using System.Collections.Immutable;
 
 namespace MonoDevelop.Projects.MSBuild
 {
 	public class MSBuildPropertyGroup: MSBuildElement, IMSBuildPropertySet, IMSBuildEvaluatedPropertyCollection
 	{
-		Dictionary<string,MSBuildProperty> properties = new Dictionary<string, MSBuildProperty> (StringComparer.OrdinalIgnoreCase);
-
+		ImmutableDictionary<string, MSBuildProperty> properties = ImmutableDictionary<string, MSBuildProperty>.Empty.WithComparers (StringComparer.OrdinalIgnoreCase);
+		internal List<MSBuildProperty> PropertiesAttributeOrder { get; } = new List<MSBuildProperty> ();
 		public MSBuildPropertyGroup ()
 		{
 		}
@@ -63,6 +61,21 @@ namespace MonoDevelop.Projects.MSBuild
 			}
 		}
 
+		internal override void ReadUnknownAttribute (MSBuildXmlReader reader, string lastAttr)
+		{
+			MSBuildProperty prevSameName;
+			if (properties.TryGetValue (reader.LocalName, out prevSameName))
+				prevSameName.Overwritten = true;
+
+			var prop = new MSBuildProperty ();
+			prop.ParentNode = PropertiesParent;
+			prop.Owner = this;
+			prop.ReadUnknownAttribute (reader, lastAttr);
+			ChildNodes = ChildNodes.Add (prop);
+			properties = properties.SetItem (prop.Name, prop);// If a property is defined more than once, we only care about the last registered value
+			PropertiesAttributeOrder.Add (prop);
+		}
+
 		internal override void ReadChildElement (MSBuildXmlReader reader)
 		{
 			MSBuildProperty prevSameName;
@@ -74,7 +87,7 @@ namespace MonoDevelop.Projects.MSBuild
 			prop.Owner = this;
 			prop.Read (reader);
 			ChildNodes = ChildNodes.Add (prop);
-			properties [prop.Name] = prop; // If a property is defined more than once, we only care about the last registered value
+			properties = properties.SetItem (prop.Name, prop);// If a property is defined more than once, we only care about the last registered value
 		}
 
 		internal override string GetElementName ()
@@ -103,7 +116,7 @@ namespace MonoDevelop.Projects.MSBuild
 					} else {
 						ChildNodes = ChildNodes.Add (cp);
 					}
-					properties [cp.Name] = cp;
+					properties = properties.SetItem (cp.Name, cp);
 					cp.ParentNode = PropertiesParent;
 					cp.Owner = this;
 				} else
@@ -136,6 +149,11 @@ namespace MonoDevelop.Projects.MSBuild
 			return GetProperties ();
 		}
 
+		IEnumerable<IMSBuildPropertyEvaluated> IMSBuildPropertyGroupEvaluated.GetProperties ()
+		{
+			return GetProperties ();
+		}
+
 		IMSBuildPropertyEvaluated IMSBuildPropertyGroupEvaluated.GetProperty (string name)
 		{
 			return GetProperty (name);
@@ -154,6 +172,10 @@ namespace MonoDevelop.Projects.MSBuild
 		{
 			MSBuildProperty prop;
 			properties.TryGetValue (name, out prop);
+			if (!string.IsNullOrEmpty (condition) && prop != null && prop.Condition != condition) {
+				// There may be more than one property with the same name and different condition. Try to find the correct one.
+				prop = ChildNodes.OfType<MSBuildProperty> ().FirstOrDefault (pr => pr.Name == name && pr.Condition == condition) ?? prop;
+			}
 			return prop;
 		}
 		
@@ -242,7 +264,7 @@ namespace MonoDevelop.Projects.MSBuild
 			prop.IsNew = true;
 			prop.ParentNode = PropertiesParent;
 			prop.Owner = this;
-			properties [name] = prop;
+			properties = properties.SetItem (name, prop);
 
 			if (insertIndex != -1)
 				ChildNodes = ChildNodes.Insert (insertIndex, prop);
@@ -382,7 +404,7 @@ namespace MonoDevelop.Projects.MSBuild
 			if (PropertyGroupListener != null)
 				PropertyGroupListener.PropertyRemoved (prop);
 			prop.RemoveIndent ();
-			properties.Remove (prop.Name);
+			properties = properties.Remove (prop.Name);
 			ChildNodes = ChildNodes.Remove (prop);
 			NotifyChanged ();
 		}
@@ -441,6 +463,17 @@ namespace MonoDevelop.Projects.MSBuild
 				i++;
 			}
 		}
+
+		internal bool SkipSerializationOnNoChildren { get; set; } = false;
+
+		internal override bool SkipSerialization {
+			get {
+				if (SkipSerializationOnNoChildren)
+					return !GetChildren ().Any (c => !c.SkipSerialization);
+
+				return base.SkipSerialization;
+			}
+		}
 	}
 
 	public interface IMSBuildPropertyGroupEvaluated: IReadOnlyPropertySet
@@ -448,5 +481,7 @@ namespace MonoDevelop.Projects.MSBuild
 		bool HasProperty (string name);
 
 		IMSBuildPropertyEvaluated GetProperty (string name);
+
+		IEnumerable<IMSBuildPropertyEvaluated> GetProperties ();
 	}
 }

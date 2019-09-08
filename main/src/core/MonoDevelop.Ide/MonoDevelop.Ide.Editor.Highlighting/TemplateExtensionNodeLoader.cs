@@ -30,6 +30,7 @@ using MonoDevelop.Ide.Editor.Highlighting;
 
 namespace MonoDevelop.Ide.Editor.Highlighting
 {
+	[Obsolete ("Old editor")]
 	static class TemplateExtensionNodeLoader
 	{
 		static bool initialized = false;
@@ -39,16 +40,16 @@ namespace MonoDevelop.Ide.Editor.Highlighting
 			if (initialized)
 				return;
 			initialized = true;
-			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/SourceEditor2/Styles", OnStylesExtensionChanged);
+			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/Ide/Editor/Themes", OnStylesExtensionChanged);
 		}
 		
 		static void OnStylesExtensionChanged (object s, ExtensionNodeEventArgs args)
 		{
 			TemplateCodon codon = (TemplateCodon)args.ExtensionNode;
 			if (args.Change == ExtensionChange.Add) {
-				SyntaxModeService.AddStyle (codon);
+				SyntaxHighlightingService.AddStyle (codon);
 			} else {
-				SyntaxModeService.RemoveStyle (codon);
+				SyntaxHighlightingService.RemoveStyle (codon);
 			}
 		}
 	}

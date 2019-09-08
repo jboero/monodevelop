@@ -34,6 +34,7 @@ using MonoDevelop.Ide.Gui;
 using MonoDevelop.Core.Text;
 using MonoDevelop.Ide.TypeSystem;
 using MonoDevelop.Ide.CodeCompletion;
+using Roslyn.Utilities;
 using MonoDevelop.Ide;
 
 namespace MonoDevelop.Components.MainToolbar
@@ -42,13 +43,14 @@ namespace MonoDevelop.Components.MainToolbar
 	{
 		public SearchInSolutionSearchCategory () : base (GettextCatalog.GetString("Search"))
 		{
+			this.sortOrder = SearchInSolutionOrder;
 		}
 
 		public override Task GetResults (ISearchResultCallback searchResultCallback, SearchPopupSearchPattern pattern, CancellationToken token)
 		{
 			if (IdeApp.ProjectOperations.CurrentSelectedSolution != null)
 				searchResultCallback.ReportResult (new SearchInSolutionSearchResult (pattern));
-			return SpecializedTasks.EmptyTask;
+			return Task.CompletedTask;
 		}
 
 		//public override Task<ISearchDataSource> GetResults (SearchPopupSearchPattern searchPattern, int resultsCount, CancellationToken token)
@@ -84,6 +86,8 @@ namespace MonoDevelop.Components.MainToolbar
 			{
 				this.pattern = pattern;
 			}
+
+			public override string AccessibilityMessage => GettextCatalog.GetString ("Search for {0} in solution", pattern.Pattern);
 
 			public override void Activate ()
 			{

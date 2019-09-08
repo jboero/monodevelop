@@ -24,6 +24,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
+using MonoDevelop.Components.AtkCocoaHelper;
 
 namespace MonoDevelop.Components
 {
@@ -32,8 +33,11 @@ namespace MonoDevelop.Components
 	/// </summary>
 	public class ContextMenuTreeView : Gtk.TreeView
 	{
+		internal ActionDelegate ActionHandler { get; private set; }
 		public ContextMenuTreeView ()
 		{
+			ActionHandler = new ActionDelegate (this);
+			ActionHandler.PerformShowMenu += PerformShowMenu;
 		}
 
 		public ContextMenuTreeView (Gtk.TreeModel model) : base (model)
@@ -44,6 +48,34 @@ namespace MonoDevelop.Components
 
 		Gtk.TreePath buttonPressPath;
 		bool selectOnRelease;
+
+		// Workaround for Bug 31712 - Solution pad doesn't refresh properly after resizing application window
+		// If the treeview size is modified while the pad is unrealized (autohidden), the treeview
+		// doesn't update its internal vertical offset. This can lead to items becoming offset outside the 
+		// visible area and therefore becoming unreachable. The only way to force the treeview to recalculate
+		// this offset is by setting the Vadjustment.Value, but it ignores values the same as the current value.
+		// Therefore we simply set it to something slightly different then back again.
+
+		// See also MonoDevelop.Ide.Gui.Components.PadTreeView for same fix.
+		bool forceInternalOffsetUpdate;
+
+		protected override void OnUnrealized ()
+		{
+			base.OnUnrealized ();
+			forceInternalOffsetUpdate = true;
+		}
+
+		protected override void OnSizeAllocated (Gdk.Rectangle allocation)
+		{
+			base.OnSizeAllocated (allocation);
+			if (forceInternalOffsetUpdate && IsRealized) {
+				forceInternalOffsetUpdate = false;
+				var v = Vadjustment.Value;
+				int delta = v > 2? 0 : 1;
+				Vadjustment.Value = v + delta;
+				Vadjustment.Value = v;
+			}
+		}
 
 		protected override void OnDragBegin (Gdk.DragContext context)
 		{
@@ -60,9 +92,7 @@ namespace MonoDevelop.Components
 			// SelectFunction to block selection then it doesn't seem to always get
 			// properly unset.
 			//   https://bugzilla.xamarin.com/show_bug.cgi?id=40469
-			this.Selection.SelectFunction = (s, m, p, b) => {
-				return true;
-			};
+			Selection.SelectFunction = DefaultTreeSelectFunction;
 			base.OnRowActivated (path, column);
 		}
 
@@ -90,9 +120,7 @@ namespace MonoDevelop.Components
 						return false;
 					};
 				} else {
-					this.Selection.SelectFunction = (s, m, p, b) => {
-						return true;
-					};
+					Selection.SelectFunction = DefaultTreeSelectFunction;
 				}
 				return base.OnButtonPressEvent (evnt);
 			}
@@ -113,9 +141,7 @@ namespace MonoDevelop.Components
 
 		protected override bool OnButtonReleaseEvent (Gdk.EventButton evnt)
 		{
-			this.Selection.SelectFunction = (s, m, p, b) => {
-				return true;
-			};
+			Selection.SelectFunction = DefaultTreeSelectFunction;
 			Gtk.TreePath buttonReleasePath;
 			//If OnButtonPressEvent attempted on making deselection and dragging was not started
 			//check if we are on same item as when we clicked(could be different if dragging is disabled)
@@ -145,6 +171,27 @@ namespace MonoDevelop.Components
 			}
 			
 			return res;
+		}
+
+		/// <summary>
+		/// Force the tree view's SelectFunction to be reset so nodes an be selected. Sometimes a OnButtonPressEvent
+		/// occurs without any corresponding OnButtonReleaseEvent which prevent a tree node from being selected
+		/// by the TreeNodeNavigator.
+		/// </summary>
+		internal void ClearSelectOnRelease ()
+		{
+			selectOnRelease = false;
+			Selection.SelectFunction = DefaultTreeSelectFunction;
+		}
+
+		static bool DefaultTreeSelectFunction (Gtk.TreeSelection selection, Gtk.TreeModel model, Gtk.TreePath path, bool selected)
+		{
+			return true;
+		}
+
+		void PerformShowMenu (object sender, EventArgs args)
+		{
+			OnPopupMenu ();
 		}
 
 		protected override bool OnPopupMenu ()

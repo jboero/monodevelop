@@ -30,85 +30,43 @@ using System.IO;
 using MonoDevelop.Projects;
 using System.ComponentModel;
 using MonoDevelop.Ide.Editor.Highlighting;
+using MonoDevelop.Ide.Gui.Documents;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Collections.Immutable;
 
 namespace MonoDevelop.Ide.Editor
 {
-	public class TextEditorDisplayBinding : IViewDisplayBinding
+	[ExportDocumentControllerFactory (Id = "TextEditor", MimeType = "*")]
+	public class TextEditorDisplayBinding : FileDocumentControllerFactory
 	{
-		static bool IsInitialized = false;
+		protected override async Task<IEnumerable<DocumentControllerDescription>> GetSupportedControllersAsync (FileDescriptor file)
+		{
+			var list = ImmutableList<DocumentControllerDescription>.Empty;
 
-		public static FilePath SyntaxModePath {
-			get {
-				return UserProfile.Current.UserDataRoot.Combine ("HighlightingSchemes");
+			var desktopService = await ServiceProvider.GetService<DesktopService> ();
+			if (!file.FilePath.IsNullOrEmpty) {
+				if (!desktopService.GetFileIsText (file.FilePath, file.MimeType))
+					return list;
 			}
-		}
 
-		static TextEditorDisplayBinding ()
-		{
-			InitSourceEditor ();
-		}
-
-		public static void InitSourceEditor ()
-		{
-			if (IsInitialized)
-				return;
-			IsInitialized = true;
-
-			// MonoDevelop.SourceEditor.Extension.TemplateExtensionNodeLoader.Init ();
-			DefaultSourceEditorOptions.Init ();
-			// SyntaxModeService.EnsureLoad ();
-			LoadCustomStylesAndModes ();
-		}
-
-		[EditorBrowsable(EditorBrowsableState.Never)]
-		public static void LoadCustomStylesAndModes ()
-		{
-			bool success = true;
-			if (!Directory.Exists (SyntaxModePath)) {
-				try {
-					Directory.CreateDirectory (SyntaxModePath);
-				} catch (Exception e) {
-					success = false;
-					LoggingService.LogError ("Can't create syntax mode directory", e);
-				}
+			if (!string.IsNullOrEmpty (file.MimeType)) {
+				if (!desktopService.GetMimeTypeIsText (file.MimeType))
+					return list;
 			}
-			if (success)
-				SyntaxModeService.LoadStylesAndModes (SyntaxModePath);
+
+			return list.Add (new DocumentControllerDescription {
+				 Name = GettextCatalog.GetString ("Source Code Editor"),
+				 Role = DocumentControllerRole.Source,
+				 CanUseAsDefault = true
+			});
 		}
 
-		public string Name {
-			get {
-				return GettextCatalog.GetString ("Source Code Editor");
-			}
-		}
-
-		public bool CanHandle (FilePath fileName, string mimeType, Project ownerProject)
+		public override Task<DocumentController> CreateController (FileDescriptor file, DocumentControllerDescription controllerDescription)
 		{
-			if (fileName != null)
-				return DesktopService.GetFileIsText (fileName, mimeType);
-
-			if (!string.IsNullOrEmpty (mimeType))
-				return DesktopService.GetMimeTypeIsText (mimeType);
-
-			return false;
+			return Task.FromResult<DocumentController> (new TextEditorViewContent ());
 		}
 
-		public ViewContent CreateContent (FilePath fileName, string mimeType, Project ownerProject)
-		{
-			var editor = TextEditorFactory.CreateNewEditor ();
-			editor.MimeType = mimeType;
-			editor.GetViewContent ().Project = ownerProject;
-			editor.GetViewContent ().ContentName = fileName;
-			return editor.GetViewContent (); 
-		}
-
-		public bool CanHandleFile (string fileName)
-		{
-			return DesktopService.GetFileIsText (fileName);
-		}
-
-		public bool CanUseAsDefault {
-			get { return true; }
-		}
+		public override string Id => "MonoDevelop.Ide.Editor.TextEditorDisplayBinding";
 	}
 }

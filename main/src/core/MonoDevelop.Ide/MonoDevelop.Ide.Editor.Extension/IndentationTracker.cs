@@ -29,20 +29,25 @@ using MonoDevelop.Core.Text;
 namespace MonoDevelop.Ide.Editor.Extension
 {
 	[Flags]
-	public enum IndentatitonTrackerFeatures {
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
+	public enum IndentationTrackerFeatures
+	{
 		None = 0,
 		SmartBackspace = 1,
+        CustomIndentationEngine = 2,
+		SkipFixVirtualIndentation = 4,
 		All = SmartBackspace
 	}
 
 	/// <summary>
 	/// The indentation tracker is for giving the editor information about virtual line indentations.
 	/// </summary>
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
 	public abstract class IndentationTracker
 	{
-		public virtual IndentatitonTrackerFeatures SupportedFeatures {
+		public virtual IndentationTrackerFeatures SupportedFeatures {
 			get {
-				return IndentatitonTrackerFeatures.All;
+				return IndentationTrackerFeatures.None;
 			}
 		}
 

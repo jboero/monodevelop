@@ -25,21 +25,96 @@
 // THE SOFTWARE.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using MonoDevelop.Core;
-using System.Linq;
+using MonoDevelop.Projects.MSBuild;
 
 namespace MonoDevelop.Projects
 {
+	[DebuggerDisplay ("{FilePath}")]
 	public sealed class AssemblyReference
 	{
+		IReadOnlyPropertySet metadata;
+
 		public AssemblyReference (FilePath path, string aliases = null)
 		{
 			FilePath = path;
-			Aliases = aliases ?? "";
+
+			var properties = new MSBuildPropertyGroupEvaluated (null);
+			if (aliases != null) {
+				var property = new MSBuildPropertyEvaluated (null, nameof (Aliases), aliases, aliases);
+				properties.SetProperty (nameof (Aliases), property);
+			}
+			metadata = properties;
+		}
+
+		public AssemblyReference (FilePath path, IReadOnlyPropertySet metadata)
+		{
+			FilePath = path;
+			this.metadata = metadata;
 		}
 
 		public FilePath FilePath { get; private set; }
-		public string Aliases { get; private set; }
+		public string Aliases => metadata.GetValue ("Aliases", "");
+
+		/// <summary>
+		/// Whether the reference is a project.
+		/// </summary>
+		public bool IsProjectReference => GetMetadata ("ReferenceSourceTarget") == "ProjectReference";
+
+		/// <summary>
+		/// For project references, true if the output assembly should be referenced.
+		/// </summary>
+		public bool ReferenceOutputAssembly => MetadataIsTrue ("ReferenceOutputAssembly");
+
+		/// <summary>
+		/// True if the assembly reference was added implicitly].
+		/// </summary>
+		public bool IsImplicit => MetadataIsTrue ("Implicit");
+
+		/// <summary>
+		/// True if the assembly will be copied to the output directory.
+		/// </summary>
+		public bool IsCopyLocal => MetadataIsTrue ("CopyLocal");
+
+		/// <summary>
+		/// True if the assembly is from the target framework.
+		/// </summary>
+		public bool IsFrameworkFile => MetadataIsTrue ("FrameworkFile");
+
+		/// <summary>
+		/// Whether the assembly is a facade assembly.
+		/// </summary>
+		public bool IsFacade => ResolvedFrom == "ImplicitlyExpandDesignTimeFacades";
+
+		/// <summary>
+		/// Whether the reference supports multiple target frameworks.
+		/// </summary>
+		public bool HasSingleTargetFramework => metadata.GetValue ("HasSingleTargetFramework", true);
+
+		/// <summary>
+		/// Nearest target framework match.
+		/// </summary>
+		public string NearestTargetFramework => metadata.GetValue ("NearestTargetFramework");
+
+		/// <summary>
+		/// The value of the ResolvedFrom metadata, for example '{GAC}' or 'ImplicitlyExpandDesignTimeFacades'.
+		/// </summary>
+		public string ResolvedFrom => GetMetadata ("ResolvedFrom");
+
+		public IReadOnlyPropertySet Metadata {
+			get { return metadata; }
+		}
+
+		string GetMetadata (string name)
+		{
+			return metadata.GetValue (name);
+		}
+
+		bool MetadataIsTrue (string name)
+		{
+			return metadata.GetValue (name, false);
+		}
 
 		public override bool Equals (object obj)
 		{
@@ -60,6 +135,26 @@ namespace MonoDevelop.Projects
 		public IEnumerable<string> EnumerateAliases ()
 		{
 			return Aliases.Split (new [] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+		}
+
+		public SolutionItem GetReferencedItem (Solution parentSolution)
+		{
+			var projectPath = GetMetadata ("MSBuildSourceProjectFile");
+			if (!string.IsNullOrEmpty (projectPath)) {
+				var project = parentSolution.FindSolutionItem (projectPath);
+				if (project != null) {
+					return project;
+				}
+			}
+
+			var projectGuid = GetMetadata ("Project");
+			if (!string.IsNullOrEmpty (projectGuid)) {
+				if (parentSolution.GetSolutionItem (projectGuid) is SolutionItem item) {
+					return item;
+				}
+			}
+
+			return null;
 		}
 	}
 }

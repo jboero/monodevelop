@@ -41,38 +41,150 @@ using MonoDevelop.Ide.Gui.Content;
 using System.Runtime.CompilerServices;
 using MonoDevelop.Core.Instrumentation;
 using MonoDevelop.Ide.Gui;
-using MonoDevelop.Ide.Projects;
+using MonoDevelop.Ide.ProgressMonitoring;
 using MonoDevelop.Core.Execution;
 using System.Threading.Tasks;
+using MonoDevelop.Ide.TypeSystem;
+using MonoDevelop.Ide.Gui.Documents;
+using MonoDevelop.Core.FeatureConfiguration;
 
 namespace MonoDevelop.Ide
 {
-	public sealed class RootWorkspace: WorkspaceObject, IBuildTarget
+	[DefaultServiceImplementation]
+	public sealed class RootWorkspace: WorkspaceObject, IBuildTarget, IService
 	{
+		ServiceProvider serviceProvider;
 		RootWorkspaceItemCollection items;
-//		IParserDatabase parserDatabase;
 		string activeConfiguration;
 		bool useDefaultRuntime;
+		DocumentManager documentManager;
+
+		SolutionFolderItem currentSolutionItem = null;
+		WorkspaceItem currentWorkspaceItem = null;
+		object currentItem;
 
 		internal RootWorkspace ()
 		{
 			items = new RootWorkspaceItemCollection (this);
 
+			currentWorkspaceLoadTask = new TaskCompletionSource<bool> ();
+			currentWorkspaceLoadTask.SetResult (true);
+		}
+
+		Task IService.Initialize (ServiceProvider serviceProvider)
+		{
+			this.serviceProvider = serviceProvider;
 			FileService.FileRenamed += CheckFileRename;
-			
+			FileService.FileRemoved += CheckFileRemoved;
+
+			serviceProvider.WhenServiceInitialized<DocumentManager> (s => {
+				documentManager = s;
+			});
+
 			// Set the initial active runtime
 			UseDefaultRuntime = true;
-			IdeApp.Preferences.DefaultTargetRuntime.Changed += delegate {
+			DefaultTargetRuntime.Changed += delegate {
 				// If the default runtime changes and current active is default, update it
 				if (UseDefaultRuntime) {
-					Runtime.SystemAssemblyService.DefaultRuntime = IdeApp.Preferences.DefaultTargetRuntime;
+					Runtime.SystemAssemblyService.DefaultRuntime = DefaultTargetRuntime;
 					useDefaultRuntime = true;
 				}
 			};
-			
-			FileService.FileChanged += CheckWorkspaceItems;
+			return Task.CompletedTask;
 		}
-		
+
+		Task IService.Dispose ()
+		{
+			return Task.CompletedTask;
+		}
+
+		internal static ConfigurationProperty<TargetRuntime> DefaultTargetRuntime = new DefaultTargetRuntimeProperty ();
+
+		public Project CurrentSelectedProject {
+			get {
+				return currentSolutionItem as Project;
+			}
+		}
+
+		public Solution CurrentSelectedSolution {
+			get {
+				return currentWorkspaceItem as Solution;
+			}
+		}
+
+		public IBuildTarget CurrentSelectedBuildTarget {
+			get {
+				if (currentSolutionItem is IBuildTarget)
+					return (IBuildTarget)currentSolutionItem;
+				return currentWorkspaceItem as IBuildTarget;
+			}
+		}
+
+		public WorkspaceObject CurrentSelectedObject {
+			get {
+				return (WorkspaceObject)currentSolutionItem ?? (WorkspaceObject)currentWorkspaceItem;
+			}
+		}
+
+		public WorkspaceItem CurrentSelectedWorkspaceItem {
+			get {
+				return currentWorkspaceItem;
+			}
+			set {
+				if (value != currentWorkspaceItem) {
+					WorkspaceItem oldValue = currentWorkspaceItem;
+					currentWorkspaceItem = value;
+					if (oldValue is Solution || value is Solution)
+						OnCurrentSelectedSolutionChanged (new SolutionEventArgs (currentWorkspaceItem as Solution));
+				}
+			}
+		}
+
+		public SolutionFolderItem CurrentSelectedSolutionItem {
+			get {
+				if (currentSolutionItem == null && CurrentSelectedSolution != null)
+					return CurrentSelectedSolution.RootFolder;
+				return currentSolutionItem;
+			}
+			set {
+				if (value != currentSolutionItem) {
+					SolutionFolderItem oldValue = currentSolutionItem;
+					currentSolutionItem = value;
+					if (oldValue is Project || value is Project)
+						OnCurrentProjectChanged (new ProjectEventArgs (currentSolutionItem as Project));
+				}
+			}
+		}
+
+		void OnCurrentSelectedSolutionChanged (SolutionEventArgs e)
+		{
+			if (CurrentSelectedSolutionChanged != null) {
+				CurrentSelectedSolutionChanged (this, e);
+			}
+		}
+
+		void OnCurrentProjectChanged (ProjectEventArgs e)
+		{
+			if (CurrentSelectedProject != null) {
+				StringParserService.Properties ["PROJECTNAME"] = CurrentSelectedProject.Name;
+			}
+			if (CurrentProjectChanged != null) {
+				CurrentProjectChanged (this, e);
+			}
+		}
+
+		public event EventHandler<SolutionEventArgs> CurrentSelectedSolutionChanged;
+		public event ProjectEventHandler CurrentProjectChanged;
+
+		public object CurrentSelectedItem {
+			get {
+				return currentItem;
+			}
+			set {
+				currentItem = value;
+			}
+		}
+
 		public RootWorkspaceItemCollection Items {
 			get {
 				return items; 
@@ -150,7 +262,7 @@ namespace MonoDevelop.Ide
 				if (useDefaultRuntime != value) {
 					useDefaultRuntime = value;
 					if (value)
-						Runtime.SystemAssemblyService.DefaultRuntime = IdeApp.Preferences.DefaultTargetRuntime;
+						Runtime.SystemAssemblyService.DefaultRuntime = DefaultTargetRuntime;
 				}
 			}
 		}
@@ -182,8 +294,8 @@ namespace MonoDevelop.Ide
 
 		public IEnumerable<IBuildTarget> GetExecutionDependencies ()
 		{
-			if (IdeApp.ProjectOperations.CurrentSelectedSolution != null)
-				return IdeApp.ProjectOperations.CurrentSelectedSolution.GetExecutionDependencies ();
+			if (CurrentSelectedSolution != null)
+				return CurrentSelectedSolution.GetExecutionDependencies ();
 			else
 				return new IBuildTarget [0];
 		}
@@ -215,13 +327,42 @@ namespace MonoDevelop.Ide
 			}
 		}
 
-#endregion
-		
-#region Build and run operations
-		
+		// When looking for the project to which the file belongs, look first
+		// in the active project, then the active solution, and so on
+		public Project GetProjectContainingFile (FilePath fileName)
+		{
+			Project project = null;
+			if (CurrentSelectedProject != null) {
+				if (CurrentSelectedProject.Files.GetFile (fileName) != null)
+					project = CurrentSelectedProject;
+				else if (CurrentSelectedProject.FileName == fileName)
+					project = CurrentSelectedProject;
+			}
+			if (project == null && CurrentSelectedWorkspaceItem != null) {
+				project = CurrentSelectedWorkspaceItem.GetProjectsContainingFile (fileName).FirstOrDefault ();
+				if (project == null) {
+					WorkspaceItem it = CurrentSelectedWorkspaceItem.ParentWorkspace;
+					while (it != null && project == null) {
+						project = it.GetProjectsContainingFile (fileName).FirstOrDefault ();
+						it = it.ParentWorkspace;
+					}
+				}
+			}
+			if (project == null) {
+				project = GetProjectsContainingFile (fileName).FirstOrDefault ();
+			}
+			return project;
+		}
+
+
+		#endregion
+
+		#region Build and run operations
+
 		public async Task SaveAsync ()
 		{
-			ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetSaveProgressMonitor (true);
+			var monitorManager = await Runtime.GetService<ProgressMonitorManager> ();
+			ProgressMonitor monitor = monitorManager.GetSaveProgressMonitor (true);
 			try {
 				await SaveAsync (monitor);
 				monitor.ReportSuccess (GettextCatalog.GetString ("Workspace saved."));
@@ -239,8 +380,8 @@ namespace MonoDevelop.Ide
 
 		bool IBuildTarget.CanExecute (ExecutionContext context, ConfigurationSelector configuration)
 		{
-			if (IdeApp.ProjectOperations.CurrentSelectedSolution != null)
-				return IdeApp.ProjectOperations.CurrentSelectedSolution.CanExecute (context, configuration);
+			if (CurrentSelectedSolution != null)
+				return CurrentSelectedSolution.CanExecute (context, configuration);
 			else {
 				return false;
 			}
@@ -249,8 +390,7 @@ namespace MonoDevelop.Ide
 		public async Task SaveAsync (ProgressMonitor monitor)
 		{
 			monitor.BeginTask (GettextCatalog.GetString ("Saving Workspace..."), Items.Count);
-			List<WorkspaceItem> items = new List<WorkspaceItem> (Items);
-			foreach (WorkspaceItem it in items) {
+			foreach (WorkspaceItem it in Items.ToList ()) {
 				await it.SaveAsync (monitor);
 				monitor.Step (1);
 			}
@@ -294,7 +434,7 @@ namespace MonoDevelop.Ide
 
 		public Task Execute (ProgressMonitor monitor, ExecutionContext context, ConfigurationSelector configuration)
 		{
-			Solution sol = IdeApp.ProjectOperations.CurrentSelectedSolution ?? GetAllSolutions ().FirstOrDefault ();
+			Solution sol = CurrentSelectedSolution ?? GetAllSolutions ().FirstOrDefault ();
 			if (sol != null)
 				return sol.Execute (monitor, context, configuration);
 			else
@@ -320,9 +460,11 @@ namespace MonoDevelop.Ide
 
 		bool IsDirtyFileInCombine {
 			get {
+				if (documentManager == null)
+					return false;
 				foreach (Project projectEntry in GetAllProjects()) {
 					foreach (ProjectFile fInfo in projectEntry.Files) {
-						foreach (Document doc in IdeApp.Workbench.Documents) {
+						foreach (Document doc in documentManager.Documents) {
 							if (doc.IsDirty && doc.FileName == fInfo.FilePath) {
 								return true;
 							}
@@ -348,39 +490,48 @@ namespace MonoDevelop.Ide
 		
 #region Opening and closing
 
+		[Obsolete("Use SavePreferencesAync")]
 		public void SavePreferences ()
 		{
 			foreach (WorkspaceItem it in Items)
 				SavePreferences (it);
 		}
-		
-		public bool Close ()
+
+		internal async Task SavePreferencesAsync ()
 		{
-			return Close (true);
+			foreach (WorkspaceItem it in Items)
+				await SavePreferences (it); 
 		}
 
-		public bool Close (bool saveWorkspacePreferencies)
+		public async Task<bool> Close ()
 		{
-			return Close (saveWorkspacePreferencies, true);
+			return await Close (true);
 		}
-		
-		internal bool Close (bool saveWorkspacePreferencies, bool closeProjectFiles)
+
+		public async Task<bool> Close (bool saveWorkspacePreferencies)
+		{
+			return await Close (saveWorkspacePreferencies, true, false);
+		}
+
+		internal async Task<bool> Close (bool saveWorkspacePreferencies, bool closeProjectFiles, bool force = false)
 		{
 			if (Items.Count > 0) {
 				ITimeTracker timer = Counters.CloseWorkspaceTimer.BeginTiming ();
 				try {
-					// Request permission for unloading the items
-					foreach (WorkspaceItem it in new List<WorkspaceItem> (Items)) {
-						if (!RequestItemUnload (it))
-							return false;
+					if (!force) {
+						// Request permission for unloading the items
+						foreach (WorkspaceItem it in new List<WorkspaceItem> (Items)) {
+							if (!RequestItemUnload (it))
+								return false;
+						}
 					}
 
 					if (saveWorkspacePreferencies)
-						SavePreferences ();
+						await SavePreferencesAsync ();
 
-					if (closeProjectFiles) {
-						foreach (Document doc in IdeApp.Workbench.Documents.ToArray ()) {
-							if (!doc.Close ())
+					if (closeProjectFiles && documentManager != null) {
+						foreach (Document doc in documentManager.Documents) {
+							if (!await doc.Close (force))
 								return false;
 						}
 					}
@@ -391,6 +542,7 @@ namespace MonoDevelop.Ide
 							it.Dispose ();
 						} catch (Exception ex) {
 							MessageService.ShowError (GettextCatalog.GetString ("Could not close solution '{0}'.", it.Name), ex);
+							return false;
 						}
 					}
 				} finally {
@@ -399,23 +551,26 @@ namespace MonoDevelop.Ide
 			}
 			return true;
 		}
-		
-		public void CloseWorkspaceItem (WorkspaceItem item, bool closeItemFiles = true)
+
+		public async Task CloseWorkspaceItem (WorkspaceItem item, bool closeItemFiles = true)
 		{
 			if (!Items.Contains (item))
 				throw new InvalidOperationException ("Only top level items can be closed.");
 
 			if (Items.Count == 1 && closeItemFiles) {
 				// There is only one item, close the whole workspace
-				Close (true, closeItemFiles);
+				await Close (true, closeItemFiles);
 				return;
 			}
 
 			if (RequestItemUnload (item)) {
-				if (closeItemFiles) {
-					var projects = item.GetAllItems<Project> ();
-					foreach (Document doc in IdeApp.Workbench.Documents.Where (d => d.Project != null && projects.Contains (d.Project)).ToArray ()) {
-						if (!doc.Close ())
+				if (closeItemFiles && documentManager != null) {
+					var projects = new Lazy<List<Project>> (() => item.GetAllItems<Project> ().ToList ());
+					foreach (Document doc in documentManager.Documents) {
+						if (doc.Owner is null || !projects.Value.Contains (doc.Owner))
+							continue;
+
+						if (!await doc.Close ())
 							return;
 					}
 				}
@@ -423,15 +578,21 @@ namespace MonoDevelop.Ide
 				item.Dispose ();
 			}
 		}
-		
+
 		public bool RequestItemUnload (WorkspaceObject item)
 		{
-			if (ItemUnloading != null) {
+			var itemUnloading = ItemUnloading;
+			if (itemUnloading != null) {
 				try {
+					bool haveAnyCancelled = false;
 					ItemUnloadingEventArgs args = new ItemUnloadingEventArgs (item);
-					ItemUnloading (this, args);
-					return !args.Cancel;
-				} catch (Exception ex) {
+					foreach (EventHandler<ItemUnloadingEventArgs> handler in itemUnloading.GetInvocationList ()) {
+						handler (this, args);
+						haveAnyCancelled |= args.Cancel;
+					}
+					return !haveAnyCancelled;
+				}
+				catch (Exception ex) {
 					LoggingService.LogError ("Exception in ItemUnloading.", ex);
 				}
 			}
@@ -439,9 +600,19 @@ namespace MonoDevelop.Ide
 		}
 
 		System.Threading.CancellationTokenSource openingItemCancellationSource;
+		TaskCompletionSource<bool> currentWorkspaceLoadTask;
+		int loadOperationsCount;
+		object loadLock = new object ();
 
 		internal bool WorkspaceItemIsOpening {
-			get { return openingItemCancellationSource != null; }
+			get { return loadOperationsCount > 0; }
+		}
+
+		/// <summary>
+		/// Gets the task that is currently loading a solution
+		/// </summary>
+		internal Task CurrentWorkspaceLoadTask {
+			get { return currentWorkspaceLoadTask.Task; }
 		}
 
 		public Task<bool> OpenWorkspaceItem (FilePath file)
@@ -454,62 +625,110 @@ namespace MonoDevelop.Ide
 			return OpenWorkspaceItem (file, closeCurrent, true);
 		}
 
-		public async Task<bool> OpenWorkspaceItem (FilePath file, bool closeCurrent, bool loadPreferences)
+		public Task<bool> OpenWorkspaceItem (FilePath file, bool closeCurrent, bool loadPreferences)
 		{
-			if (openingItemCancellationSource != null && closeCurrent) {
-				openingItemCancellationSource.Cancel ();
-				openingItemCancellationSource = null;
+			return OpenWorkspaceItem (file, closeCurrent, loadPreferences, null);
+		}
+
+		internal async Task<bool> OpenWorkspaceItem (FilePath file, bool closeCurrent, bool loadPreferences, OpenWorkspaceItemMetadata metadata)
+		{
+			if (IdeApp.IsInitialized)
+				IdeApp.Workbench.Present ();
+
+			lock (loadLock) {
+				if (++loadOperationsCount == 1)
+					currentWorkspaceLoadTask = new TaskCompletionSource<bool> ();
+				else {
+					// If there is a load operation in progress, cancel it
+					if (openingItemCancellationSource != null && closeCurrent) {
+						openingItemCancellationSource.Cancel ();
+						openingItemCancellationSource = null;
+					}
+				}
+				if (openingItemCancellationSource == null)
+					openingItemCancellationSource = new System.Threading.CancellationTokenSource ();
 			}
 
+			try {
+				return await OpenWorkspaceItemInternal (file, closeCurrent, loadPreferences, metadata, null);
+			}
+			finally {
+				lock (loadLock) {
+					if (--loadOperationsCount == 0) {
+						openingItemCancellationSource = null;
+						currentWorkspaceLoadTask.SetResult (true);
+					}
+				}
+			}
+		}
+
+		public Task<bool> OpenWorkspaceItemInternal (FilePath file, bool closeCurrent, bool loadPreferences)
+		{
+			return OpenWorkspaceItemInternal (file, closeCurrent, loadPreferences, null, null);
+		}
+
+		internal async Task<bool> OpenWorkspaceItemInternal (FilePath file, bool closeCurrent, bool loadPreferences, OpenWorkspaceItemMetadata metadata, ProgressMonitor loadMonitor)
+		{
+			if (IdeApp.IsInitialized)
+				IdeApp.Workbench.Present ();
 			var item = GetAllItems<WorkspaceItem> ().FirstOrDefault (w => w.FileName == file.FullPath);
 			if (item != null) {
-				IdeApp.ProjectOperations.CurrentSelectedWorkspaceItem = item;
-				IdeApp.Workbench.StatusBar.ShowWarning (GettextCatalog.GetString ("{0} is already opened", item.FileName.FileName));
+				CurrentSelectedWorkspaceItem = item;
 				return true;
 			}
 
 			if (closeCurrent) {
-				if (!Close ())
+				if (!await Close ())
 					return false;
 			}
 
-			var monitor = IdeApp.Workbench.ProgressMonitors.GetProjectLoadProgressMonitor (true);
+			var monitorManager = await Runtime.GetService<ProgressMonitorManager> ();
+			var monitor = loadMonitor ?? monitorManager.GetProjectLoadProgressMonitor (true);
 			bool reloading = IsReloading;
 
-			var cancellationSource = openingItemCancellationSource = new System.Threading.CancellationTokenSource ();
-			monitor = monitor.WithCancellationSource (cancellationSource);
+			monitor = monitor.WithCancellationSource (openingItemCancellationSource);
 
-			IdeApp.Workbench.LockGui ();
-			ITimeTracker timer = Counters.OpenWorkspaceItemTimer.BeginTiming ();
+			if (IdeApp.IsInitialized)
+				IdeApp.Workbench.LockGui ();
+			metadata = GetOpenWorkspaceItemMetadata (metadata);
+			var timer = Counters.OpenWorkspaceItemTimer.BeginTiming (metadata);
+
+			var loadMetadata = new WorkspaceLoadMetadata ();
+			var loadTimer = Counters.OpenWorkspaceWithIntellisenseItemTimer.BeginTiming (loadMetadata);
+
 			try {
-				var oper = BackgroundLoadWorkspace (monitor, file, loadPreferences, reloading, timer);
+				var oper = BackgroundLoadWorkspace (monitor, file, loadPreferences, reloading, timer, loadTimer);
 				return await oper;
 			} finally {
 				timer.End ();
+				loadTimer.Metadata.SolutionLoadDuration = timer.Duration.TotalMilliseconds;
+
 				monitor.Dispose ();
-				IdeApp.Workbench.UnlockGui ();
-				if (openingItemCancellationSource == cancellationSource)
-					openingItemCancellationSource = null;
+
+				if (IdeApp.IsInitialized)
+					IdeApp.Workbench.UnlockGui ();
 			}
 		}
 		
 		void ReattachDocumentProjects (IEnumerable<string> closedDocs)
 		{
-			foreach (Document doc in IdeApp.Workbench.Documents) {
-				if (doc.Project == null && doc.IsFile) {
-					Project p = GetProjectsContainingFile (doc.FileName).FirstOrDefault ();
-					if (p != null)
-						doc.SetProject (p);
+			if (documentManager != null) {
+				foreach (Document doc in documentManager.Documents) {
+					if (doc.Owner == null && doc.IsFile) {
+						Project p = GetProjectsContainingFile (doc.FileName).FirstOrDefault ();
+						if (p != null)
+							doc.AttachToProject (p);
+					}
 				}
-			}
-			if (closedDocs != null) {
-				foreach (string doc in closedDocs) {
-					IdeApp.Workbench.OpenDocument (doc, null, false);
+				if (closedDocs != null) {
+					foreach (string doc in closedDocs) {
+						documentManager.OpenDocument (new FileOpenInformation (doc, null, false)).Ignore ();
+					}
 				}
 			}
 		}
 		
-		async Task<bool> BackgroundLoadWorkspace (ProgressMonitor monitor, FilePath file, bool loadPreferences, bool reloading, ITimeTracker timer)
+		async Task<bool> BackgroundLoadWorkspace (ProgressMonitor monitor, FilePath file, bool loadPreferences, bool reloading, ITimeTracker<OpenWorkspaceItemMetadata> timer, ITimeTracker<WorkspaceLoadMetadata> loadTimer)
 		{
 			WorkspaceItem item = null;
 
@@ -529,9 +748,15 @@ namespace MonoDevelop.Ide
 					}
 
 					// It is a project, not a solution. Try to create a dummy solution and add the project to it
-					
+
+					if (File.Exists (Path.ChangeExtension (file, ".sln"))) {
+						timer.Metadata.Reason = OpenWorkspaceItemMetadata.OpenReason.OpenProject;
+					} else {
+						timer.Metadata.Reason = OpenWorkspaceItemMetadata.OpenReason.CreateSolution;
+					}
+
 					timer.Trace ("Getting wrapper solution");
-					item = await IdeApp.Services.ProjectService.GetWrapperSolution (monitor, file);
+					item = await IdeServices.ProjectService.GetWrapperSolution (monitor, file);
 				}
 				
 				if (item == null) {
@@ -542,7 +767,7 @@ namespace MonoDevelop.Ide
 				}
 
 				timer.Trace ("Registering to recent list");
-				DesktopService.RecentFiles.AddProject (item.FileName, item.Name);
+				Runtime.PeekService<DesktopService> ()?.RecentFiles.AddProject (item.FileName, item.Name);
 				
 			} catch (Exception ex) {
 				LoggingService.LogError ("Load operation failed", ex);
@@ -557,30 +782,96 @@ namespace MonoDevelop.Ide
 			}
 
 			using (monitor) {
+				if (item is Solution sol) {
+					var typeSystemService = await Runtime.GetService<TypeSystemService> ();
+
+					var watch = System.Diagnostics.Stopwatch.StartNew ();
+					EventHandler handler = null;
+
+					handler = (sender, args) => {
+						var workspace = typeSystemService.GetWorkspace (sol);
+						if (workspace != null) {
+							loadTimer.Metadata.WorkspaceLoadDuration = watch.ElapsedMilliseconds;
+							loadTimer.End ();
+
+							TypeSystem.MonoDevelopWorkspace.LoadingFinished -= handler;
+						}
+					};
+
+					TypeSystem.MonoDevelopWorkspace.LoadingFinished += handler;
+				}
+
 				// Add the item in the GUI thread. It is not safe to do it in the background thread.
 				if (!monitor.CancellationToken.IsCancellationRequested) {
+
+					// Set the active configuration before adding the solution to the workspace, in this way
+					// roslyn data will be loaded using the stored configuration instead of the default.
+					if (Items.Count == 0)
+						ActiveConfigurationId = GetStoredActiveConfiguration (item, loadPreferences);
+
 					item.SetShared ();
 					Items.Add (item);
+					await FileWatcherService.Add (item);
 				}
 				else {
 					item.Dispose ();
 					return false;
 				}
-				if (IdeApp.ProjectOperations.CurrentSelectedWorkspaceItem == null)
-					IdeApp.ProjectOperations.CurrentSelectedWorkspaceItem = GetAllSolutions ().FirstOrDefault ();
-				if (Items.Count == 1 && loadPreferences) {
-					timer.Trace ("Restoring workspace preferences");
-					await RestoreWorkspacePreferences (item);
-				}
-				timer.Trace ("Reattaching documents");
-				ReattachDocumentProjects (null);
-				monitor.ReportSuccess (GettextCatalog.GetString ("Solution loaded."));
+				if (CurrentSelectedWorkspaceItem == null)
+					CurrentSelectedWorkspaceItem = GetAllSolutions ().FirstOrDefault ();
 
-				timer.Trace ("Reattaching documents");
-				ReattachDocumentProjects (null);
-				monitor.ReportSuccess (GettextCatalog.GetString ("Solution loaded."));
+				RoslynDocumentContext.IsInProjectSettingLoadingProcess = true;
+				try {
+					if (Items.Count == 1 && loadPreferences) {
+						timer.Trace ("Restoring workspace preferences");
+						await RestoreWorkspacePreferences (item);
+					}
+
+					if (Items.Count == 1 && !reloading)
+						FirstWorkspaceItemRestored?.Invoke (this, new WorkspaceItemEventArgs (item));
+
+					timer.Trace ("Reattaching documents");
+					ReattachDocumentProjects (null);
+					monitor.ReportSuccess (GettextCatalog.GetString ("Solution loaded."));
+
+					UpdateOpenWorkspaceItemMetadata (timer.Metadata, item);
+				} finally {
+					RoslynDocumentContext.IsInProjectSettingLoadingProcess = false;
+				}
 			}
 			return true;
+		}
+
+		static OpenWorkspaceItemMetadata GetOpenWorkspaceItemMetadata (OpenWorkspaceItemMetadata metadata)
+		{
+			if (metadata == null) {
+				metadata = new OpenWorkspaceItemMetadata ();
+				metadata.OnStartup = false;
+			}
+
+			// Will be set to true after a successful load.
+			metadata.LoadSucceed = false;
+			metadata.Reason = OpenWorkspaceItemMetadata.OpenReason.OpenSolution;
+
+			return metadata;
+		}
+
+		static void UpdateOpenWorkspaceItemMetadata (OpenWorkspaceItemMetadata metadata, WorkspaceItem item)
+		{
+			// Is this a workspace or a solution?
+			metadata.IsSolution = (item is Solution);
+			metadata.LoadSucceed = true;
+			metadata.TotalProjectCount = item.GetAllItems<Project> ().Count ();
+		}
+
+		string GetStoredActiveConfiguration (WorkspaceItem item, bool loadPreferences)
+		{
+			WorkspaceUserData data = loadPreferences ? item.UserProperties.GetValue<WorkspaceUserData> ("MonoDevelop.Ide.Workspace") : null;
+			if (data != null) {
+				if (item.GetConfigurations ().Contains (data.ActiveConfiguration))
+					return data.ActiveConfiguration;
+			}
+			return GetBestDefaultConfiguration (item);
 		}
 
 		async Task RestoreWorkspacePreferences (WorkspaceItem item)
@@ -588,28 +879,25 @@ namespace MonoDevelop.Ide
 			// Restore local configuration data
 			
 			try {
-				WorkspaceUserData data = item.UserProperties.GetValue<WorkspaceUserData> ("MonoDevelop.Ide.Workspace");
-				if (data != null) {
-					ActiveExecutionTarget = null;
+				var enabled = FeatureSwitchService.IsFeatureEnabled ("RUNTIME_SELECTOR");
 
-					if (GetConfigurations ().Contains (data.ActiveConfiguration))
-						activeConfiguration = data.ActiveConfiguration;
-					else
-						activeConfiguration = GetBestDefaultConfiguration ();
+				if (enabled.GetValueOrDefault ()) {
+					WorkspaceUserData data = item.UserProperties.GetValue<WorkspaceUserData> ("MonoDevelop.Ide.Workspace");
+					if (data != null) {
+						ActiveExecutionTarget = null;
 
-					if (string.IsNullOrEmpty (data.ActiveRuntime))
-						UseDefaultRuntime = true;
-					else {
-						TargetRuntime tr = Runtime.SystemAssemblyService.GetTargetRuntime (data.ActiveRuntime);
-						if (tr != null)
-							ActiveRuntime = tr;
-						else
+						if (string.IsNullOrEmpty (data.ActiveRuntime))
 							UseDefaultRuntime = true;
+						else {
+							TargetRuntime tr = Runtime.SystemAssemblyService.GetTargetRuntime (data.ActiveRuntime);
+							if (tr != null)
+								ActiveRuntime = tr;
+							else
+								UseDefaultRuntime = true;
+						}
 					}
-					OnActiveConfigurationChanged ();
-				}
-				else {
-					ActiveConfigurationId = GetBestDefaultConfiguration ();
+				} else {
+					UseDefaultRuntime = true;
 				}
 			}
 			catch (Exception ex) {
@@ -629,13 +917,13 @@ namespace MonoDevelop.Ide
 			}
 		}
 		
-		string GetBestDefaultConfiguration ()
+		string GetBestDefaultConfiguration (WorkspaceItem item)
 		{
 			// 'Debug' is always the best candidate. If there is no debug, pick
 			// the configuration with the highest number of built projects.
 			int nbuilds = 0;
 			string bestConfig = null;
-			foreach (Solution sol in GetAllSolutions ()) {
+			foreach (Solution sol in item.GetAllItems<Solution> ()) {
 				foreach (string conf in sol.GetConfigurations ()) {
 					if (conf == "Debug")
 						return conf;
@@ -676,21 +964,6 @@ namespace MonoDevelop.Ide
 			
 			return item.SaveUserProperties ();
 		}
-		
-		public FileStatusTracker GetFileStatusTracker ()
-		{
-			FileStatusTracker fs = new FileStatusTracker ();
-			fs.AddFiles (GetKnownFiles ());
-			return fs;
-		}
-		
-		static IEnumerable<FilePath> GetKnownFiles ()
-		{
-			foreach (WorkspaceItem item in IdeApp.Workspace.Items) {
-				foreach (FilePath file in item.GetItemFiles (true))
-					yield return file;
-			}
-		}
 
 		int reloadingCount;
 
@@ -706,36 +979,40 @@ namespace MonoDevelop.Ide
 				reloadingCount--;
 		}
 
-		async void CheckWorkspaceItems (object sender, FileEventArgs args)
+		void SolutionReloadRequired (object sender, WorkspaceItemEventArgs e)
 		{
-			HashSet<FilePath> files = new HashSet<FilePath> (args.Select (e => e.FileName.CanonicalPath));
-			foreach (Solution s in GetAllSolutions ().Where (sol => sol.GetItemFiles (false).Any (f => files.Contains (f.CanonicalPath))))
-				await OnCheckWorkspaceItem (s);
-			
-			foreach (Project p in GetAllProjects ().Where (proj => proj.GetItemFiles (false).Any (f => files.Contains (f.CanonicalPath))))
-				await OnCheckProject (p);
+			OnCheckWorkspaceItem (e.Item).Ignore ();
+		}
+
+		void SolutionItemReloadRequired (object sender, SolutionItemEventArgs e)
+		{
+			OnCheckProject (e.SolutionItem).Ignore ();
 		}
 		
 		async Task OnCheckWorkspaceItem (WorkspaceItem item)
 		{
 			if (item.NeedsReload) {
-				IEnumerable<string> closedDocs;
-				if (AllowReload (item.GetAllItems<Project> (), out closedDocs)) {
+				var result = await AllowReload (item.GetAllItems<Project> ());
+				bool allowReload = result.Item1;
+				IEnumerable<string> closedDocs = result.Item2;
+				if (result.Item1) {
 					if (item.ParentWorkspace == null) {
 						string file = item.FileName;
 						try {
 							SetReloading (true);
-							SavePreferences ();
-							CloseWorkspaceItem (item, false);
+							await SavePreferencesAsync ();
+							await CloseWorkspaceItem (item, false);
 							await OpenWorkspaceItem (file, false, false);
 						} finally {
 							SetReloading (false);
 						}
 					}
 					else {
-						using (ProgressMonitor m = IdeApp.Workbench.ProgressMonitors.GetSaveProgressMonitor (true)) {
+						var monitorManager = await Runtime.GetService<ProgressMonitorManager> ();
+						using (ProgressMonitor m = monitorManager.GetSaveProgressMonitor (true)) {
 							await item.ParentWorkspace.ReloadItem (m, item);
-							ReattachDocumentProjects (closedDocs);
+							if (closedDocs != null)
+								ReattachDocumentProjects (closedDocs);
 						}
 					}
 
@@ -765,14 +1042,18 @@ namespace MonoDevelop.Ide
 				} else if (entry is SolutionFolder) {
 					projects = ((SolutionFolder)entry).GetAllProjects ();
 				}
+
+				var result = await AllowReload (projects);
+				bool allowReload = result.Item1;
+				IEnumerable<string> closedDocs = result.Item2;
 				
-				IEnumerable<string> closedDocs;
-				
-				if (AllowReload (projects, out closedDocs)) {
-					using (ProgressMonitor m = IdeApp.Workbench.ProgressMonitors.GetProjectLoadProgressMonitor (true)) {
+				if (allowReload) {
+					var monitorManager = await Runtime.GetService<ProgressMonitorManager> ();
+					using (ProgressMonitor m = monitorManager.GetProjectLoadProgressMonitor (true)) {
 						// Root folders never need to reload
 						await entry.ParentFolder.ReloadItem (m, entry);
-						ReattachDocumentProjects (closedDocs);
+						if (closedDocs != null)
+							ReattachDocumentProjects (closedDocs);
 					}
 					return;
 				} else
@@ -780,7 +1061,7 @@ namespace MonoDevelop.Ide
 			}
 			
 			if (entry is SolutionFolder) {
-				ArrayList ens = new ArrayList ();
+				var ens = new List<SolutionFolderItem> ();
 				foreach (SolutionFolderItem ce in ((SolutionFolder)entry).Items)
 					ens.Add (ce);
 				foreach (SolutionFolderItem ce in ens)
@@ -794,12 +1075,12 @@ namespace MonoDevelop.Ide
 //			return AllowReload (projects, out closedDocs);
 //		}
 		
-		bool AllowReload (IEnumerable projects, out IEnumerable<string> closedDocs)
+		async Task<Tuple<bool, IEnumerable<string>>> AllowReload (IEnumerable projects)
 		{
-			closedDocs = null;
+			IEnumerable<string> closedDocs = null;
 			
 			if (projects == null)
-				return true;
+				return Tuple.Create (true, closedDocs);
 			
 			List<Document> docs = new List<Document> ();
 			foreach (Project p in projects) {
@@ -807,7 +1088,7 @@ namespace MonoDevelop.Ide
 			}
 			
 			if (docs.Count == 0)
-				return true;
+				return Tuple.Create (true, closedDocs);
 			
 			// Find a common project reload capability
 			
@@ -843,8 +1124,8 @@ namespace MonoDevelop.Ide
 					break;
 			}
 			if (msg != null) {
-				if (!MessageService.Confirm (GettextCatalog.GetString ("The project '{0}' has been modified by an external application. Do you want to reload it?", docs[0].Project.Name), msg, AlertButton.Reload))
-					return false;
+				if (!MessageService.Confirm (GettextCatalog.GetString ("The project '{0}' has been modified by an external application. Do you want to reload it?", docs[0].Owner.Name), msg, AlertButton.Reload))
+					return Tuple.Create (true, closedDocs);
 			}
 			
 			List<string> closed = new List<string> ();
@@ -853,7 +1134,7 @@ namespace MonoDevelop.Ide
 				if (doc.IsDirty)
 					hasUnsaved = true;
 				if (doc.ProjectReloadCapability != ProjectReloadCapability.None)
-					doc.SetProject (null);
+					doc.AttachToProject (null);
 				else {
 					FilePath file = doc.IsFile ? doc.FileName : FilePath.Null;
 					EventHandler saved = delegate {
@@ -862,8 +1143,8 @@ namespace MonoDevelop.Ide
 					};
 					doc.Saved += saved;
 					try {
-						if (!doc.Close ())
-							return false;
+						if (!await doc.Close ())
+							return Tuple.Create (true, closedDocs);
 						else if (!file.IsNullOrEmpty && File.Exists (file))
 							closed.Add (file);
 					} finally {
@@ -873,15 +1154,17 @@ namespace MonoDevelop.Ide
 			}
 			closedDocs = closed;
 
-			return true;
+			return Tuple.Create (true, closedDocs);
 		}
 		
-		internal static List<Document> GetOpenDocuments (Project project, bool modifiedOnly)
+		List<Document> GetOpenDocuments (Project project, bool modifiedOnly)
 		{
 			List<Document> docs = new List<Document> ();
-			foreach (Document doc in IdeApp.Workbench.Documents) {
-				if (doc.Project == project && (!modifiedOnly || doc.IsDirty)) {
-					docs.Add (doc);
+			if (documentManager != null) {
+				foreach (Document doc in documentManager.Documents) {
+					if (doc.Owner == project && (!modifiedOnly || doc.IsDirty)) {
+						docs.Add (doc);
+					}
 				}
 			}
 			return docs;
@@ -894,16 +1177,12 @@ namespace MonoDevelop.Ide
 		
 		internal void NotifyItemAdded (WorkspaceItem item)
 		{
-			try {
-				MonoDevelop.Ide.TypeSystem.TypeSystemService.Load (item, null);
-			} catch (Exception ex) {
-				LoggingService.LogError ("Could not load parser database.", ex);
-			}
+			LoadWorkspaceTypeSystem (item).Ignore ();
 			if (Runtime.IsMainThread)
 				NotifyItemAddedGui (item, IsReloading);
 			else {
 				bool reloading = IsReloading;
-				Gtk.Application.Invoke (delegate {
+				Gtk.Application.Invoke ((o, args) => {
 					NotifyItemAddedGui (item, reloading);
 				});
 			}
@@ -923,21 +1202,32 @@ namespace MonoDevelop.Ide
 			NotifyConfigurationsChanged (null, args);
 
 			if (Items.Count == 1 && !reloading) {
-				IdeApp.Workbench.CurrentLayout = "Solution";
+				if (IdeApp.IsInitialized)
+					IdeApp.Workbench.CurrentLayout = "Solution";
 				if (FirstWorkspaceItemOpened != null)
 					FirstWorkspaceItemOpened (this, args);
 			}
 			if (WorkspaceItemOpened != null)
 				WorkspaceItemOpened (this, args);
 		}
-		
+
+		async Task LoadWorkspaceTypeSystem (WorkspaceItem item)
+		{
+			try {
+				var typeSystem = await serviceProvider.GetService<TypeSystemService> ().ConfigureAwait (false);
+				await typeSystem.Load (item, null).ConfigureAwait (false);
+			} catch (Exception ex) {
+				LoggingService.LogError ("Could not load parser database.", ex);
+			}
+		}
+
 		internal void NotifyItemRemoved (WorkspaceItem item)
 		{
 			if (Runtime.IsMainThread)
 				NotifyItemRemovedGui (item, IsReloading);
 			else {
 				bool reloading = IsReloading;
-				Gtk.Application.Invoke (delegate {
+				Gtk.Application.Invoke ((o, args) => {
 					NotifyItemRemovedGui (item, reloading);
 				});
 			}
@@ -963,14 +1253,18 @@ namespace MonoDevelop.Ide
 				if (LastWorkspaceItemClosed != null)
 					LastWorkspaceItemClosed (this, EventArgs.Empty);
 			}
-			MonoDevelop.Ide.TypeSystem.TypeSystemService.Unload (item);
 
-			if (lastWorkspaceItemClosing)
-				MonoDevelop.Ide.TypeSystem.MetadataReferenceCache.Clear ();
+			UnloadWorkspaceTypeSystem (item).Ignore ();
 
 			NotifyDescendantItemRemoved (this, args);
 		}
-		
+
+		async Task UnloadWorkspaceTypeSystem (WorkspaceItem item)
+		{
+			var typeSystem = await serviceProvider.GetService<TypeSystemService> ();
+			typeSystem.Unload (item);
+		}
+
 		void SubscribeSolution (Solution sol)
 		{
 			sol.FileAddedToProject += NotifyFileAddedToProject;
@@ -982,6 +1276,8 @@ namespace MonoDevelop.Ide
 			sol.ReferenceRemovedFromProject += NotifyReferenceRemovedFromProject;
 			sol.SolutionItemAdded += NotifyItemAddedToSolution;
 			sol.SolutionItemRemoved += NotifyItemRemovedFromSolution;
+			sol.ReloadRequired += SolutionReloadRequired;
+			sol.ItemReloadRequired += SolutionItemReloadRequired;
 		}
 		
 		void UnsubscribeSolution (Solution solution)
@@ -995,6 +1291,8 @@ namespace MonoDevelop.Ide
 			solution.ReferenceRemovedFromProject -= NotifyReferenceRemovedFromProject;
 			solution.SolutionItemAdded -= NotifyItemAddedToSolution;
 			solution.SolutionItemRemoved -= NotifyItemRemovedFromSolution;
+			solution.ReloadRequired -= SolutionReloadRequired;
+			solution.ItemReloadRequired -= SolutionItemReloadRequired;
 		}
 		
 		void NotifyConfigurationsChanged (object s, EventArgs a)
@@ -1057,7 +1355,7 @@ namespace MonoDevelop.Ide
 			// Delay the notification of this event to ensure that the new project is properly
 			// registered in the parser database when it is fired
 			
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o2, a2) => {
 				if (ItemAddedToSolution != null)
 					ItemAddedToSolution (sender, args);
 			});
@@ -1067,11 +1365,11 @@ namespace MonoDevelop.Ide
 		{
 			NotifyItemRemovedFromSolutionRec (sender, args.SolutionItem, args.Solution, args);
 		}
-		
+
 		void NotifyItemRemovedFromSolutionRec (object sender, SolutionFolderItem e, Solution sol, SolutionItemChangeEventArgs originalArgs)
 		{
-			if (e == IdeApp.ProjectOperations.CurrentSelectedSolutionItem)
-				IdeApp.ProjectOperations.CurrentSelectedSolutionItem = null;
+			if (e == CurrentSelectedSolutionItem)
+				CurrentSelectedSolutionItem = null;
 				
 			if (e is SolutionFolder) {
 				foreach (SolutionFolderItem ce in ((SolutionFolder)e).Items)
@@ -1132,16 +1430,104 @@ namespace MonoDevelop.Ide
 		
 		void CheckFileRename(object sender, FileCopyEventArgs args)
 		{
+			// Do not rename the file or directory in the project for changes made outside the IDE.
+			if (args.IsExternal)
+				return;
+
 			foreach (Solution sol in GetAllSolutions ()) {
-				foreach (FileCopyEventInfo e in args)
+				foreach (FileEventInfo e in args)
 					sol.RootFolder.RenameFileInProjects (e.SourceFile, e.TargetFile);
 			}
 		}
-		
-#endregion
 
-#region Event declaration
-		
+		void CheckFileRemoved (object sender, FileEventArgs args)
+		{
+			List<WorkspaceItem> workspaceItemsRemoved = null;
+			List<SolutionItem> solutionItemsRemoved = null;
+
+			foreach (FileEventInfo info in args) {
+				foreach (WorkspaceItem workspaceItem in Items) {
+					if (workspaceItem.FileName == info.FileName ||
+						workspaceItem.FileName.IsChildPathOf (info.FileName)) {
+						if (workspaceItemsRemoved == null)
+							workspaceItemsRemoved = new List<WorkspaceItem> ();
+						workspaceItemsRemoved.Add (workspaceItem);
+
+						// No need to check child solution items since the parent workspace item will be closed.
+						continue;
+					}
+
+					foreach (SolutionItem solutionItem in workspaceItem.GetAllItems<SolutionItem> ()) {
+						if (solutionItem.FileName == info.FileName ||
+							solutionItem.FileName.IsChildPathOf (info.FileName)) {
+							if (solutionItemsRemoved == null)
+								solutionItemsRemoved = new List<SolutionItem> ();
+							solutionItemsRemoved.Add (solutionItem);
+						}
+					}
+				}
+			}
+
+			if (solutionItemsRemoved != null) {
+				UnloadRemovedSolutionItems (solutionItemsRemoved).Ignore ();
+			}
+
+			if (workspaceItemsRemoved != null) {
+				CloseWorkspaceItems (workspaceItemsRemoved).Ignore ();
+			}
+		}
+
+		/// <summary>
+		/// Unloads the solution items but does not save the solution. The solution may have been deleted
+		/// and saving the solution after the project reload will re-create the solution file.
+		/// </summary>
+		async Task UnloadRemovedSolutionItems (List<SolutionItem> solutionItems)
+		{
+			using (var monitor = CreateStatusProgressMonitor (GettextCatalog.GetString ("Unloading…"))) {
+				monitor.BeginTask (null, solutionItems.Count);
+				foreach (var item in solutionItems) {
+					item.Enabled = false;
+					await item.ParentFolder.ReloadItem (monitor, item);
+					monitor.Step (1);
+				}
+				monitor.EndTask ();
+			}
+		}
+
+		/// <summary>
+		/// Shows a warning dialog that deleted workspace items are going to be closed and then closes those items.
+		/// </summary>
+		async Task CloseWorkspaceItems (List<WorkspaceItem> workspaceItems)
+		{
+			using (var monitor = new ProgressMonitor ()) {
+				foreach (var workspaceItem in workspaceItems) {
+					if (workspaceItem is Solution)
+						monitor.ReportWarning (GettextCatalog.GetString ("Solution was deleted and will be closed. {0}", workspaceItem.FileName));
+					else
+						monitor.ReportWarning (GettextCatalog.GetString ("Workspace item was deleted and will be closed. {0}", workspaceItem.FileName));
+				}
+				monitor.ShowResultDialog ();
+			}
+
+			foreach (var item in workspaceItems) {
+				await CloseWorkspaceItem (item);
+			}
+		}
+
+		static ProgressMonitor CreateStatusProgressMonitor (string title)
+		{
+			return IdeApp.Workbench.ProgressMonitors.GetStatusProgressMonitor (
+				title,
+				MonoDevelop.Ide.Gui.Stock.StatusSolutionOperation,
+				true,
+				false,
+				true);
+		}
+
+		#endregion
+
+		#region Event declaration
+
 		/// <summary>
 		/// Fired when a file is removed from a project.
 		/// </summary>
@@ -1191,6 +1577,12 @@ namespace MonoDevelop.Ide
 		/// is no other item already open
 		/// </summary>
 		public event EventHandler<WorkspaceItemEventArgs> FirstWorkspaceItemOpened;
+
+		/// <summary>
+		/// Fired when a workspace item (a solution or workspace) is fully restored and there
+		/// is no other item already open 
+		/// </summary>
+		internal event EventHandler<WorkspaceItemEventArgs> FirstWorkspaceItemRestored;
 		
 		/// <summary>
 		/// Fired a workspace item loaded in the IDE is closed and there are no other
@@ -1434,6 +1826,68 @@ namespace MonoDevelop.Ide
 		public void Dispose ()
 		{
 			NotifyChanges ();
+		}
+	}
+
+	class WorkspaceLoadMetadata : CounterMetadata
+	{
+		public double SolutionLoadDuration {
+			get => GetProperty<long> ();
+			set => SetProperty (value);
+		}
+
+		public double WorkspaceLoadDuration {
+			get => GetProperty<long> ();
+			set => SetProperty (value);
+		}
+	}
+
+
+	class OpenWorkspaceItemMetadata : CounterMetadata
+	{
+		public enum OpenReason
+		{
+			Unknown,
+			OpenProject,
+			OpenSolution,
+			CreateSolution
+		};
+
+		public OpenWorkspaceItemMetadata ()
+		{
+		}
+
+		public bool OnStartup {
+			get => GetProperty<bool> ();
+			set => SetProperty (value);
+		}
+
+		public bool LoadSucceed {
+			get => GetProperty<bool> ();
+			set => SetProperty (value);
+		}
+
+		public OpenReason Reason {
+			get {
+				var rs = GetProperty<string> ();
+				if (Enum.TryParse<OpenReason> (rs, out var result)) {
+					return result;
+				}
+
+				return OpenReason.Unknown;
+			}
+
+			set => SetProperty (value.ToString ());
+		}
+
+		public bool IsSolution {
+			get => GetProperty<bool> ();
+			set => SetProperty (value);
+		}
+
+		public int TotalProjectCount {
+			get => GetProperty<int> ();
+			set => SetProperty (value);
 		}
 	}
 }

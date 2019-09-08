@@ -38,7 +38,7 @@ using Microsoft.CodeAnalysis.Formatting;
 using MonoDevelop.Core;
 using MonoDevelop.RegexToolkit;
 
-namespace RefactoringEssentials.CSharp.CodeRefactorings
+namespace MonoDevelop.RegexToolkit.CodeRefactorings
 {
 	[ExportCodeRefactoringProvider(LanguageNames.CSharp, Name = "Validate regular expression")]
 	public class ValidateActionCodeRefactoringProvider : CodeRefactoringProvider
@@ -89,9 +89,9 @@ namespace RefactoringEssentials.CSharp.CodeRefactorings
 			
 			context.RegisterRefactoring (CodeAction.Create(
 				GettextCatalog.GetString("Validate regular expression"),
-				t2 => {
-					ShowRegexToolkitHandler.RunRegexWindow ().Regex = regex.Value.ToString ();
-					return Task.FromResult(document);
+				async t2 => {
+					(await ShowRegexToolkitHandler.RunRegexWindow ()).Regex = regex.Value.ToString ();
+					return document;
 				}
 			));
 		}

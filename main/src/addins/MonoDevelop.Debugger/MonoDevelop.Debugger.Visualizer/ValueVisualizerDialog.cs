@@ -1,4 +1,4 @@
-// 
+﻿// 
 // ValueViewerDialog.cs
 //  
 // Author:
@@ -29,6 +29,7 @@ using System.Linq;
 using System.Collections.Generic;
 using Mono.Debugging.Client;
 using Gtk;
+using Gdk;
 
 namespace MonoDevelop.Debugger.Viewers
 {
@@ -78,6 +79,16 @@ namespace MonoDevelop.Debugger.Viewers
 			}
 		}
 
+		protected override bool OnKeyPressEvent (EventKey evnt)
+		{
+			if (evnt.Key == Gdk.Key.Escape) {
+				Respond (Gtk.ResponseType.Cancel);
+				// Prevent the escape key from propagating down to the ExceptionCaughtDialog
+				return true;
+			}
+			return base.OnKeyPressEvent (evnt);
+		}
+
 		protected virtual void OnComboVisualizersChanged (object sender, EventArgs e)
 		{
 			var button = (ToggleButton)sender;
@@ -105,8 +116,14 @@ namespace MonoDevelop.Debugger.Viewers
 
 		protected virtual void OnSaveClicked (object sender, EventArgs e)
 		{
-			if (currentVisualizer == null || currentVisualizer.StoreValue (value))
+			bool saved = false;
+
+			if (currentVisualizer == null || (saved = currentVisualizer.StoreValue (value))) {
 				Respond (Gtk.ResponseType.Ok);
+
+				if (saved)
+					DebuggingService.NotifyVariableChanged ();
+			}
 		}
 	}
 }

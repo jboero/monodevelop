@@ -24,61 +24,70 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.FindInFiles;
 using Microsoft.CodeAnalysis;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Refactoring;
-using System.Linq;
 using ICSharpCode.NRefactory6.CSharp;
 using Microsoft.CodeAnalysis.CSharp;
-using System.Threading.Tasks;
 
 namespace MonoDevelop.CSharp.Navigation
 {
 	class FindImplementingMembersHandler : CommandHandler
 	{
-		protected override async void Update (CommandInfo info)
+		protected async override Task UpdateAsync (CommandInfo info, CancellationToken cancelToken)
 		{
 			var sym = await GetNamedTypeAtCaret (IdeApp.Workbench.ActiveDocument);
-			info.Enabled = sym != null;
+			info.Enabled = TryGetInterfaceType (sym, out var interfaceType, out var implementingType);
 			info.Bypass = !info.Enabled;
 		}
 
 		protected async override void Run ()
 		{
-			var doc = IdeApp.Workbench.ActiveDocument;
-			var sym = await GetNamedTypeAtCaret (doc);
-			if (sym != null)
-				FindImplementingSymbols (await doc.GetCompilationAsync (), sym);
+			var metadata = Counters.CreateNavigateToMetadata ("ImplementingMembers");
+			using (var timer = Counters.NavigateTo.BeginTiming (metadata)) {
+				var doc = IdeApp.Workbench.ActiveDocument;
+				var sym = await GetNamedTypeAtCaret (doc);
+				if (sym == null) {
+					metadata.SetUserFault ();
+					return;
+				}
+
+				using (var source = new CancellationTokenSource ()) {
+					try {
+						await FindImplementingSymbols (await doc.GetCompilationAsync (), sym, source);
+						metadata.SetResult (true);
+					} finally {
+						metadata.UpdateUserCancellation (source.Token);
+					}
+				}
+			}
 		}
 
 		static async Task<RefactoringSymbolInfo> GetNamedTypeAtCaret (Ide.Gui.Document doc)
 		{
-			if (doc == null)
+			if (doc == null || doc.Editor == null)
 				return null;
-			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc, doc.Editor);
+			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, doc.Editor);
 
 			if (info.Node?.Parent.IsKind (SyntaxKind.SimpleBaseType) != true)
 				return null;
-			    
+
 			return info;
 		}
 
-		void FindImplementingSymbols (Compilation compilation, RefactoringSymbolInfo info)
+		Task FindImplementingSymbols (Compilation compilation, RefactoringSymbolInfo info, CancellationTokenSource cancellationTokenSource)
 		{
-			var interfaceType = info.Symbol as ITypeSymbol;
-			if (interfaceType == null)
-				return;
+			if (!TryGetInterfaceType (info, out var interfaceType, out var implementingType))
+				return Task.FromResult (0);
 
-			Task.Run (delegate {
-				using (var monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true)) {
-					var parentTypeNode = info.Node?.Parent?.Parent?.Parent;
-					if (parentTypeNode == null)
-						return;
-					var implementingType = info.Model.GetDeclaredSymbol (parentTypeNode) as INamedTypeSymbol;
-					if (implementingType == null)
-						return;
+			return Task.Run (delegate {
+				var searchMonitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
+				using (var monitor = searchMonitor.WithCancellationSource (cancellationTokenSource)) {
 					foreach (var interfaceMember in interfaceType.GetMembers ()) {
 						if (monitor.CancellationToken.IsCancellationRequested)
 							return;
@@ -86,10 +95,10 @@ namespace MonoDevelop.CSharp.Navigation
 						if (impl == null)
 							continue;
 						var loc = impl.Locations.First ();
-						monitor.ReportResult (new MemberReference (impl, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
+						searchMonitor.ReportResult (new MemberReference (impl, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
 					}
 					foreach (var iFace in interfaceType.AllInterfaces) {
-					
+
 						foreach (var interfaceMember in iFace.GetMembers ()) {
 							if (monitor.CancellationToken.IsCancellationRequested)
 								return;
@@ -98,12 +107,26 @@ namespace MonoDevelop.CSharp.Navigation
 							if (impl == null)
 								continue;
 							var loc = impl.Locations.First ();
-							monitor.ReportResult (new MemberReference (impl, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
+							searchMonitor.ReportResult (new MemberReference (impl, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
 						}
 					}
-						
+
 				}
 			});
+		}
+
+		static bool TryGetInterfaceType (RefactoringSymbolInfo sym, out ITypeSymbol interfaceType, out INamedTypeSymbol implementingType)
+		{
+			interfaceType = null;
+			implementingType = null;
+			if (sym == null)
+				return false;
+			interfaceType = sym.Symbol as ITypeSymbol;
+			var parentTypeNode = sym.Node?.Parent?.Parent?.Parent;
+			if (parentTypeNode == null || interfaceType.TypeKind != TypeKind.Interface)
+				return false;
+			implementingType = sym.Model.GetDeclaredSymbol (parentTypeNode) as INamedTypeSymbol;
+			return implementingType != null;
 		}
 	}
 }

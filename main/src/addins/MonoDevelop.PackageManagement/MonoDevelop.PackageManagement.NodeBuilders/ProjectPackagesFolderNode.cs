@@ -129,15 +129,7 @@ namespace MonoDevelop.PackageManagement.NodeBuilders
 
 		string GetUpdatedPackagesCountLabel (int count)
 		{
-			return string.Format ("({0} {1})", count, GetUpdateText (count));
-		}
-
-		string GetUpdateText (int count)
-		{
-			if (count > 1) {
-				return GettextCatalog.GetString ("updates");
-			}
-			return GettextCatalog.GetString ("update");
+			return GettextCatalog.GetPluralString ("({0} update)", "({0} updates)", count, count);
 		}
 
 		int GetUpdatedPackagesCount ()
@@ -188,6 +180,9 @@ namespace MonoDevelop.PackageManagement.NodeBuilders
 		public virtual bool IsPackageInstalled (PackageReference reference)
 		{
 			if (IsNuGetIntegratedProject ()) {
+				if (!reference.PackageIdentity.HasVersion)
+					return true;
+
 				string path = packagePathResolver.GetHashPath (reference.PackageIdentity.Id, reference.PackageIdentity.Version);
 				return File.Exists (path);
 			}

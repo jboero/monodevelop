@@ -36,12 +36,17 @@ using System.Linq;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis;
 using System.Threading.Tasks;
+using RefactoringEssentials;
+using System.IO;
 
 namespace MonoDevelop.Refactoring.Rename
 {
 	public partial class RenameItemDialog : Gtk.Dialog
 	{
 		Func<RenameRefactoring.RenameProperties, Task<IList<Change>>> rename;
+		ISymbol symbol;
+
+		internal List<string> ChangedDocuments { get; set; }
 
 		public RenameItemDialog (string title, string currentName, Func<RenameRefactoring.RenameProperties, Task<IList<Change>>> renameOperation)
 		{
@@ -52,6 +57,7 @@ namespace MonoDevelop.Refactoring.Rename
 		public RenameItemDialog (ISymbol symbol, RenameRefactoring rename)
 		{
 			this.Build ();
+			this.symbol = symbol;
 
 			string title;
 			if (symbol is ITypeSymbol) {
@@ -112,10 +118,26 @@ namespace MonoDevelop.Refactoring.Rename
 				title = GettextCatalog.GetString ("Rename Item");
 			}
 
-
 			Init (title, symbol.Name, async prop => { return await rename.PerformChangesAsync (symbol, prop); });
 
+			renameFileFlag.Visible = false;
+
+			foreach (var loc in symbol.Locations) {
+				if (loc.IsInSource) {
+					if (loc.SourceTree == null ||
+						!System.IO.File.Exists (loc.SourceTree.FilePath) ||
+						GeneratedCodeRecognition.IsFileNameForGeneratedCode (loc.SourceTree.FilePath)) {
+						continue;
+					} 
+					var oldName = System.IO.Path.GetFileNameWithoutExtension (loc.SourceTree.FilePath);
+					if (RenameRefactoring.IsCompatibleForRenaming(oldName, symbol.Name)) {
+						renameFileFlag.Visible = true;
+						break;
+					}
+				}
+			}
 		}
+
 
 		void Init (string title, string currenName, Func<RenameRefactoring.RenameProperties, Task<IList<Change>>> rename)
 		{
@@ -178,14 +200,53 @@ namespace MonoDevelop.Refactoring.Rename
 				};
 			}
 		}
-		
+
 		async void OnOKClicked (object sender, EventArgs e)
 		{
 			var properties = Properties;
 			((Widget)this).Destroy ();
-			var changes = await this.rename (properties);
-			ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetBackgroundProgressMonitor (Title, null);
-			RefactoringService.AcceptChanges (monitor, changes);
+			try {
+				var changes = await this.rename (properties);
+				ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetBackgroundProgressMonitor (Title, null);
+
+
+				if (ChangedDocuments != null) {
+					AlertButton result = null;
+					var msg = new QuestionMessage ();
+					msg.Buttons.Add (AlertButton.MakeWriteable);
+					msg.Buttons.Add (AlertButton.Cancel);
+					msg.AllowApplyToAll = true;
+
+					foreach (var path in ChangedDocuments) {
+						try {
+							var attr = File.GetAttributes (path);
+							if (attr.HasFlag (FileAttributes.ReadOnly)) {
+								msg.Text = GettextCatalog.GetString ("File {0} is read-only", path);
+								msg.SecondaryText = GettextCatalog.GetString ("Would you like to make the file writable?");
+								result = MessageService.AskQuestion (msg);
+
+								if (result == AlertButton.Cancel) {
+									return;
+								} else if (result == AlertButton.MakeWriteable) {
+									try {
+										File.SetAttributes (path, attr & ~FileAttributes.ReadOnly);
+									} catch (Exception ex) {
+										MessageService.ShowError (ex.Message);
+										return;
+									}
+								}
+							}
+						} catch (Exception ex) {
+							MessageService.ShowError (ex.Message);
+							return;
+						}
+					}
+				}
+				RefactoringService.AcceptChanges (monitor, changes);
+			} catch (Exception ex) {
+				MessageService.ShowError(GettextCatalog.GetString ("Error while renaming symbol {0}", this.symbol.Name), ex);
+				LoggingService.LogError ("Error while renaming symbol " + this.symbol.Name, ex);
+			}
 		}
 		
 		async void OnPreviewClicked (object sender, EventArgs e)

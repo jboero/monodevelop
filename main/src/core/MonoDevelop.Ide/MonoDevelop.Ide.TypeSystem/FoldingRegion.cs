@@ -29,6 +29,7 @@ using MonoDevelop.Ide.Editor;
 namespace MonoDevelop.Ide.TypeSystem
 {
 	[Serializable]
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public class FoldingRegion
 	{
 		static string defaultName = "...";
@@ -70,6 +71,11 @@ namespace MonoDevelop.Ide.TypeSystem
 		
 		public FoldingRegion (DocumentRegion region, FoldType type) : this (null, region, type)
 		{
+		}
+
+		public override string ToString ()
+		{
+			return string.Format ("[FoldingRegion: Name={0}, IsFoldedByDefault={1}, Region={2}, Type={3}]", Name, IsFoldedByDefault, Region, Type);
 		}
 	}
 	

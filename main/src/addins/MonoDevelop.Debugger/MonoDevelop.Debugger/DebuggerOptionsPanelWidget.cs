@@ -25,11 +25,17 @@
 // THE SOFTWARE.
 
 using System;
-using Mono.Debugging.Client;
-using MonoDevelop.Components;
-using MonoDevelop.Ide.Gui.Dialogs;
+
 using Xwt;
+
+using Mono.Debugging.Client;
+
+using MonoDevelop.Ide;
 using MonoDevelop.Core;
+using MonoDevelop.Ide.Fonts;
+using MonoDevelop.Components;
+using MonoDevelop.Components.AtkCocoaHelper;
+using MonoDevelop.Ide.Gui.Dialogs;
 
 namespace MonoDevelop.Debugger
 {
@@ -53,7 +59,8 @@ namespace MonoDevelop.Debugger
 	public class DebuggerOptionsPanelWidget : VBox
 	{
 		DebuggerSessionOptions options;
-		CheckBox checkProjectCodeOnly;
+		CheckBox checkStepIntoExternalCode;
+		ComboBox comboAutomaticSourceDownload;
 		CheckBox checkStepOverPropertiesAndOperators;
 		CheckBox checkAllowEval;
 		CheckBox checkAllowToString;
@@ -62,13 +69,46 @@ namespace MonoDevelop.Debugger
 		CheckBox checkGroupStatic;
 		SpinButton spinTimeout;
 		CheckBox enableLogging;
+		CheckBox useNewTreeView;
+		Label evalLabel;
 
 		void Build ()
 		{
-			checkProjectCodeOnly = new CheckBox (GettextCatalog.GetString ("Debug project code only; do not step into framework code."));
-			PackStart (checkProjectCodeOnly);
+			PackStart (new Label { Markup = "<b>" + GettextCatalog.GetString ("Scope") + "</b>" });
 			checkStepOverPropertiesAndOperators = new CheckBox (GettextCatalog.GetString ("Step over properties and operators"));
 			PackStart (checkStepOverPropertiesAndOperators);
+			checkStepIntoExternalCode = new CheckBox (GettextCatalog.GetString ("Step into external code")) {
+				ExpandVertical = false,
+				MarginBottom = 0,
+				HeightRequest = 15
+			};
+			PackStart (checkStepIntoExternalCode);
+
+			var label = new Label {
+				Text = GettextCatalog.GetString ("The debugger will step into code and hit exceptions in dependencies that aren’t considered part of your project, like packages and references."),
+				Font = IdeServices.FontService.SansFont.CopyModified (Ide.Gui.Styles.FontScale11).ToXwtFont (),
+				TextColor = Ide.Gui.Styles.SecondaryTextColor,
+				MarginLeft = 30,
+				Wrap = WrapMode.Word,
+				WidthRequest = 400,
+				HeightRequest = 20,
+				ExpandVertical = false
+			};
+
+			PackStart (label, hpos:WidgetPlacement.Start);
+			var autodownloadHBox = new HBox { MarginLeft = 50 };
+
+			var downloadLabel = new Label (GettextCatalog.GetString ("Download External Code:"));
+			autodownloadHBox.PackStart (downloadLabel);
+			comboAutomaticSourceDownload = new ComboBox ();
+			comboAutomaticSourceDownload.Items.Add(AutomaticSourceDownload.Ask, GettextCatalog.GetString ("Ask"));
+			comboAutomaticSourceDownload.Items.Add(AutomaticSourceDownload.Always, GettextCatalog.GetString ("Always"));
+			comboAutomaticSourceDownload.Items.Add(AutomaticSourceDownload.Never, GettextCatalog.GetString ("Never"));
+			autodownloadHBox.PackStart (comboAutomaticSourceDownload);
+			PackStart (autodownloadHBox);
+
+			checkStepIntoExternalCode.Toggled += (sender, obj) => comboAutomaticSourceDownload.Sensitive = checkStepIntoExternalCode.Active;
+			PackStart (new Label { Markup = "<b>" + GettextCatalog.GetString ("Inspection") + "</b>", MarginTop=25 });
 			checkAllowEval = new CheckBox (GettextCatalog.GetString ("Allow implicit property evaluation and method invocation"));
 			checkAllowEval.Toggled += OnCheckAllowEvalToggled;
 			PackStart (checkAllowEval);
@@ -82,7 +122,8 @@ namespace MonoDevelop.Debugger
 			checkGroupStatic = new CheckBox (GettextCatalog.GetString ("Group static members"));
 			PackStart (checkGroupStatic);
 			var evalBox = new HBox ();
-			evalBox.PackStart (new Label (GettextCatalog.GetString ("Evaluation Timeout:")));
+			evalLabel = new Label (GettextCatalog.GetString ("Evaluation Timeout:"));
+			evalBox.PackStart (evalLabel);
 			spinTimeout = new SpinButton ();
 			spinTimeout.ClimbRate = 100;
 			spinTimeout.Digits = 0;
@@ -94,11 +135,35 @@ namespace MonoDevelop.Debugger
 			evalBox.PackStart (spinTimeout);
 			evalBox.PackStart (new Label (GettextCatalog.GetString ("ms")));
 			PackStart (evalBox);
-			PackStart (new Label () {
-				Markup = "<b>" + GettextCatalog.GetString ("Advanced options") + "</b>"
-			});
+			PackStart (new Label { Markup = "<b>" + GettextCatalog.GetString ("Advanced options") + "</b>", MarginTop=25 });
 			enableLogging = new CheckBox (GettextCatalog.GetString ("Enable diagnostic logging", BrandingService.ApplicationName));
 			PackStart (enableLogging);
+			useNewTreeView = new CheckBox (GettextCatalog.GetString ("Use the new Locals/Watch window tree view"));
+			PackStart (useNewTreeView);
+
+			SetupAccessibility ();
+		}
+
+		void SetupAccessibility ()
+		{
+			checkStepIntoExternalCode.SetCommonAccessibilityAttributes ("DebuggerPanel.projectCodeOnly", "",
+			                                                       GettextCatalog.GetString ("Check to step into framework code"));
+			checkStepOverPropertiesAndOperators.SetCommonAccessibilityAttributes ("DebuggerPanel.stepOverProperties", "",
+			                                                                      GettextCatalog.GetString ("Check to step over properties and operators"));
+			checkAllowEval.SetCommonAccessibilityAttributes ("DebuggerPanel.allowEval", "",
+			                                                 GettextCatalog.GetString ("Check to allow implicit property evaluation and method invocation"));
+			checkAllowToString.SetCommonAccessibilityAttributes ("DebuggerPanel.allowToString", "",
+			                                                     GettextCatalog.GetString ("Check to call string-conversion functions on objects in the Variables windows"));
+			checkShowBaseGroup.SetCommonAccessibilityAttributes ("DebuggerPanel.showBaseGroup", "",
+			                                                     GettextCatalog.GetString ("Check to show inherited class members in a base class group"));
+			checkGroupPrivate.SetCommonAccessibilityAttributes ("DebuggerPanel.groupPrivate", "",
+			                                                    GettextCatalog.GetString ("Check to group non-public members in the Variables windows"));
+			checkGroupStatic.SetCommonAccessibilityAttributes ("DebuggerPanel.groupStatic", "",
+			                                                   GettextCatalog.GetString ("Check to group static members in the Variables windows"));
+			spinTimeout.SetCommonAccessibilityAttributes ("DebuggerPanel.timeout", evalLabel,
+			                                              GettextCatalog.GetString ("Set the length of time the evaluation will wait before giving up"));
+			enableLogging.SetCommonAccessibilityAttributes ("DebuggerPanel.enableLogging", "",
+			                                                GettextCatalog.GetString ("Check to enable some diagnostic logging"));
 		}
 
 		public DebuggerOptionsPanelWidget ()
@@ -106,7 +171,9 @@ namespace MonoDevelop.Debugger
 			Build ();
 
 			options = DebuggingService.GetUserOptions ();
-			checkProjectCodeOnly.Active = options.ProjectAssembliesOnly;
+			checkStepIntoExternalCode.Active = !options.ProjectAssembliesOnly;
+			comboAutomaticSourceDownload.SelectedItem = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.AutomaticSourceDownload", AutomaticSourceDownload.Ask);
+
 			checkStepOverPropertiesAndOperators.Active = options.StepOverPropertiesAndOperators;
 			checkAllowEval.Active = options.EvaluationOptions.AllowTargetInvoke;
 			checkAllowToString.Active = options.EvaluationOptions.AllowToStringCalls;
@@ -116,6 +183,7 @@ namespace MonoDevelop.Debugger
 			checkAllowToString.Sensitive = checkAllowEval.Active;
 			spinTimeout.Value = options.EvaluationOptions.EvaluationTimeout;
 			enableLogging.Active = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.DebuggerLogging", false);
+			useNewTreeView.Active = PropertyService.Get ("MonoDevelop.Debugger.UseNewTreeView", false);
 		}
 
 		public void Store ()
@@ -130,14 +198,16 @@ namespace MonoDevelop.Debugger
 			ops.EvaluationTimeout = (int)spinTimeout.Value;
 
 			options.StepOverPropertiesAndOperators = checkStepOverPropertiesAndOperators.Active;
-			options.ProjectAssembliesOnly = checkProjectCodeOnly.Active;
+			options.ProjectAssembliesOnly = !checkStepIntoExternalCode.Active;
+			options.AutomaticSourceLinkDownload = (AutomaticSourceDownload)comboAutomaticSourceDownload.SelectedItem;
 			options.EvaluationOptions = ops;
 
 			DebuggingService.SetUserOptions (options);
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.DebuggerLogging", enableLogging.Active);
+			PropertyService.Set ("MonoDevelop.Debugger.UseNewTreeView", useNewTreeView.Active);
 		}
 
-		protected virtual void OnCheckAllowEvalToggled (object sender, System.EventArgs e)
+		protected virtual void OnCheckAllowEvalToggled (object sender, EventArgs e)
 		{
 			checkAllowToString.Sensitive = checkAllowEval.Active;
 		}

@@ -3,6 +3,8 @@ using MonoDevelop.Core;
 using MonoDevelop.VersionControl.Dialogs;
 using MonoDevelop.Ide;
 using System.Linq;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace MonoDevelop.VersionControl
 {
@@ -20,7 +22,7 @@ namespace MonoDevelop.VersionControl
 			try {
 				if (MessageService.RunCustomDialog (del) == (int) Gtk.ResponseType.Ok && del.Repository != null) {
 					CheckoutWorker w = new CheckoutWorker (del.Repository, del.TargetPath);
-					w.Start ();
+					w.StartAsync ();
 				}
 			} finally {
 				del.Destroy ();
@@ -53,25 +55,27 @@ namespace MonoDevelop.VersionControl
 				);
 			}
 
-			protected override void Run ()
+			AlertButton AskForCheckoutPath ()
+			{
+				return MessageService.AskQuestion (
+					GettextCatalog.GetString ("Checkout path is not empty. Do you want to delete its contents?"),
+					path,
+					AlertButton.Cancel,
+					AlertButton.Ok);
+			}
+
+			protected override async Task RunAsync ()
 			{
 				if (System.IO.Directory.Exists (path) && System.IO.Directory.EnumerateFileSystemEntries (path).Any ()) {
-					if (MessageService.AskQuestion (GettextCatalog.GetString (
-							"Checkout path is not empty. Do you want to delete its contents?"),
-							path,
-							AlertButton.Cancel,
-							AlertButton.Ok) == AlertButton.Cancel)
+					var result = await Runtime.RunInMainThread (() => AskForCheckoutPath ());
+					if (result == AlertButton.Cancel)
 						return;
+
 					FileService.DeleteDirectory (path);
 					FileService.CreateDirectory (path);
 				}
 
-				try {
-					vc.Checkout (path, null, true, Monitor);
-				} catch (VersionControlException e) {
-					Monitor.ReportError (e.Message, null);
-					return;
-				}
+				await vc.CheckoutAsync (path, null, true, Monitor);
 
 				if (Monitor.CancellationToken.IsCancellationRequested) {
 					Monitor.ReportSuccess (GettextCatalog.GetString ("Checkout operation cancelled"));
@@ -85,7 +89,7 @@ namespace MonoDevelop.VersionControl
 
 				foreach (string str in System.IO.Directory.EnumerateFiles (path, "*", System.IO.SearchOption.AllDirectories)) {
 					if (MonoDevelop.Projects.Services.ProjectService.IsWorkspaceItemFile (str)) {
-						Runtime.RunInMainThread (delegate {
+						await Runtime.RunInMainThread (delegate {
 							IdeApp.Workspace.OpenWorkspaceItem (str);
 						});
 						break;

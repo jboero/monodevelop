@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NuGet.Common;
 using NuGet.Indexing;
+using NuGet.Packaging;
 using NuGet.Protocol.Core.Types;
 
 namespace NuGet.PackageManagement.UI
@@ -156,6 +157,11 @@ namespace NuGet.PackageManagement.UI
 				              .ToDictionary(kv => kv.Key, kv => GetLoadingStatus(kv.Value.Status)));
 			}
 
+			// Observe the aggregate task exception to prevent an unhandled exception.
+			// The individual task exceptions are logged in LogError and will be reported
+			// in the Add Packages dialog.
+			var ex = aggregatedTask.Exception;
+
 			return aggregated;
 		}
 
@@ -233,18 +239,29 @@ namespace NuGet.PackageManagement.UI
 			if (_logger == null)
 			{
 				// observe the task exception when no UI logger provided.
-				Trace.WriteLine(ExceptionUtilities.DisplayMessage(task.Exception));
+				Trace.WriteLine(DisplayMessage(task.Exception));
 				return;
 			}
 
 			// UI logger only can be engaged from the main thread
 			MonoDevelop.Core.Runtime.RunInMainThread(() =>
 			{
-				var errorMessage = ExceptionUtilities.DisplayMessage(task.Exception);
+				var errorMessage = DisplayMessage(task.Exception);
 				_logger.Log(
 					ProjectManagement.MessageLevel.Error,
 					$"[{state.ToString()}] {errorMessage}");
-			});
+			}).Ignore();
+		}
+
+		static string DisplayMessage(Exception ex)
+		{
+			string errorMessage = ExceptionUtilities.DisplayMessage(ex);
+
+			// NSUrlSessionHandler exceptions contain curly braces {} in the UserInfo part of the message so
+			// to avoid a FormatException we need to escape these.
+			return errorMessage
+				.Replace("{", "{{")
+				.Replace("}", "}}");
 		}
 	}
 }

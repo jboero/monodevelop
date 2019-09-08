@@ -1,4 +1,4 @@
-
+﻿
 // 
 // ComparisonWidget.cs
 //  
@@ -84,7 +84,7 @@ namespace MonoDevelop.VersionControl.Views
 
 		public override void Dispose()
 		{
-			FontService.RemoveCallback (UpdateFont);
+			IdeServices.FontService.RemoveCallback (UpdateFont);
 		}
 
 		void UpdateFont ()
@@ -186,14 +186,6 @@ namespace MonoDevelop.VersionControl.Views
 
 
 		#endregion
-
-		public bool OnTheFlyFormatting {
-			get {
-				return MonoDevelop.Ide.Editor.DefaultSourceEditorOptions.Instance.OnTheFlyFormatting;
-			}
-			set {
-			}
-		}
 
 		#region old options
 		string defaultEolMarker;
@@ -297,25 +289,19 @@ namespace MonoDevelop.VersionControl.Views
 			}
 		}
 
-		ConfigurationProperty<ShowWhitespaces> showWhitespaces = ConfigurationProperty.Create ("ShowWhitespaces", ShowWhitespaces.Never);
-		public override ShowWhitespaces ShowWhitespaces {
+		public override Ide.Editor.ShowWhitespaces ShowWhitespaces {
 			get {
-				return showWhitespaces;
+				return MonoDevelop.Ide.Editor.DefaultSourceEditorOptions.Instance.ShowWhitespaces;
 			}
 			set {
-				if (showWhitespaces.Set (value))
-					OnChanged (EventArgs.Empty);
 			}
 		}
 
-		ConfigurationProperty<IncludeWhitespaces> includeWhitespaces = ConfigurationProperty.Create ("IncludeWhitespaces", IncludeWhitespaces.All);
-		public override IncludeWhitespaces IncludeWhitespaces {
+		public override Ide.Editor.IncludeWhitespaces IncludeWhitespaces {
 			get {
-				return includeWhitespaces;
+				return MonoDevelop.Ide.Editor.DefaultSourceEditorOptions.Instance.IncludeWhitespaces;
 			}
 			set {
-				if (includeWhitespaces.Set (value))
-					OnChanged (EventArgs.Empty);
 			}
 		}
 
@@ -353,9 +339,9 @@ namespace MonoDevelop.VersionControl.Views
 			}
 		}
 
-		public override string ColorScheme {
+		public override string EditorThemeName {
 			get {
-				return MonoDevelop.Ide.Editor.DefaultSourceEditorOptions.Instance.ColorScheme;
+				return MonoDevelop.Ide.Editor.DefaultSourceEditorOptions.Instance.EditorTheme;
 			}
 			set {
 			}

@@ -44,7 +44,7 @@ namespace MonoDevelop.UnitTesting
 	{
 		string name;
 		IResultsStore resultsStore;
-		UnitTestResult lastResult;
+		internal UnitTestResult lastResult;
 		UnitTest parent;
 		TestStatus status;
 		WorkspaceObject ownerSolutionItem;
@@ -52,7 +52,11 @@ namespace MonoDevelop.UnitTesting
 		UnitTestResultsStore results;
 		bool historicResult;
 		bool resultLoaded;
-		
+
+		public virtual bool CanMergeWithParent => false;
+
+		public string ErrorMessage { get; protected set; }
+
 		public string FixtureTypeNamespace {
 			get;
 			set;
@@ -141,7 +145,7 @@ namespace MonoDevelop.UnitTesting
 			return lastResult;
 		}
 		
-		public void ResetLastResult ()
+		public virtual void ResetLastResult ()
 		{
 			historicResult = true;
 			OnTestStatusChanged ();
@@ -149,6 +153,7 @@ namespace MonoDevelop.UnitTesting
 
 		public bool IsHistoricResult {
 			get { return historicResult; }
+			internal set { historicResult = value; }
 		}
 		
 		public UnitTestCollection GetRegressions (DateTime fromDate, DateTime toDate)
@@ -191,6 +196,9 @@ namespace MonoDevelop.UnitTesting
 		public TestStatus Status {
 			get { return status; }
 			set {
+				if (status == value)
+					return;
+
 				status = value;
 				OnTestStatusChanged ();
 			}
@@ -230,7 +238,16 @@ namespace MonoDevelop.UnitTesting
 			get;
 			protected set;
 		}
-		
+
+		/// <summary>
+		/// Used for the text editor integration to identify the source code member connected to the unit test.
+		/// </summary>
+		public string TestSourceCodeDocumentId {
+			get;
+			protected set;
+		}
+
+
 		public string FullName {
 			get {
 				if (parent != null)
@@ -306,8 +323,6 @@ namespace MonoDevelop.UnitTesting
 			return true;
 		}
 
-		bool building;
-
 		/// <summary>
 		/// Builds the project that contains this unit test or group of unit tests.
 		/// It returns when the project has been built and the tests have been updated. 
@@ -341,7 +356,7 @@ namespace MonoDevelop.UnitTesting
 			IResultsStore store = GetResultsStore ();
 			if (store != null)
 				store.RegisterResult (ActiveConfiguration, this, result);
-			OnTestStatusChanged ();
+				OnTestStatusChanged ();
 		}
 		
 		IResultsStore GetResultsStore ()
@@ -404,7 +419,7 @@ namespace MonoDevelop.UnitTesting
 		
 		protected virtual void OnTestChanged ()
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				// Run asynchronously in the UI thread
 				if (TestChanged != null)
 					TestChanged (this, EventArgs.Empty);
@@ -413,7 +428,10 @@ namespace MonoDevelop.UnitTesting
 		
 		protected virtual void OnTestStatusChanged ()
 		{
-			Gtk.Application.Invoke (delegate {
+			if (parent is UnitTestGroup) {
+				parent.OnTestStatusChanged ();
+			}
+			Gtk.Application.Invoke ((o, args) => {
 				// Run asynchronously in the UI thread
 				if (TestStatusChanged != null)
 					TestStatusChanged (this, EventArgs.Empty);

@@ -12,6 +12,7 @@ open MonoDevelop.Components
 open MonoDevelop.Components.Docking
 open MonoDevelop.Components.Commands
 open MonoDevelop.Core
+open MonoDevelop.Core.Execution
 open MonoDevelop.FSharp
 open MonoDevelop.Ide
 open MonoDevelop.Ide.CodeCompletion
@@ -45,11 +46,6 @@ type KillIntent =
     | Kill
     | NoIntent // Unexpected kill, or from #q/#quit, so we prompt
 
-type FSharpInteractiveTextEditorOptions(options: MonoDevelop.Ide.Editor.DefaultSourceEditorOptions) =
-    inherit TextEditorOptions()
-    interface Mono.TextEditor.ITextEditorOptions with
-        member x.ColorScheme = options.ColorScheme
-
 type ImageRendererMarker(line, image:Xwt.Drawing.Image) =
     inherit TextLineMarker()
     static let tag = obj()
@@ -63,12 +59,13 @@ type ImageRendererMarker(line, image:Xwt.Drawing.Image) =
 
     interface IExtendingTextLineMarker with
         member x.GetLineHeight editor = editor.LineHeight + image.Height
-        member x.Draw(editor, g, lineNr, lineArea) = ()
+        member x.Draw(_editor, _g, _lineNr, _lineArea) = ()
+        member x.IsSpaceAbove with get() = false
 
 type FsiDocumentContext() =
     inherit DocumentContext()
-    let name = "__FSI__.fsx"
-    let pd = new FSharpParsedDocument(name, None) :> ParsedDocument
+    static let name = "__FSI__.fs"
+    let pd = new FSharpParsedDocument(name, None, None) :> ParsedDocument
     let project = Services.ProjectService.CreateDotNetProject ("F#")
 
     let mutable completionWidget:ICompletionWidget = null
@@ -82,11 +79,12 @@ type FsiDocumentContext() =
     override x.ParsedDocument = pd
     override x.AttachToProject(_) = ()
     override x.ReparseDocument() = ()
-    override x.GetOptionSet() = TypeSystemService.Workspace.Options
+    override x.GetOptionSet() = IdeApp.TypeSystemService.Workspace.Options
     override x.Project = project :> Project
     override x.Name = name
     override x.AnalysisDocument with get() = null
     override x.UpdateParseDocument() = Task.FromResult pd
+    static member DocumentName = name
     member x.CompletionWidget 
         with set (value) = 
             completionWidget <- value
@@ -109,6 +107,7 @@ type FsiDocumentContext() =
         member x.Replace(offset, count, text) =
             completionWidget.Replace(offset, count, text)
         member x.GtkStyle = completionWidget.GtkStyle
+
         member x.ZoomLevel = completionWidget.ZoomLevel
         member x.CreateCodeCompletionContext triggerOffset =
             completionWidget.CreateCodeCompletionContext triggerOffset
@@ -139,18 +138,41 @@ type FsiPrompt(icon: Xwt.Drawing.Image) =
 
         let deltaX = size / 2.0 - icon.Width / 2.0 + 0.5
         let deltaY = size / 2.0 - icon.Height / 2.0 + 0.5
-
         cairoContext.DrawImage (editor, icon, Math.Round (x + deltaX), Math.Round (y + deltaY));
-    
-type FSharpInteractivePad() =
+
+type ShellHistory() =
+    let history = ResizeArray<string>()
+    let mutable nextUp = 0
+    let mutable nextDown = 0
+
+    member x.Push command =
+        history.Add command
+        nextUp <- history.Count - 1
+        nextDown <- history.Count - 1
+
+    member x.Up() =
+        match nextUp with
+        | -1 -> None
+        | index ->
+            nextDown <- nextUp
+            nextUp <- nextUp - 1
+            Some history.[index]
+
+    member x.Down() =
+        if nextDown = history.Count then
+            None
+        else
+            nextUp <- nextDown
+            nextDown <- nextDown + 1
+            if nextDown = history.Count then
+                None
+            else
+                Some history.[nextDown]
+
+type FSharpInteractivePad(editor:TextEditor) as this =
     inherit MonoDevelop.Ide.Gui.PadContent()
    
-    let ctx = FsiDocumentContext()
-    let doc = TextEditorFactory.CreateNewDocument()
-    do
-        doc.FileName <- FilePath ctx.Name
-
-    let editor = TextEditorFactory.CreateNewEditor(ctx, doc, TextEditorType.Default)
+    let ctx = editor.DocumentContext :?> FsiDocumentContext
     do
         let options = new CustomEditorOptions (editor.Options)
         editor.MimeType <- "text/x-fsharp"
@@ -165,19 +187,20 @@ type FSharpInteractivePad() =
     let mutable killIntent = NoIntent
     let mutable promptReceived = false
     let mutable activeDoc : IDisposable option = None
-    let commandHistoryPast = new Stack<string> ()
-    let commandHistoryFuture = new Stack<string> ()
+    let mutable lastLineOutput = None
 
     let promptIcon = ImageService.GetIcon("md-breadcrumb-next")
     let newLineIcon = ImageService.GetIcon("md-template")
 
-    let getCorrectDirectory () =
-        ctx.WorkingFolder <-
-            if IdeApp.Workbench.ActiveDocument <> null && FileService.isInsideFSharpFile() then
-                let doc = IdeApp.Workbench.ActiveDocument.FileName.ToString()
-                if doc <> null then Path.GetDirectoryName(doc) |> Some else None
+    let getActiveDocumentFileName () =
+        if IdeApp.Workbench.ActiveDocument <> null && FileService.isInsideFSharpFile() then
+            let docFileName = IdeApp.Workbench.ActiveDocument.FileName.ToString()
+            if docFileName <> null then
+                let directoryName = Path.GetDirectoryName docFileName
+                ctx.WorkingFolder <- Some directoryName
+                Some docFileName
             else None
-        ctx.WorkingFolder
+        else None
 
     let nonBreakingSpace = "\u00A0" // used to disable editor syntax highlighting for output
 
@@ -185,20 +208,17 @@ type FSharpInteractivePad() =
         let data = editor.GetContent<ITextEditorDataProvider>().GetTextEditorData()
         let textDocument = data.Document
 
-        let line = data.GetLine editor.CaretLine
+        let line = data.GetLineByOffset editor.Length
         let prompt = FsiPrompt image
+
         textDocument.AddMarker(line, prompt)
 
-    let setPrompt() =
-        editor.InsertAtCaret ("\n")
-        addMarker promptIcon
+        textDocument.CommitUpdateAll()
 
-    let fsiOutput t =
-        if editor.CaretColumn <> 1 then
-            editor.InsertAtCaret ("\n")
-        editor.InsertAtCaret (nonBreakingSpace + t)
-        editor.CaretOffset <- editor.Text.Length
-        editor.ScrollTo editor.CaretLocation
+    let setPrompt() =
+        editor.InsertText(editor.Length, "\n")
+        editor.ScrollTo editor.Length
+        addMarker promptIcon
 
     let renderImage image =
         let data = editor.GetContent<ITextEditorDataProvider>().GetTextEditorData()
@@ -213,10 +233,13 @@ type FSharpInteractivePad() =
 
     let setupSession() =
         try
-            let ses = InteractiveSession()
+            let pathToExe =
+                Path.Combine(Reflection.Assembly.GetExecutingAssembly().Location |> Path.GetDirectoryName, "MonoDevelop.FSharpInteractive.Service.exe")
+                |> ProcessArgumentBuilder.Quote
+            let ses = InteractiveSession(pathToExe)
             input.Clear()
             promptReceived <- false
-            let textReceived = ses.TextReceived.Subscribe(fun t -> Runtime.RunInMainThread(fun () -> fsiOutput t) |> ignore)
+            let textReceived = ses.TextReceived.Subscribe(fun t -> Runtime.RunInMainThread(fun () -> this.FsiOutput t) |> ignore)
             let imageReceived = ses.ImageReceived.Subscribe(fun image -> Runtime.RunInMainThread(fun () -> renderImage image) |> Async.AwaitTask |> Async.RunSynchronously)
             let promptReady = ses.PromptReady.Subscribe(fun () -> Runtime.RunInMainThread(fun () -> promptReceived <- true; setPrompt() ) |> ignore)
 
@@ -227,28 +250,17 @@ type FSharpInteractivePad() =
                 if killIntent = NoIntent then
                     Runtime.RunInMainThread(fun () ->
                         LoggingService.LogDebug ("Interactive: process stopped")
-                        fsiOutput "\nSession termination detected. Press Enter to restart.") |> ignore
+                        this.FsiOutput "\nSession termination detected. Press Enter to restart.") |> ignore
                 elif killIntent = Restart then
                     Runtime.RunInMainThread (fun () -> editor.Text <- "") |> ignore
                 killIntent <- NoIntent)
 
             ses.StartReceiving()
             editor.GrabFocus()
-            // Make sure we're in the correct directory after a start/restart. No ActiveDocument event then.
-            getCorrectDirectory() |> Option.iter (fun path -> ses.SendInput("#silentCd @\"" + path + "\";;"))
             Some(ses)
         with _exn -> None
 
     let mutable session = None
-
-    let getCaretLine() =
-        let line = 
-            editor.CaretLine 
-            |> editor.GetLine 
-        if line.Length > 0 then 
-            editor.GetLineText line
-        else
-            ""
 
     let setCaretLine (s: string) =
         let line = editor.GetLineByOffset editor.CaretOffset
@@ -260,8 +272,31 @@ type FSharpInteractivePad() =
             session |> Option.iter (fun (ses: InteractiveSession) -> ses.Kill())
             if intent = Restart then session <- setupSession()
 
+    let history = ShellHistory()
+    new() =
+        let ctx = FsiDocumentContext()
+        let doc = TextEditorFactory.CreateNewDocument()
+        do
+            doc.FileName <- FilePath ctx.Name
+
+        let editor = TextEditorFactory.CreateNewEditor(ctx, doc, TextEditorType.Default)
+        new FSharpInteractivePad(editor)
+
+    member x.FsiOutput t : unit =
+        if editor.CaretColumn <> 1 then
+            editor.InsertAtCaret ("\n")
+        editor.InsertAtCaret (nonBreakingSpace + t)
+        editor.CaretOffset <- editor.Text.Length
+        editor.ScrollTo editor.CaretLocation
+        lastLineOutput <- Some editor.CaretLine
+
     member x.Text =
         editor.Text
+
+    member x.SetPrompt() =
+        editor.InsertText(editor.Length, "\n")
+        editor.ScrollTo editor.Length
+        addMarker promptIcon
 
     member x.AddMorePrompt() =
         addMarker newLineIcon
@@ -273,16 +308,20 @@ type FSharpInteractivePad() =
         resetFsi Kill
 
     member x.SendCommandAndStore command =
+        let fileName = getActiveDocumentFileName()
         input.Add command
-        session 
+        session
         |> Option.iter(fun ses ->
-            commandHistoryPast.Push command
-            ses.SendInput (command + "\n"))
+            history.Push command
+            ses.SendInput (command + "\n") fileName)
 
     member x.SendCommand command =
+        let fileName = getActiveDocumentFileName()
+
         input.Add command
-        session 
-        |> Option.iter(fun ses -> ses.SendInput (command + ";;"))
+        session
+        |> Option.iter(fun ses ->
+            ses.SendInput (command + ";;") fileName)
 
     member x.RequestCompletions lineStr column =
         session 
@@ -299,21 +338,12 @@ type FSharpInteractivePad() =
             ses.SendParameterHintRequest lineStr (column + 1))
 
     member x.ProcessCommandHistoryUp () =
-        if commandHistoryPast.Count > 0 then
-            if commandHistoryFuture.Count = 0 then
-                commandHistoryFuture.Push (getCaretLine())
-            else
-                if commandHistoryPast.Count = 0 then ()
-                else commandHistoryFuture.Push (commandHistoryPast.Pop ())
-            setCaretLine (commandHistoryPast.Peek ())
+        history.Up()
+        |> Option.iter setCaretLine
 
     member x.ProcessCommandHistoryDown () =
-        if commandHistoryFuture.Count > 0 then
-            if commandHistoryFuture.Count = 0 then
-                setCaretLine (commandHistoryFuture.Pop ())
-            else
-                commandHistoryPast.Push (commandHistoryFuture.Pop ())
-                setCaretLine (commandHistoryPast.Peek ())
+        history.Down()
+        |> function Some c -> setCaretLine c | None -> setCaretLine ""
 
     override x.Dispose() =
         LoggingService.LogDebug ("Interactive: disposing pad...")
@@ -344,12 +374,13 @@ type FSharpInteractivePad() =
     static member Fsi =
         FSharpInteractivePad.Pad |> Option.bind (fun pad -> Some(pad.Content :?> FSharpInteractivePad))
 
+    member x.LastOutputLine
+        with get() = lastLineOutput
+        and set value = lastLineOutput <- value
+
     member x.SendSelection() =
         if x.IsSelectionNonEmpty then
             let sel = IdeApp.Workbench.ActiveDocument.Editor.SelectedText
-            getCorrectDirectory()
-            |> Option.iter (fun path -> x.SendCommand ("#silentCd @\"" + path + "\"") )
-
             x.SendCommand sel
         else
           //if nothing is selected send the whole line
@@ -358,21 +389,15 @@ type FSharpInteractivePad() =
     member x.SendLine() =
         if isNull IdeApp.Workbench.ActiveDocument then ()
         else
-            getCorrectDirectory()
-            |> Option.iter (fun path -> x.SendCommand ("#silentCd @\"" + path + "\"") )
-
             let line = IdeApp.Workbench.ActiveDocument.Editor.CaretLine
             let text = IdeApp.Workbench.ActiveDocument.Editor.GetLineText(line)
             x.SendCommand text
             //advance to the next line
-            if PropertyService.Get ("FSharpBinding.AdvanceToNextLine", true)
-            then IdeApp.Workbench.ActiveDocument.Editor.SetCaretLocation (line + 1, Mono.TextEditor.DocumentLocation.MinColumn, false)
+            //if PropertyService.Get ("FSharpBinding.AdvanceToNextLine", true)
+            //then IdeApp.Workbench.ActiveDocument.Editor.SetCaretLocation (line + 1, Mono.TextEditor.DocumentLocation.MinColumn, false)
 
     member x.SendFile() =
         let text = IdeApp.Workbench.ActiveDocument.Editor.Text
-        getCorrectDirectory()
-            |> Option.iter (fun path -> x.SendCommand ("#silentCd @\"" + path + "\"") )
-
         x.SendCommand text
 
     member x.IsSelectionNonEmpty =
@@ -382,31 +407,12 @@ type FSharpInteractivePad() =
             let sel = IdeApp.Workbench.ActiveDocument.Editor.SelectedText
             not(String.IsNullOrEmpty(sel))
 
-    member x.LoadReferences() =
+    member x.LoadReferences(project:FSharpProject) =
         LoggingService.LogDebug ("FSI:  #LoadReferences")
-        let project = IdeApp.Workbench.ActiveDocument.Project :?> DotNetProject
-        
-        let references =
-            let args =
-                CompilerArguments.getReferencesFromProject project
-                |> Seq.choose (fun ref -> if (ref.Contains "mscorlib.dll" || ref.Contains "FSharp.Core.dll")
-                                          then None
-                                          else
-                                              let ref = ref |> String.replace "-r:" ""
-                                              if File.Exists ref then Some ref
-                                              else None )
-                |> Seq.distinct
-                |> Seq.toArray
-            args
-
-        let orderAssemblyReferences = MonoDevelop.FSharp.OrderAssemblyReferences()
-        let orderedreferences = orderAssemblyReferences.Order references
-
-        getCorrectDirectory()
-            |> Option.iter (fun path -> x.SendCommand ("#silentCd @\"" + path + "\"") )
-
-        orderedreferences
-        |> List.iter (fun a -> x.SendCommand (sprintf  @"#r ""%s""" a.Path))
+        async {
+            let! orderedReferences = project.GetOrderedReferences (CompilerArguments.getConfig())
+            orderedReferences |> List.iter (fun a -> x.SendCommand (sprintf  @"#r ""%s""" a.Path))
+        } |> Async.StartImmediate
 
     override x.Initialize(container:MonoDevelop.Ide.Gui.IPadWindow) =
         LoggingService.LogDebug ("InteractivePad: created!")
@@ -457,35 +463,45 @@ type FSharpInteractivePad() =
 /// handles keypresses for F# Interactive
 type FSharpFsiEditorCompletion() =
     inherit TextEditorExtension()
-    let getCaretLine (editor:TextEditor) =
-        let line =
-            editor.CaretLine
-            |> editor.GetLine
-
-        if line.Length > 0 then
-            (editor.GetLineText line), line
-        else
-            "", line
-    
     override x.IsValidInContext(context) =
         context :? FsiDocumentContext
 
     override x.KeyPress (descriptor:KeyDescriptor) =
         match FSharpInteractivePad.Fsi with
         | Some fsi -> 
-            let lineStr, line = getCaretLine x.Editor
+            let getLineText (editor:TextEditor) (line:IDocumentLine) =
+                if line.Length > 0 then
+                    editor.GetLineText line
+                else
+                    ""
 
-            let result = 
+            let getInputLines (editor:TextEditor) =
+                let lineNumbers =
+                    match fsi.LastOutputLine with
+                    | Some lineNumber ->
+                        [ lineNumber+1 .. editor.CaretLine ]
+                    | None -> [ editor.CaretLine ]
+                lineNumbers 
+                |> List.map editor.GetLine
+                |> List.map (getLineText editor)
+
+            let result =
                 match descriptor.SpecialKey with
-                | SpecialKey.Return -> 
+                | SpecialKey.Return ->
                     if x.Editor.CaretLine = x.Editor.LineCount then
-                        fsi.SendCommandAndStore lineStr
-                              
+                        let lines = getInputLines x.Editor
+                        lines
+                        |> List.iter(fun (lineStr) ->
+                            fsi.SendCommandAndStore lineStr)
+
+                        let line = x.Editor.GetLine x.Editor.CaretLine
+                        let lineStr = getLineText x.Editor line
                         x.Editor.CaretOffset <- line.EndOffset
                         x.Editor.InsertAtCaret "\n"
+
                         if not (lineStr.TrimEnd().EndsWith(";;")) then
                             fsi.AddMorePrompt()
-                    
+                        fsi.LastOutputLine <- Some line.LineNumber
                     false
                 | SpecialKey.Up -> 
                     if x.Editor.CaretLine = x.Editor.LineCount then
@@ -580,7 +596,14 @@ type FSharpFsiEditorCompletion() =
       inherit FSharpFileInteractiveCommand(fun fsi -> fsi.SendFile())
 
   type SendReferences() =
-      inherit FSharpFileInteractiveCommand(fun fsi -> fsi.LoadReferences())
+      inherit CommandHandler()
+      override x.Run() =
+          async {
+              let project = IdeApp.Workbench.ActiveDocument.Owner :?> FSharpProject
+              FSharpInteractivePad.Fsi
+              |> Option.iter (fun fsi -> fsi.LoadReferences(project)
+                                         FSharpInteractivePad.BringToFront(false))
+          } |> Async.StartImmediate
 
   type RestartFsi() =
       inherit InteractiveCommand(fun fsi -> fsi.RestartFsi())

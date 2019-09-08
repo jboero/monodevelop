@@ -1,89 +1,29 @@
-<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <Import Project="..\..\..\MonoDevelop.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
-    <ProductVersion>8.0.30703</ProductVersion>
-    <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>{DA8EDEA6-7DA8-435D-B1A0-F3A0CA07F424}</ProjectGuid>
     <OutputType>WinExe</OutputType>
     <AssemblyName>MonoDevelop</AssemblyName>
-    <RootNamespace>MonoDevelop.Startup</RootNamespace>
     <ApplicationIcon>..\..\..\theme-icons\Windows\monodevelop.ico</ApplicationIcon>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
-    <DebugSymbols>True</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
+    <TargetFrameworkVersion>$(MDFrameworkVersion)</TargetFrameworkVersion>
+    <Commandlineparameters>-no-redirect</Commandlineparameters>
     <OutputPath>..\..\..\build\bin</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
     <EnvironmentVariables>
       <EnvironmentVariables>
         <Variable name="MONODEVELOP_LOCALE_PATH" value="../locale" />
       </EnvironmentVariables>
     </EnvironmentVariables>
-    <PlatformTarget>x86</PlatformTarget>
-    <NoWarn>1591;1573</NoWarn>
-    <DocumentationFile>..\..\..\build\bin\MonoDevelop.xml</DocumentationFile>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>true</Optimize>
-    <OutputPath>..\..\..\build\bin</OutputPath>
-    <WarningLevel>4</WarningLevel>
-    <DebugSymbols>true</DebugSymbols>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>True</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>..\..\..\build\bin</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <EnvironmentVariables>
-      <EnvironmentVariables>
-        <Variable name="MONODEVELOP_LOCALE_PATH" value="../locale" />
-      </EnvironmentVariables>
-    </EnvironmentVariables>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>True</Optimize>
-    <OutputPath>..\..\..\build\bin</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <DebugSymbols>true</DebugSymbols>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
-    <DebugSymbols>True</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>..\..\..\build\bin</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <EnvironmentVariables>
-      <EnvironmentVariables>
-        <Variable name="MONODEVELOP_LOCALE_PATH" value="../locale" />
-      </EnvironmentVariables>
-    </EnvironmentVariables>
-    <PlatformTarget>x64</PlatformTarget>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>True</Optimize>
-    <OutputPath>..\..\..\build\bin</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <DebugSymbols>true</DebugSymbols>
-    <PlatformTarget>x64</PlatformTarget>
-    <Commandlineparameters>-no-redirect</Commandlineparameters>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' " />
+  <PropertyGroup Condition="'$(OS)' != 'Unix'">
+    <LargeAddressAware>true</LargeAddressAware>
   </PropertyGroup>
   <PropertyGroup>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -108,6 +48,7 @@
       <Project>{42D1CE65-A14B-4218-B787-58AD7AA68513}</Project>
       <Name>Mono.Addins.CecilReflector</Name>
     </ProjectReference>
+    <IncludeCopyLocal Include="Mono.Addins.CecilReflector.dll" />
   </ItemGroup>
   <ItemGroup>
     <None Include="app.config" />
@@ -119,22 +60,9 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="MonoDevelop.exe.addins">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
-
-  <Target Name="MakeLargeAddressAware" AfterTargets="Build" Condition=" '$(OS)' != 'Unix' ">
-    <PropertyGroup>
-      <VsComnTools Condition=" '$(VsComnTools)' == '' ">$(VS150COMNTOOLS)</VsComnTools>
-      <VsComnTools Condition=" '$(VsComnTools)' == '' ">$(VS140COMNTOOLS)</VsComnTools>
-      <VsComnTools Condition=" '$(VsComnTools)' == '' ">$(VS130COMNTOOLS)</VsComnTools>
-      <VsComnTools Condition=" '$(VsComnTools)' == '' ">$(VS120COMNTOOLS)</VsComnTools>
-      <VsComnTools Condition=" '$(VsComnTools)' == '' ">$(VS110COMNTOOLS)</VsComnTools>
-      <VsComnTools Condition=" '$(VsComnTools)' != '' And !HasTrailingSlash('$(VsComnTools)') ">$(VsComnTools)\</VsComnTools>
-      <EditBin Condition=" '$(VsComnTools)' != '' ">$(VsComnTools)..\..\VC\bin\editbin.exe</EditBin>
-    </PropertyGroup>
-
-    <Exec Command='"$(EditBin)" /largeaddressaware "$(TargetPath)"' Condition="Exists('$(EditBin)')" />
-  </Target>
+  <Import Project="$(MSBuildThisFileDirectory)..\..\..\packages\LargeAddressAware.1.0.1\build\LargeAddressAware.targets" Condition="$(OS) != 'Unix' AND Exists('$(MSBuildThisFileDirectory)..\..\..\packages\LargeAddressAware.1.0.1\build\LargeAddressAware.targets')" />
 </Project>

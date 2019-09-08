@@ -107,9 +107,14 @@ namespace MonoDevelop.PackageManagement
 		public string PackageId { get; set; }
 		public NuGetVersion Version { get; set; }
 		public bool IncludePrerelease { get; set; }
+		public bool IgnoreDependencies { get; set; }
 		public bool LicensesMustBeAccepted { get; set; }
 		public bool PreserveLocalCopyReferences { get; set; }
 		public bool OpenReadmeFile { get; set; }
+
+		public PackageActionType ActionType {
+			get { return PackageActionType.Install; }
+		}
 
 		public void Execute ()
 		{
@@ -135,15 +140,18 @@ namespace MonoDevelop.PackageManagement
 		async Task ExecuteAsync (CancellationToken cancellationToken)
 		{
 			if (Version == null) {
-				Version = await GetLatestPackageVersion (PackageId, cancellationToken);
+				ResolvedPackage resolvedPackage = await GetLatestPackageVersion (PackageId, cancellationToken);
+				Version = resolvedPackage?.LatestVersion;
 			}
 
 			var identity = new PackageIdentity (PackageId, Version);
 
+			var resolutionContext = CreateResolutionContext ();
+
 			actions = await packageManager.PreviewInstallPackageAsync (
 				project,
 				identity,
-				CreateResolutionContext (),
+				resolutionContext,
 				context,
 				primarySources,
 				secondarySources,
@@ -158,12 +166,17 @@ namespace MonoDevelop.PackageManagement
 			}
 
 			using (IDisposable fileMonitor = CreateFileMonitor ()) {
-				using (IDisposable referenceMaintainer = CreateLocalCopyReferenceMaintainer ()) {
+				using (var referenceMaintainer = CreateProjectReferenceMaintainer ()) {
 					await packageManager.ExecuteNuGetProjectActionsAsync (
 						project,
 						actions,
 						context,
+						resolutionContext.SourceCacheContext,
 						cancellationToken);
+
+					if (referenceMaintainer != null) {
+						await referenceMaintainer.ApplyChanges ();
+					}
 				}
 			}
 
@@ -174,7 +187,7 @@ namespace MonoDevelop.PackageManagement
 			await project.RunPostProcessAsync (context, cancellationToken);
 		}
 
-		Task<NuGetVersion> GetLatestPackageVersion (string packageId, CancellationToken cancellationToken)
+		Task<ResolvedPackage> GetLatestPackageVersion (string packageId, CancellationToken cancellationToken)
 		{
 			return packageManager.GetLatestVersionAsync (
 				packageId,
@@ -193,16 +206,28 @@ namespace MonoDevelop.PackageManagement
 		ResolutionContext CreateResolutionContext (bool includeUnlisted = true)
 		{
 			return new ResolutionContext (
-				DependencyBehavior.Lowest,
+				GetDependencyBehavior (),
 				IncludePrerelease || IsPrereleasePackageBeingInstalled (),
 				includeUnlisted,
 				VersionConstraints.None
 			);
 		}
 
+		DependencyBehavior GetDependencyBehavior ()
+		{
+			if (IgnoreDependencies)
+				return DependencyBehavior.Ignore;
+
+			return DependencyBehavior.Lowest;
+		}
+
 		bool IsPrereleasePackageBeingInstalled ()
 		{
 			return Version?.IsPrerelease == true;
+		}
+
+		internal IDotNetProject Project {
+			get { return dotNetProject; }
 		}
 
 		public bool IsForProject (DotNetProject project)
@@ -225,13 +250,13 @@ namespace MonoDevelop.PackageManagement
 			return new LicenseAcceptanceService ();
 		}
 
-		IDisposable CreateLocalCopyReferenceMaintainer ()
+		ProjectReferenceMaintainer CreateProjectReferenceMaintainer ()
 		{
 			if (PreserveLocalCopyReferences) {
-				return new LocalCopyReferenceMaintainer (packageManagementEvents);
+				return new ProjectReferenceMaintainer (project);
 			}
 
-			return new NullDisposable ();
+			return null;
 		}
 
 		public IEnumerable<NuGetProjectAction> GetNuGetProjectActions ()

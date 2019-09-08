@@ -34,6 +34,7 @@ using MonoDevelop.Ide.Codons;
 using MonoDevelop.Core;
 using MonoDevelop.Components.Docking;
 using MonoDevelop.Components.Commands;
+using MonoDevelop.Ide.Gui.Shell;
 
 namespace MonoDevelop.Ide.Gui
 {
@@ -149,7 +150,7 @@ namespace MonoDevelop.Ide.Gui
 		{
 			this.workbench = workbench;
 			this.codon = codon;
-			this.title = GettextCatalog.GetString (codon.Label);
+			this.title = codon.Label;
 			this.icon = codon.Icon;
 		}
 		
@@ -275,12 +276,6 @@ namespace MonoDevelop.Ide.Gui
 			if (this.content == null) {
 				this.content = codon.InitializePadContent (this);
 			}
-		}
-		
-		internal IMementoCapable GetMementoCapable ()
-		{
-			// Don't create the content if not already created
-			return content as IMementoCapable;
 		}
 		
 		internal void NotifyShown (VisibilityChangeEventArgs args)

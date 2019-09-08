@@ -33,6 +33,7 @@ using MonoDevelop.Ide.ProgressMonitoring;
 using System.Threading;
 using LibGit2Sharp;
 using MonoDevelop.Core;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.VersionControl.Git
 {
@@ -76,11 +77,11 @@ namespace MonoDevelop.VersionControl.Git
 
 	class PushCommandHandler: GitCommandHandler
 	{
-		protected override void Update (CommandInfo info)
+		protected override async Task UpdateAsync (CommandInfo info, CancellationToken cancelToken)
 		{
 			var repo = UpdateVisibility (info);
 			if (repo != null)
-				info.Enabled = repo.GetCurrentRemote () != null;
+				info.Enabled = await repo.GetCurrentRemoteAsync (cancelToken) != null;
 		}
 
 		protected override void Run ()
@@ -93,7 +94,7 @@ namespace MonoDevelop.VersionControl.Git
 	{
 		protected async override void Run (object dataItem)
 		{
-			await GitService.SwitchToBranch (Repository, (string)dataItem).ConfigureAwait (false);
+			await GitService.SwitchToBranchAsync (Repository, (string)dataItem).ConfigureAwait (false);
 		}
 
 		protected override void Update (CommandArrayInfo info)
@@ -106,12 +107,16 @@ namespace MonoDevelop.VersionControl.Git
 			if (wob == null)
 				return;
 			if (((wob is WorkspaceItem) && ((WorkspaceItem)wob).ParentWorkspace == null) ||
-			    (wob.BaseDirectory.CanonicalPath == repo.RootPath.CanonicalPath))
-			{
-				string currentBranch = repo.GetCurrentBranch ();
-				foreach (Branch branch in repo.GetBranches ()) {
-					CommandInfo ci = info.Add (branch.FriendlyName, branch.FriendlyName);
-					if (branch.FriendlyName == currentBranch)
+			    (wob.BaseDirectory.CanonicalPath == repo.RootPath.CanonicalPath)) {
+
+				string currentBranch = GitRepository.DefaultNoBranchName;
+				var getBranch = repo.GetCurrentBranchAsync ();
+				if (getBranch.Wait (250))
+					currentBranch = getBranch.Result;
+
+				foreach (var branch in repo.GetLocalBranchNamesAsync ().Result) {
+					CommandInfo ci = info.Add (branch, branch);
+					if (branch == currentBranch)
 						ci.Checked = true;
 				}
 			}
@@ -122,7 +127,7 @@ namespace MonoDevelop.VersionControl.Git
 	{
 		protected override void Run ()
 		{
-			GitService.ShowConfigurationDialog (Repository);
+			GitService.ShowConfigurationDialog (Repository.VersionControlSystem, Repository.RootPath, Repository.Url);
 		}
 	}
 
@@ -151,7 +156,7 @@ namespace MonoDevelop.VersionControl.Git
 				if (MessageService.RunCustomDialog (dlg) == (int) Gtk.ResponseType.Ok) {
 					string comment = dlg.Comment;
 					var monitor = new MessageDialogProgressMonitor (true, false, false, true);
-					var statusTracker = IdeApp.Workspace.GetFileStatusTracker ();
+					FileService.FreezeEvents ();
 					ThreadPool.QueueUserWorkItem (delegate {
 						try {
 							Stash stash;
@@ -173,7 +178,7 @@ namespace MonoDevelop.VersionControl.Git
 						}
 						finally {
 							monitor.Dispose ();
-							statusTracker.Dispose ();
+							FileService.ThawEvents ();
 						}
 					});
 				}
@@ -187,7 +192,7 @@ namespace MonoDevelop.VersionControl.Git
 		{
 			var repo = UpdateVisibility (info);
 			if (repo != null)
-				info.Enabled = !repo.RootRepository.Info.IsHeadUnborn;
+				info.Enabled = repo.RunOperation (repo.RootPath, repository => !repository.Info.IsHeadUnborn);
 		}
 	}
 
@@ -196,25 +201,29 @@ namespace MonoDevelop.VersionControl.Git
 		protected override void Run ()
 		{
 			var monitor = new MessageDialogProgressMonitor (true, false, false, true);
-			var statusTracker = IdeApp.Workspace.GetFileStatusTracker ();
+			FileService.FreezeEvents ();
 			ThreadPool.QueueUserWorkItem (delegate {
 				try {
-					GitService.ReportStashResult (Repository.PopStash (monitor, 0));
+					int stashCount = Repository.GetStashes ().Count ();
+					StashApplyStatus stashApplyStatus = Repository.PopStash (monitor, 0);
+					GitService.ReportStashResult (Repository, stashApplyStatus, stashCount);
 				} catch (Exception ex) {
 					MessageService.ShowError (GettextCatalog.GetString ("Stash operation failed"), ex);
 				}
 				finally {
 					monitor.Dispose ();
-					statusTracker.Dispose ();
+					Runtime.RunInMainThread (delegate {
+						FileService.ThawEvents ();
+					});
 				}
 			});
 		}
 
-		protected override void Update (CommandInfo info)
+		protected override async Task UpdateAsync (CommandInfo info, CancellationToken cancelToken)
 		{
 			var repo = UpdateVisibility (info);
 			if (repo != null)
-				info.Enabled = repo.GetStashes ().Any ();
+				info.Enabled = (await repo.GetStashesAsync (cancelToken)).Any ();
 		}
 	}
 

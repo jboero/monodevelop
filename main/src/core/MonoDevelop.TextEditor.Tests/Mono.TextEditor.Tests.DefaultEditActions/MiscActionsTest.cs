@@ -26,12 +26,12 @@
 
 using System;
 using NUnit.Framework;
-using Gtk;
+using MonoDevelop.Ide.Editor;
 
 namespace Mono.TextEditor.Tests.Actions
 {
 	[TestFixture()]
-	public class MiscActionsTest : TextEditorTestBase
+	class MiscActionsTest : TextEditorTestBase
 	{
 		/// <summary>
 		/// Bug 615191 - When using multiline selection to indent/outdent, the indenter selects too much
@@ -63,16 +63,6 @@ namespace Mono.TextEditor.Tests.Actions
 			Assert.AreEqual ("\n\n\n\t\t\n\n", data.Document.Text);
 		}
 	
-		[Test()]
-		public void TestGotoMatchingBracket ()
-		{
-			var data = Create ("$(foo(bar))");
-			MiscActions.GotoMatchingBracket (data);
-			Check (data, "(foo(bar)$)");
-			MiscActions.GotoMatchingBracket (data);
-			Check (data, "$(foo(bar))");
-		}
-
 		[Test()]
 		public void TestInsertNewLine ()
 		{
@@ -290,6 +280,31 @@ ddddddcc
 dddddd$dddd
 eeeeeeeeee
 ffffffffff");
+		}
+
+		/// <summary>
+		/// Bug 586125: Alt+Up at beginning of the document results in an exception
+		/// </summary>
+		[Test ()]
+		public void TestBug586125 ()
+		{
+			TextEditorData data = Create (@"$1234567890
+1234567890");
+			MiscActions.MoveBlockUp (data);
+		}
+
+		/// <summary>
+		/// Fixes VSTS Bug 801783: Auto indenting is shifting by one space back #279
+		/// </summary>
+		[Test]
+		public void TestVSTS801783 ()
+		{
+			TextEditorData data = new Mono.TextEditor.TextEditorData ();
+			data.IndentationTracker = new SmartIndentModeTests.TestIndentTracker ("   ");
+			data.Document.Text = "HelloWorld!";
+			data.Caret.Location = new DocumentLocation (1, "Hello".Length);
+			MiscActions.InsertNewLine (data);
+			Assert.AreEqual (4, data.Caret.Column);
 		}
 	}
 }

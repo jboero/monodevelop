@@ -24,19 +24,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
-using System.Linq;
 using MonoDevelop.Components;
 using Mono.Debugging.Client;
 using Gdk;
 using Gtk;
-using MonoDevelop.Ide;
+using MonoDevelop.Core;
+using MonoDevelop.Components.AtkCocoaHelper;
+using MonoDevelop.Components.Commands;
 using MonoDevelop.Debugger.PreviewVisualizers;
+using MonoDevelop.Ide;
 using MonoDevelop.Ide.Fonts;
+using MonoDevelop.Ide.Commands;
+using Mono.Debugging.Evaluation;
 
 namespace MonoDevelop.Debugger
 {
 	public class PreviewVisualizerWindow : PopoverWindow
 	{
+		GenericPreviewVisualizer genericPreview;
 		public PreviewVisualizerWindow (ObjectValue val, Gtk.Widget invokingWidget) : base (Gtk.WindowType.Toplevel)
 		{
 			this.TypeHint = WindowTypeHint.PopupMenu;
@@ -55,6 +60,7 @@ namespace MonoDevelop.Debugger
 				InactiveImage = ImageService.GetIcon ("md-popup-close", IconSize.Menu),
 				Image = ImageService.GetIcon ("md-popup-close-hover", IconSize.Menu)
 			};
+			closeButton.SetCommonAccessibilityAttributes ("Preview visualizer close button", GettextCatalog.GetString ("Close"), null);
 			closeButton.Clicked += delegate {
 				this.Destroy ();
 			};
@@ -66,7 +72,7 @@ namespace MonoDevelop.Debugger
 
 			var headerTitle = new Label ();
 			headerTitle.ModifyFg (StateType.Normal, Styles.PreviewVisualizerHeaderTextColor.ToGdkColor ());
-			var font = FontService.SansFont.CopyModified (Ide.Gui.Styles.FontScale12);
+			var font = IdeServices.FontService.SansFont.CopyModified (Ide.Gui.Styles.FontScale12);
 			font.Weight = Pango.Weight.Bold;
 			headerTitle.ModifyFont (font);
 			headerTitle.Text = val.TypeName;
@@ -76,7 +82,7 @@ namespace MonoDevelop.Debugger
 
 			if (DebuggingService.HasValueVisualizers (val)) {
 				var openButton = new Button ();
-				openButton.Label = "Open";
+				openButton.Label = GettextCatalog.GetString ("Open");
 				openButton.Relief = ReliefStyle.Half;
 				openButton.Clicked += delegate {
 					PreviewWindowManager.DestroyWindow ();
@@ -92,16 +98,24 @@ namespace MonoDevelop.Debugger
 			mainBox.ShowAll ();
 
 			var previewVisualizer = DebuggingService.GetPreviewVisualizer (val);
-			if (previewVisualizer == null)
-				previewVisualizer = new GenericPreviewVisualizer ();
 			Control widget = null;
 			try {
-				widget = previewVisualizer.GetVisualizerWidget (val);
+				widget = previewVisualizer?.GetVisualizerWidget (val);
+			} catch (EvaluatorException ex) {
+				widget = CreateErrorPreview (ex.Message);
 			} catch (Exception e) {
-				DebuggingService.DebuggerSession.LogWriter (true, "Exception during preview widget creation: " + e.Message);
+				LoggingService.LogInternalError ("Exception during preview widget creation", e);
 			}
 			if (widget == null) {
-				widget = new GenericPreviewVisualizer ().GetVisualizerWidget (val);
+				try {
+					genericPreview = new GenericPreviewVisualizer ();
+					widget = genericPreview.GetVisualizerWidget (val);
+				} catch (EvaluatorException ex) {
+					widget = CreateErrorPreview (ex.Message);
+				} catch (Exception ex) {
+					widget = CreateErrorPreview (GettextCatalog.GetString ("There was an error retrieving the value"));
+					LoggingService.LogInternalError (ex);
+				}
 			}
 			var alignment = new Alignment (0, 0, 1, 1);
 			alignment.SetPadding (3, 5, 5, 5);
@@ -109,6 +123,27 @@ namespace MonoDevelop.Debugger
 			alignment.Add (widget);
 			mainBox.PackStart (alignment);
 			ContentBox.Add (mainBox);
+		}
+
+		Gtk.Widget CreateErrorPreview (string message)
+		{
+			var box = new HBox (false, 3);
+			box.PackStart (new ImageView (MonoDevelop.Ide.Gui.Stock.Error, IconSize.Menu), false, false, 0);
+			box.PackStart (new Gtk.Label (message), false, false, 0);
+			box.ShowAll ();
+			return box;
+		}
+
+		[CommandUpdateHandler (EditCommands.Copy)]
+		protected void OnCopyUpdate (CommandInfo cmd)
+		{
+			cmd.Enabled = genericPreview!=null;
+		}
+
+		[CommandHandler (EditCommands.Copy)]
+		protected void OnCopy ()
+		{
+			genericPreview?.Copy ();
 		}
 	}
 }

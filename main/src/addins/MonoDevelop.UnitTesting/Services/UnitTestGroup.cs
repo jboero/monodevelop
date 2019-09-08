@@ -33,6 +33,8 @@ using System.Collections;
 using MonoDevelop.Projects;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace MonoDevelop.UnitTesting
 {
@@ -60,7 +62,69 @@ namespace MonoDevelop.UnitTesting
 				return false;
 			}
 		}
-		
+
+		public override void ResetLastResult ()
+		{
+			foreach (var test in Tests)
+				test.ResetLastResult();
+			base.ResetLastResult ();
+		}
+
+		static UnitTestResult GenerateResultFromTests (UnitTestCollection tests, out bool isHistoric)
+		{
+			int passed = 0; 
+			int errors = 0;
+			int failures = 0;
+			int skipped = 0;
+			int uniqueCount = 0;
+
+			isHistoric = false;
+			ResultStatus? lastStatus = null;
+			var resultStatus = ResultStatus.Inconclusive;
+
+			foreach (var test in tests) {
+				var res = test?.GetLastResult ();
+				if (res == null) 
+					continue;
+				passed += res.Passed;
+				errors += res.Errors;
+				failures += res.Failures;
+				skipped += res.Skipped;
+
+				if (res.Status != lastStatus)
+					uniqueCount++;
+				
+				lastStatus = res.Status;
+				isHistoric |= test.IsHistoricResult;
+			}
+
+			if (uniqueCount == 1)
+				resultStatus = lastStatus.Value;
+			
+			var result = new UnitTestResult () {
+				Status = resultStatus,
+				Passed = passed,
+				Errors = errors,
+				Skipped = skipped,
+				Failures = failures
+			};
+
+			return result;
+		}
+
+		protected override void OnTestStatusChanged ()
+		{
+			if (Status == TestStatus.Ready) {
+				var calculatedResult = GenerateResultFromTests (Tests, out bool isHistoricResult);
+				var storedResult = GetLastResult ();
+				if (!calculatedResult.Equals (storedResult)) {
+					lastResult = calculatedResult;
+					IsHistoricResult = isHistoricResult;
+				}
+			}
+			base.OnTestStatusChanged ();
+		}
+
 		public UnitTestCollection Tests {
 			get {
 				if (tests == null) {

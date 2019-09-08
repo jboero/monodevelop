@@ -32,6 +32,7 @@ using System.Threading;
 
 namespace MonoDevelop.Ide.Editor
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense IAsyncQuickInfo* APIs")]
 	public sealed class TooltipItem : ISegment
 	{
 		int offset;
@@ -67,7 +68,7 @@ namespace MonoDevelop.Ide.Editor
 
 		public object Item { get; set; }
 
-		public TooltipItem (object item, ISegment itemSegment) 
+		public TooltipItem (object item, ISegment itemSegment)
 		{
 			if (itemSegment == null)
 				throw new ArgumentNullException ("itemSegment");
@@ -84,23 +85,44 @@ namespace MonoDevelop.Ide.Editor
 		}
 	}
 
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense IAsyncQuickInfo* APIs")]
+	public enum TooltipCloseReason
+	{
+		Force,
+		TextAreaLeft,
+		MouseMove
+	}
+
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense IAsyncQuickInfo* APIs")]
 	// TODO: Improve tooltip API - that really looks messy
 	public abstract class TooltipProvider : IDisposable
 	{
-		public abstract Task<TooltipItem> GetItem (TextEditor editor, DocumentContext ctx, int offset, CancellationToken token = default(CancellationToken));
+		public abstract Task<TooltipItem> GetItem (TextEditor editor, DocumentContext ctx, int offset, CancellationToken token = default (CancellationToken));
 
-		public virtual bool IsInteractive (TextEditor editor, Control tipWindow)
+		public virtual bool IsInteractive (TextEditor editor, Window tipWindow)
 		{
 			return false;
 		}
 
-		public virtual void GetRequiredPosition (TextEditor editor, Control tipWindow, out int requiredWidth, out double xalign)
+		/// <summary>
+		/// Mouse left the text area and is on top of the tip window. 
+		/// Interactive tooltip providers should take the mouse control here because the cursor can leave the text area space.
+		/// </summary>
+		public virtual void TakeMouseControl (TextEditor editor, Window tipWindow)
 		{
-			requiredWidth = ((Gtk.Widget)tipWindow).SizeRequest ().Width;
+			// Default : nothing
+		}
+
+		public virtual void GetRequiredPosition (TextEditor editor, Window tipWindow, out int requiredWidth, out double xalign)
+		{
+			if (tipWindow is XwtWindowControl)
+				requiredWidth = (int)tipWindow.GetNativeWidget<Xwt.WindowFrame> ().Width;
+			else
+				requiredWidth = ((Gtk.Window)tipWindow).SizeRequest ().Width;
 			xalign = 0.5;
 		}
 
-		public virtual Control CreateTooltipWindow (TextEditor editor, DocumentContext ctx, TooltipItem item, int offset, Xwt.ModifierKeys modifierState)
+		public virtual Window CreateTooltipWindow (TextEditor editor, DocumentContext ctx, TooltipItem item, int offset, Xwt.ModifierKeys modifierState)
 		{
 			return null;
 		}
@@ -125,18 +147,18 @@ namespace MonoDevelop.Ide.Editor
 				(int)p1.X,
 				(int)p1.Y,
 				(int)w,
-				(int)editor.LineHeight
+				(int)editor.GetLineHeight (startLoc.Line)
 			);
 
 			tipWindow.ShowPopup (editorWidget, caret, PopupPosition.Top);
 		}
 
-		public virtual void ShowTooltipWindow (TextEditor editor, Control tipWindow, TooltipItem item, Xwt.ModifierKeys modifierState, int mouseX, int mouseY)
+		public virtual void ShowTooltipWindow (TextEditor editor, Window tipWindow, TooltipItem item, Xwt.ModifierKeys modifierState, int mouseX, int mouseY)
 		{
 			if (tipWindow == null)
 				return;
 
-			var tipInfoWindow = ((Gtk.Widget)tipWindow) as TooltipInformationWindow;
+			TooltipInformationWindow tipInfoWindow = (tipWindow as XwtWindowControl)?.Window as TooltipInformationWindow;
 			if (tipInfoWindow != null) {
 				ShowTipInfoWindow (editor, tipInfoWindow, item, modifierState, mouseX, mouseY);
 				return;
@@ -144,9 +166,22 @@ namespace MonoDevelop.Ide.Editor
 
 			var origin = editor.GetContent<ITextEditorImpl> ().GetEditorWindowOrigin ();
 
+
+			var xwtWindow = (Xwt.WindowFrame)tipWindow;
+			xwtWindow.Location = CalculateWindowLocation (editor, item, xwtWindow, mouseX, mouseY, origin);
+
+			var gtkWindow = Xwt.Toolkit.Load (Xwt.ToolkitType.Gtk).GetNativeWindow (xwtWindow) as Gtk.Window;
+			if (gtkWindow != null)
+				gtkWindow.ShowAll ();
+			else
+				xwtWindow.Show ();
+		}
+
+		protected virtual Xwt.Point CalculateWindowLocation (TextEditor editor, TooltipItem item, Xwt.WindowFrame xwtWindow, int mouseX, int mouseY, Xwt.Point origin)
+		{
 			int w;
 			double xalign;
-			GetRequiredPosition (editor, tipWindow, out w, out xalign);
+			GetRequiredPosition (editor, xwtWindow, out w, out xalign);
 			w += 10;
 
 			var allocation = GetAllocation (editor);
@@ -154,25 +189,33 @@ namespace MonoDevelop.Ide.Editor
 			int y = (int)(mouseY + origin.Y + allocation.Y);
 			Gtk.Widget widget = editor;
 			var geometry = widget.Screen.GetUsableMonitorGeometry (widget.Screen.GetMonitorAtPoint (x, y));
-			
-			x -= (int) ((double) w * xalign);
+
+			x -= (int)((double)w * xalign);
 			y += 10;
-			
+
 			if (x + w >= geometry.X + geometry.Width)
 				x = geometry.X + geometry.Width - w;
 			if (x < geometry.Left)
 				x = geometry.Left;
-			
-			var gtkWindow = (Gtk.Window)tipWindow;
-			int h = gtkWindow.SizeRequest ().Height;
+
+			int h = (int)xwtWindow.Size.Height;
 			if (y + h >= geometry.Y + geometry.Height)
 				y = geometry.Y + geometry.Height - h;
 			if (y < geometry.Top)
 				y = geometry.Top;
-			
-			gtkWindow.Move (x, y);
-			
-			gtkWindow.ShowAll ();
+
+			return new Xwt.Point (x, y);
+		}
+
+		public virtual bool TryCloseTooltipWindow (Window tipWindow, TooltipCloseReason reason)
+		{
+			if (tipWindow.nativeWidget is Gtk.Widget gtkWidget) {
+				gtkWidget.Destroy ();
+			} else if (tipWindow.nativeWidget is IDisposable disposable) {
+				disposable.Dispose ();
+			} 
+			tipWindow.Dispose ();
+			return true;
 		}
 
 		protected bool IsDisposed {

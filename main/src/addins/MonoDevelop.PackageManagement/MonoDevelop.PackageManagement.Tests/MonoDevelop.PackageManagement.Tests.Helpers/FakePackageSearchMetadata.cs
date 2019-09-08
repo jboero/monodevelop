@@ -29,6 +29,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
+using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 
 namespace MonoDevelop.PackageManagement.Tests.Helpers
@@ -69,7 +70,20 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 
 		public string Title { get; set; }
 
+		public bool IsListed { get; set; }
+
+		public bool PrefixReserved { get; set; }
+
+		public LicenseMetadata LicenseMetadata { get; set; }
+
+		public Uri PackageDetailsUrl { get; set; }
+
 		public Task<IEnumerable<VersionInfo>> GetVersionsAsync ()
+		{
+			throw new NotImplementedException ();
+		}
+
+		public Task<PackageDeprecationMetadata> GetDeprecationMetadataAsync ()
 		{
 			throw new NotImplementedException ();
 		}

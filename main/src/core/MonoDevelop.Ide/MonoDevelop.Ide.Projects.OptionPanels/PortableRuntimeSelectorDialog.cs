@@ -59,13 +59,11 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 		{
 			public readonly string Name;
 			public readonly SupportedFramework Framework;
-			public readonly List<TargetFramework> Targets;
 
 			public OptionComboItem (string name, SupportedFramework sfx)
 			{
 				this.Name = name;
 				this.Framework = sfx;
-				this.Targets = new List<TargetFramework> ();
 			}
 		}
 
@@ -138,8 +136,6 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 						item = new OptionComboItem (label, sfx);
 						dict.Add (label, item);
 					}
-
-					item.Targets.Add (sfx.TargetFramework);
 				}
 
 				combo.Items = dict.Values.ToList ();
@@ -231,7 +227,6 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 		IEnumerable<TargetFramework> GetPortableTargetFrameworks ()
 		{
 			return Runtime.SystemAssemblyService.GetTargetFrameworks ().Where (fx =>
-				!fx.Hidden &&
 				fx.Id.Identifier == ".NETPortable" &&
 				fx.SupportedFrameworks.Count > 0
 			);
@@ -278,14 +273,14 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 
 		void AddTopSelectorCombo ()
 		{
-			var model = new ListStore (new Type[] { typeof (string), typeof (object) });
+			var model = new ListStore (new Type[] { typeof (string) });
 			var renderer = new CellRendererText ();
 			var combo = selectorCombo = new ComboBox (model);
 
 			for (int i = 0; i < targetFrameworks.Count; i++) {
 				var fx = targetFrameworks[i];
 
-				model.AppendValues (GetPclShortDisplayName (fx, fx == missingFramework), fx);
+				model.AppendValues (GetPclShortDisplayName (fx, fx == missingFramework));
 				if (fx.Id.Equals (TargetFramework.Id))
 					combo.Active = i;
 			}
@@ -338,7 +333,7 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 				if (hasOtherVersions && string.IsNullOrEmpty (sfx.MonoSpecificVersionDisplayName))
 					label += " or later";
 
-				model.AppendValues (label, item.Targets);
+				model.AppendValues (label);
 			}
 
 			option.Combo = new ComboBox (model);

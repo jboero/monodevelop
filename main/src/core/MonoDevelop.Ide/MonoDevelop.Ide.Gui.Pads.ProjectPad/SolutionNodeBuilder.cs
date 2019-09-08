@@ -333,16 +333,18 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			var solution = (Solution) CurrentNode.DataItem;
 			info.Visible = info.Enabled = !string.IsNullOrEmpty (solution.FileName) && File.Exists (solution.FileName);
 		}
-		
-/*		[CommandHandler (ProjectCommands.AddNewFiles)]
+
+		[CommandHandler (ProjectCommands.AddNewFiles)]
 		protected void OnAddNewFiles ()
 		{
-			Solution sol = (Solution) CurrentNode.DataItem;
-			if (IdeApp.ProjectOperations.CreateProjectFile (null, sol.BaseDirectory)) {
-				IdeApp.ProjectOperations.Save (sol);
-				CurrentNode.Expanded = true;
+			var sln = (Solution)CurrentNode.DataItem;
+			if (!IdeApp.ProjectOperations.CreateSolutionFolderFile (sln.RootFolder)) {
+				return;
 			}
-		}*/
+			CurrentNode.Expanded = true;
+			if (IdeApp.Workbench.ActiveDocument != null)
+				IdeApp.Workbench.ActiveDocument.Select ();
+		}
 		
 		[CommandHandler (ProjectCommands.AddFiles)]
 		protected void OnAddFiles ()
@@ -371,7 +373,7 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		{
 			foreach (ITreeNavigator node in CurrentNodes) {
 				Solution solution = (Solution) node.DataItem;
-				IdeApp.Workspace.CloseWorkspaceItem (solution);
+				IdeApp.Workspace.CloseWorkspaceItem (solution).Ignore();
 			}
 		}
 		

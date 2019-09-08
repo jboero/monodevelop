@@ -25,20 +25,21 @@
 
 using Gtk;
 using System;
+using System.ComponentModel;
 
 using Stock = MonoDevelop.Ide.Gui.Stock;
 
+using Mono.Debugging.Client;
+
+using MonoDevelop.Ide;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Ide.Commands;
 using MonoDevelop.Components;
 using MonoDevelop.Components.Commands;
-using Mono.Debugging.Client;
 using MonoDevelop.Components.Docking;
 using MonoDevelop.Ide.Gui.Components;
-using MonoDevelop.Ide;
 using MonoDevelop.Components.AutoTest;
-using System.ComponentModel;
 
 namespace MonoDevelop.Debugger
 {
@@ -52,6 +53,8 @@ namespace MonoDevelop.Debugger
 		ScrolledWindow sw;
 		CommandEntrySet menuSet;
 		TreeViewState treeState;
+
+		ActionCommand gotoCmd;
 		
 		enum Columns
 		{
@@ -76,9 +79,13 @@ namespace MonoDevelop.Debugger
 			Id = "MonoDevelop.Debugger.BreakpointPad";
 			// Toolbar and menu definitions
 			
-			ActionCommand gotoCmd = new ActionCommand (LocalCommands.GoToFile, GettextCatalog.GetString ("Go to File"));
-			ActionCommand propertiesCmd = new ActionCommand (LocalCommands.Properties, GettextCatalog.GetString ("Edit Breakpoint…"), Stock.Properties);
-			
+			gotoCmd = new ActionCommand (LocalCommands.GoToFile, GettextCatalog.GetString ("Go to Breakpoint"));
+			var propertiesCmd = new ActionCommand (LocalCommands.Properties, GettextCatalog.GetString ("Edit Breakpoint…"), Stock.Properties);
+
+			// The toolbar registers the Properties command with the CommandManager for us,
+			// but gotoCmd isn't used in the toolbar so we need to register it ourselves for the menu to work
+			IdeApp.CommandService.RegisterCommand (gotoCmd);
+
 			menuSet = new CommandEntrySet ();
 			menuSet.Add (propertiesCmd);
 			menuSet.Add (gotoCmd);
@@ -89,7 +96,7 @@ namespace MonoDevelop.Debugger
 			menuSet.AddItem (EditCommands.DeleteKey);
 			menuSet.AddItem (DebugCommands.ClearAllBreakpoints);
 			
-			CommandEntrySet toolbarSet = new CommandEntrySet ();
+			var toolbarSet = new CommandEntrySet ();
 			toolbarSet.AddItem (DebugCommands.EnableDisableBreakpoint);
 			toolbarSet.AddItem (DebugCommands.ClearAllBreakpoints);
 			toolbarSet.AddItem (DebugCommands.DisableAllBreakpoints);
@@ -103,7 +110,7 @@ namespace MonoDevelop.Debugger
 			// The breakpoint list
 			
 			store = new TreeStore (typeof(string), typeof (bool), typeof(string), typeof(object), typeof(string), typeof(string), typeof(string), typeof(string));
-			SemanticModelAttribute modelAttr = new SemanticModelAttribute ("store__Icon", "store__Selected","store_FileName",
+			var modelAttr = new SemanticModelAttribute ("store__Icon", "store__Selected","store_FileName",
 				"store_Breakpoint", "store_Condition", "store_TraceExp", "store_HitCount", "store_LastTrace");
 			TypeDescriptor.AddAttributes (store, modelAttr);
 
@@ -117,21 +124,21 @@ namespace MonoDevelop.Debugger
 			
 			treeState = new TreeViewState (tree, (int) Columns.Breakpoint);
 							
-			TreeViewColumn col = new TreeViewColumn ();
-			CellRenderer crp = new CellRendererImage ();
+			var col = new TreeViewColumn ();
+			var crp = new CellRendererImage ();
 			col.PackStart (crp, false);
 			col.AddAttribute (crp, "stock_id", (int) Columns.Icon);
 			tree.AppendColumn (col);
-			
-			Gtk.CellRendererToggle toggleRender = new Gtk.CellRendererToggle ();
+
+			var toggleRender = new Gtk.CellRendererToggle ();
 			toggleRender.Toggled += new ToggledHandler (ItemToggled);
 			col = new TreeViewColumn ();
 			col.PackStart (toggleRender, false);
 			col.AddAttribute (toggleRender, "active", (int) Columns.Selected);
 			tree.AppendColumn (col);
-			
-			TreeViewColumn FrameCol = new TreeViewColumn ();
-			CellRenderer crt = tree.TextRenderer;
+
+			var FrameCol = new TreeViewColumn ();
+			var crt = tree.TextRenderer;
 			FrameCol.Title = GettextCatalog.GetString ("Name");
 			FrameCol.PackStart (crt, true);
 			FrameCol.AddAttribute (crt, "text", (int) Columns.FileName);
@@ -174,7 +181,7 @@ namespace MonoDevelop.Debugger
 			
 			tree.RowActivated += OnRowActivated;
 			
-			DockItemToolbar toolbar = window.GetToolbar (DockPositionType.Top);
+			var toolbar = window.GetToolbar (DockPositionType.Top);
 			toolbar.Add (toolbarSet, sw);
 			toolbar.ShowAll ();
 		}
@@ -189,22 +196,23 @@ namespace MonoDevelop.Debugger
 			DebuggingService.PausedEvent -= OnDebuggerStatusCheck;
 			DebuggingService.ResumedEvent -= OnDebuggerStatusCheck;
 			DebuggingService.StoppedEvent -= OnDebuggerStatusCheck;
+
+			IdeApp.CommandService.UnregisterCommand (gotoCmd);
 			base.Dispose ();
 		}
 
 		void ShowPopup (Gdk.EventButton evt)
 		{
-			IdeApp.CommandService.ShowContextMenu (tree, evt, menuSet, tree);
+			tree.ShowContextMenu (evt, menuSet, tree);
 		}
 		
 		[CommandHandler (LocalCommands.Properties)]
 		protected void OnProperties ()
 		{
 			var selected = tree.Selection.GetSelectedRows ();
-			TreeIter iter;
 
-			if (selected.Length == 1 && store.GetIter (out iter, selected[0])) {
-				BreakEvent bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
+			if (selected.Length == 1 && store.GetIter (out TreeIter iter, selected[0])) {
+				var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
 				if (DebuggingService.ShowBreakpointProperties (ref bp))
 					UpdateDisplay ();
 			}
@@ -212,11 +220,10 @@ namespace MonoDevelop.Debugger
 
 		string GetIconId (BreakEvent bp)
 		{
-			if (bp is Catchpoint) {
+			if (bp is Catchpoint)
 				return bp.Enabled ? "md-catchpoint" : "md-catchpoint-disabled";
-			} else {
-				return bp.Enabled ? "md-breakpoint" : "md-breakpoint-disabled";
-			}
+
+			return bp.Enabled ? "md-breakpoint" : "md-breakpoint-disabled";
 		}
 
 		
@@ -230,12 +237,10 @@ namespace MonoDevelop.Debugger
 
 				// If any breakpoints are disabled, we'll enable them all. Otherwise, disable them all.
 				foreach (var path in tree.Selection.GetSelectedRows ()) {
-					TreeIter iter;
-
-					if (!store.GetIter (out iter, path))
+					if (!store.GetIter (out TreeIter iter, path))
 						continue;
 
-					BreakEvent bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
+					var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
 					if (!bp.Enabled) {
 						enable = true;
 						break;
@@ -243,12 +248,10 @@ namespace MonoDevelop.Debugger
 				}
 
 				foreach (var path in tree.Selection.GetSelectedRows ()) {
-					TreeIter iter;
-
-					if (!store.GetIter (out iter, path))
+					if (!store.GetIter (out TreeIter iter, path))
 						continue;
 
-					BreakEvent bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
+					var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
 					bp.Enabled = enable;
 
 					store.SetValue (iter, (int) Columns.Icon, GetIconId(bp));
@@ -263,15 +266,12 @@ namespace MonoDevelop.Debugger
 		protected void OnBpJumpTo ()
 		{
 			var selected = tree.Selection.GetSelectedRows ();
-			TreeIter iter;
 
-			if (selected.Length == 1 && store.GetIter (out iter, selected[0])) {
+			if (selected.Length == 1 && store.GetIter (out TreeIter iter, selected[0])) {
 				var be = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
-				var bp = be as Breakpoint;
-				if (bp != null) {
-					if (!string.IsNullOrEmpty (bp.FileName))
-						IdeApp.Workbench.OpenDocument (bp.FileName, null, bp.Line, 1);
-				}
+
+				if (be is Breakpoint bp && !string.IsNullOrEmpty (bp.FileName))
+					IdeApp.Workbench.OpenDocument (bp.FileName, null, bp.Line, 1).Ignore ();
 			}
 		}
 
@@ -288,14 +288,11 @@ namespace MonoDevelop.Debugger
 				Array.Sort (selected, new TreePathComparer (true));
 
 				foreach (var path in selected) {
-					TreeIter iter;
-
-					if (!store.GetIter (out iter, path))
+					if (!store.GetIter (out TreeIter iter, path))
 						continue;
 
 					var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
-					lock (breakpoints)
-						breakpoints.Remove (bp);
+					breakpoints.Remove (bp);
 					deleted = true;
 				}
 			} finally {
@@ -308,9 +305,7 @@ namespace MonoDevelop.Debugger
 		[CommandUpdateHandler (EditCommands.SelectAll)]
 		protected void UpdateSelectAll (CommandInfo cmd)
 		{
-			TreeIter iter;
-
-			cmd.Enabled = store.GetIterFirst (out iter);
+			cmd.Enabled = store.GetIterFirst (out TreeIter iter);
 		}
 
 		[CommandHandler (EditCommands.SelectAll)]
@@ -352,12 +347,10 @@ namespace MonoDevelop.Debugger
 			bool enable = false;
 
 			foreach (var path in tree.Selection.GetSelectedRows ()) {
-				TreeIter iter;
-
-				if (!store.GetIter (out iter, path))
+				if (!store.GetIter (out TreeIter iter, path))
 					continue;
 
-				BreakEvent bp = (BreakEvent)store.GetValue (iter, (int)Columns.Breakpoint);
+				var bp = (BreakEvent)store.GetValue (iter, (int)Columns.Breakpoint);
 				if (!bp.Enabled) {
 					enable = true;
 					break;
@@ -402,12 +395,12 @@ namespace MonoDevelop.Debugger
 		void ItemToggled (object o, ToggledArgs args)
 		{
 			breakpoints.Changed -= OnBreakpointChanged;
-			
+
 			try {
 				TreeIter iter;
 
 				if (store.GetIterFromString (out iter, args.Path)) {
-					BreakEvent bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
+					var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
 					bp.Enabled = !bp.Enabled;
 
 					store.SetValue (iter, (int) Columns.Icon, GetIconId(bp));
@@ -427,33 +420,30 @@ namespace MonoDevelop.Debugger
 			
 			store.Clear ();
 			if (breakpoints != null) {	
-				lock (breakpoints) {
-					foreach (BreakEvent be in breakpoints.GetBreakevents ()) {
-						if (be.NonUserBreakpoint)
-							continue;
-						string hitCount = be.HitCountMode != HitCountMode.None ? be.CurrentHitCount.ToString () : "";
-						string traceExp = (be.HitAction & HitAction.PrintExpression) != HitAction.None ? be.TraceExpression : "";
-						string traceVal = (be.HitAction & HitAction.PrintExpression) != HitAction.None ? be.LastTraceValue : "";
-						string name;
+				foreach (BreakEvent be in breakpoints) {
+					if (be.NonUserBreakpoint)
+						continue;
 
-						var fb = be as FunctionBreakpoint;
-						var bp = be as Breakpoint;
-						var cp = be as Catchpoint;
-						if (fb != null) {
-							if (fb.ParamTypes != null)
-								name = fb.FunctionName + "(" + string.Join (", ", fb.ParamTypes) + ")";
-							else
-								name = fb.FunctionName;
-						} else if (bp != null) {
-							name = String.Format ("{0}:{1},{2}", bp.FileName, bp.Line, bp.Column);
-						} else if (cp != null) {
-							name = cp.ExceptionName;
-						} else {
-							name = "";
-						}
+					string hitCount = be.HitCountMode != HitCountMode.None ? be.CurrentHitCount.ToString () : "";
+					string traceExp = (be.HitAction & HitAction.PrintExpression) != HitAction.None ? be.TraceExpression : "";
+					string traceVal = (be.HitAction & HitAction.PrintExpression) != HitAction.None ? be.LastTraceValue : "";
+					string name, condition = null;
 
-						store.AppendValues (GetIconId (be), be.Enabled, name, be, bp != null ? bp.ConditionExpression : null, traceExp, hitCount, traceVal);
+					if (be is FunctionBreakpoint fb) {
+						if (fb.ParamTypes != null)
+							name = fb.FunctionName + "(" + string.Join (", ", fb.ParamTypes) + ")";
+						else
+							name = fb.FunctionName;
+					} else if (be is Breakpoint bp) {
+						name = string.Format ("{0}:{1},{2}", bp.FileName, bp.Line, bp.Column);
+						condition = bp.ConditionExpression;
+					} else if (be is Catchpoint cp) {
+						name = cp.ExceptionName;
+					} else {
+						name = "";
 					}
+
+					store.AppendValues (GetIconId (be), be.Enabled, name, be, condition, traceExp, hitCount, traceVal);
 				}
 			}
 
@@ -463,37 +453,35 @@ namespace MonoDevelop.Debugger
 		void OnBreakpointUpdated (object s, BreakpointEventArgs args)
 		{
 			Runtime.RunInMainThread (() => {
-				TreeIter it;
-
-				if (!store.GetIterFirst (out it))
+				if (!store.GetIterFirst (out TreeIter iter))
 					return;
 
 				do {
-					var bp = (BreakEvent) store.GetValue (it, (int) Columns.Breakpoint);
+					var bp = (BreakEvent) store.GetValue (iter, (int) Columns.Breakpoint);
 					if (bp == args.Breakpoint) {
 						string hitCount = bp.HitCountMode != HitCountMode.None ? bp.CurrentHitCount.ToString () : "";
 						string traceVal = (bp.HitAction & HitAction.PrintExpression) != HitAction.None ? bp.LastTraceValue : "";
-						store.SetValue (it, (int) Columns.HitCount, hitCount);
-						store.SetValue (it, (int) Columns.LastTrace, traceVal);
+						store.SetValue (iter, (int) Columns.HitCount, hitCount);
+						store.SetValue (iter, (int) Columns.LastTrace, traceVal);
 						break;
 					}
-				} while (store.IterNext (ref it));
-			});
+				} while (store.IterNext (ref iter));
+			}).Ignore ();
 		}
 		
 		protected void OnBreakpointAdded (object o, EventArgs args)
 		{
-			Runtime.RunInMainThread ((System.Action)UpdateDisplay);
+			Runtime.RunInMainThread ((System.Action) UpdateDisplay).Ignore ();
 		}
 		
 		protected void OnBreakpointRemoved (object o, EventArgs args)
 		{
-			Runtime.RunInMainThread ((System.Action)UpdateDisplay);
+			Runtime.RunInMainThread ((System.Action) UpdateDisplay).Ignore ();
 		}
 		
 		protected void OnBreakpointChanged (object o, EventArgs args)
 		{
-			Runtime.RunInMainThread ((System.Action)UpdateDisplay);
+			Runtime.RunInMainThread ((System.Action) UpdateDisplay).Ignore ();
 		}
 		
 		void OnDebuggerStatusCheck (object s, EventArgs a)

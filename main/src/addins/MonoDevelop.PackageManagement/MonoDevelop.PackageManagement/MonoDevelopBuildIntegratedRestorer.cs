@@ -30,30 +30,44 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MonoDevelop.Core;
+using MonoDevelop.Projects;
+using NuGet.CommandLine;
 using NuGet.Commands;
 using NuGet.Common;
 using NuGet.Configuration;
 using NuGet.LibraryModel;
 using NuGet.PackageManagement;
 using NuGet.Packaging;
+using NuGet.Packaging.Core;
 using NuGet.ProjectManagement;
 using NuGet.ProjectManagement.Projects;
 using NuGet.Protocol.Core.Types;
-using MonoDevelop.Ide;
 
 namespace MonoDevelop.PackageManagement
 {
-	internal class MonoDevelopBuildIntegratedRestorer
+	internal class MonoDevelopBuildIntegratedRestorer : IMonoDevelopBuildIntegratedRestorer
 	{
 		IPackageManagementEvents packageManagementEvents;
 		List<SourceRepository> sourceRepositories;
 		ISettings settings;
-		ExternalProjectReferenceContext context;
+		IMonoDevelopSolutionManager solutionManager;
+		DependencyGraphCacheContext context;
+		PackageManagementLogger logger;
+
+		public MonoDevelopBuildIntegratedRestorer (IMonoDevelopSolutionManager solutionManager)
+			: this (
+				solutionManager,
+				solutionManager.CreateSourceRepositoryProvider (),
+				solutionManager.Settings)
+		{
+		}
 
 		public MonoDevelopBuildIntegratedRestorer (
+			IMonoDevelopSolutionManager solutionManager,
 			ISourceRepositoryProvider repositoryProvider,
 			ISettings settings)
 		{
+			this.solutionManager = solutionManager;
 			sourceRepositories = repositoryProvider.GetRepositories ().ToList ();
 			this.settings = settings;
 
@@ -62,26 +76,79 @@ namespace MonoDevelop.PackageManagement
 			context = CreateRestoreContext ();
 		}
 
+		public bool LockFileChanged { get; private set; }
+
 		public async Task RestorePackages (
 			IEnumerable<BuildIntegratedNuGetProject> projects,
 			CancellationToken cancellationToken)
+		{
+			var spec = await MonoDevelopDependencyGraphRestoreUtility.GetSolutionRestoreSpec (solutionManager, projects, context, cancellationToken);
+
+			var now = DateTime.UtcNow;
+			Action<SourceCacheContext> cacheContextModifier = c => c.MaxAge = now;
+			bool forceRestore = false;
+			bool isRestoreOriginalAction = true;
+
+			var restoreSummaries = await DependencyGraphRestoreUtility.RestoreAsync (
+				solutionManager,
+				spec,
+				context,
+				new RestoreCommandProvidersCache (),
+				cacheContextModifier,
+				sourceRepositories,
+				Guid.NewGuid (),
+				forceRestore,
+				isRestoreOriginalAction,
+				context.Logger,
+				cancellationToken);
+
+			bool restoreFailed = false;
+			int noOpRestoreCount = 0;
+			foreach (RestoreSummary restoreSummary in restoreSummaries) {
+				if (restoreSummary.Success && restoreSummary.NoOpRestore) {
+					noOpRestoreCount++;
+				} else if (!restoreSummary.Success) {
+					restoreFailed = true;
+				}
+			}
+
+			if (noOpRestoreCount == projects.Count ()) {
+				// Nothing to do.
+				return;
+			}
+
+			if (restoreFailed) {
+				logger.LogInformation (string.Empty);
+				logger.LogSavedErrors ();
+				throw new ApplicationException (GettextCatalog.GetString ("Restore failed."));
+			}
+
+			await OnProjectsRestored (projects);
+		}
+
+		async Task OnProjectsRestored (IEnumerable<BuildIntegratedNuGetProject> projects)
 		{
 			var changedLocks = new List<FilePath> ();
 			var affectedProjects = new List<BuildIntegratedNuGetProject> ();
 
 			foreach (BuildIntegratedNuGetProject project in projects) {
-				var changedLock = await RestorePackagesInternal (project, cancellationToken);
-				if (changedLock != null) {
+				DotNetProject projectToReload = GetProjectToReloadAfterRestore (project);
+				string changedLock = await project.GetAssetsFilePathAsync ();
+				if (projectToReload != null) {
+					await ReloadProject (projectToReload, changedLock);
+				} else if (changedLock != null) {
 					changedLocks.Add (changedLock);
 					affectedProjects.Add (project);
 				}
 			}
 
 			if (changedLocks.Count > 0) {
+				LockFileChanged = true;
 				await Runtime.RunInMainThread (() => {
-					FileService.NotifyFilesChanged (changedLocks);
 					foreach (var project in affectedProjects) {
-						NotifyProjectReferencesChanged (project);
+						// Restoring the entire solution so do not refresh references for
+						// transitive  project references since they should be refreshed anyway.
+						NotifyProjectReferencesChanged (project, includeTransitiveProjectReferences: false);
 					}
 				});
 			}
@@ -91,12 +158,20 @@ namespace MonoDevelop.PackageManagement
 			BuildIntegratedNuGetProject project,
 			CancellationToken cancellationToken)
 		{
+			DotNetProject projectToReload = GetProjectToReloadAfterRestore (project);
+
 			var changedLock = await RestorePackagesInternal (project, cancellationToken);
 
-			if (changedLock != null) {
+			if (projectToReload != null) {
+				// Need to ensure transitive project references are refreshed if only the single
+				// project is reloaded since they will still be out of date.
+				await ReloadProject (projectToReload, changedLock, refreshTransitiveReferences: true);
+			} else if (changedLock != null) {
+				LockFileChanged = true;
 				await Runtime.RunInMainThread (() => {
-					FileService.NotifyFileChanged (changedLock);
-					NotifyProjectReferencesChanged (project);
+					// Restoring a single project so ensure references are refreshed for
+					// transitive project references.
+					NotifyProjectReferencesChanged (project, includeTransitiveProjectReferences: true);
 				});
 			}
 		}
@@ -106,14 +181,21 @@ namespace MonoDevelop.PackageManagement
 			BuildIntegratedNuGetProject project,
 			CancellationToken cancellationToken)
 		{
-			var nugetPaths = NuGetPathContext.Create (settings);
+			var now = DateTime.UtcNow;
+			Action<SourceCacheContext> cacheContextModifier = c => c.MaxAge = now;
 
-			RestoreResult restoreResult = await BuildIntegratedRestoreUtility.RestoreAsync (
+			var spec = await MonoDevelopDependencyGraphRestoreUtility.GetSolutionRestoreSpec (solutionManager, project, context, cancellationToken);
+			context.AddToCache (spec);
+
+			RestoreResult restoreResult = await DependencyGraphRestoreUtility.RestoreProjectAsync (
+				solutionManager,
 				project,
 				context,
-				sourceRepositories, 
-				nugetPaths.UserPackageFolder,
-				nugetPaths.FallbackPackageFolders,
+				new RestoreCommandProvidersCache (),
+				cacheContextModifier,
+				sourceRepositories,
+				Guid.NewGuid (),
+				context.Logger,
 				cancellationToken);
 
 			if (restoreResult.Success) {
@@ -126,60 +208,62 @@ namespace MonoDevelop.PackageManagement
 			return null;
 		}
 
-		static void NotifyProjectReferencesChanged (BuildIntegratedNuGetProject project)
+		static void NotifyProjectReferencesChanged (
+			BuildIntegratedNuGetProject project,
+			bool includeTransitiveProjectReferences)
 		{
-			var bips = project as BuildIntegratedProjectSystem;
-			if (bips != null) {
-				bips.Project.RefreshProjectBuilder ();
-				bips.Project.DotNetProject.NotifyModified ("References");
+			var buildIntegratedProject = project as IBuildIntegratedNuGetProject;
+			if (buildIntegratedProject != null) {
+				buildIntegratedProject.NotifyProjectReferencesChanged (includeTransitiveProjectReferences);
 			}
 		}
 
 		ILogger CreateLogger ()
 		{
-			return new PackageManagementLogger (packageManagementEvents);
+			logger = new PackageManagementLogger (packageManagementEvents);
+			logger.SaveErrors = true;
+			return logger;
 		}
 
-		ExternalProjectReferenceContext CreateRestoreContext ()
+		DependencyGraphCacheContext CreateRestoreContext ()
 		{
-			return new ExternalProjectReferenceContext (CreateLogger ());
+			return new DependencyGraphCacheContext (CreateLogger (), settings);
 		}
 
 		void ReportRestoreError (RestoreResult restoreResult)
 		{
+			logger.LogInformation (string.Empty);
+
 			foreach (LibraryRange libraryRange in restoreResult.GetAllUnresolved ()) {
 				packageManagementEvents.OnPackageOperationMessageLogged (
-					NuGet.MessageLevel.Info,
+					MessageLevel.Info,
 					GettextCatalog.GetString ("Restore failed for '{0}'."),
 					libraryRange.ToString ());
 			}
+			logger.LogSavedErrors ();
 			throw new ApplicationException (GettextCatalog.GetString ("Restore failed."));
 		}
 
-		public Task<bool> IsRestoreRequired (BuildIntegratedNuGetProject project)
+		DotNetProject GetProjectToReloadAfterRestore (BuildIntegratedNuGetProject project)
 		{
-			var nugetPaths = NuGetPathContext.Create (settings);
-			var packageFolderPaths = new List<string>();
-			packageFolderPaths.Add (nugetPaths.UserPackageFolder);
-			packageFolderPaths.AddRange (nugetPaths.FallbackPackageFolders);
+			var dotNetCoreNuGetProject = project as DotNetCoreNuGetProject;
+			if (dotNetCoreNuGetProject?.ProjectRequiresReloadAfterRestore () == true)
+				return dotNetCoreNuGetProject.DotNetProject;
 
-			var projects = new BuildIntegratedNuGetProject[] { project };
-			return BuildIntegratedRestoreUtility.IsRestoreRequired (projects, packageFolderPaths, context);
+			return null;
 		}
 
-		public async Task<IEnumerable<BuildIntegratedNuGetProject>> GetProjectsRequiringRestore (
-			IEnumerable<BuildIntegratedNuGetProject> projects)
+		Task ReloadProject (DotNetProject projectToReload, string changedLock, bool refreshTransitiveReferences = false)
 		{
-			var projectsToBeRestored = new List<BuildIntegratedNuGetProject> ();
-
-			foreach (BuildIntegratedNuGetProject project in projects) {
-				bool restoreRequired = await IsRestoreRequired (project);
-				if (restoreRequired) {
-					projectsToBeRestored.Add (project);
+			return Runtime.RunInMainThread (async () => {
+				if (changedLock != null) {
+					LockFileChanged = true;
 				}
-			}
+				await projectToReload.ReevaluateProject (new ProgressMonitor ());
 
-			return projectsToBeRestored;
+				if (refreshTransitiveReferences)
+					projectToReload.DotNetCoreNotifyReferencesChanged (transitiveOnly: true);
+			});
 		}
 	}
 }

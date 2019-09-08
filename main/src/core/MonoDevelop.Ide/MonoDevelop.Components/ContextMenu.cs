@@ -81,11 +81,7 @@ namespace MonoDevelop.Components
 		{
 			#if MAC
 			if (Platform.IsMac) {
-				int tx, ty;
-
-				// x, y are in gtk coordinates, so they need to be translated for Cocoa.
-				parent.TranslateCoordinates (parent.Toplevel, x, y, out tx, out ty);
-				ContextMenuExtensionsMac.ShowContextMenu (parent, tx, ty, this, closeHandler, selectFirstItem);
+				ContextMenuExtensionsMac.ShowContextMenu (parent, x, y, this, closeHandler, selectFirstItem);
 				return;
 			}
 			#endif
@@ -93,8 +89,27 @@ namespace MonoDevelop.Components
 			ContextMenuExtensionsGtk.ShowContextMenu (parent, x, y, this, closeHandler, selectFirstItem);
 		}
 
+		internal void Show (Xwt.Widget parent, int x, int y, Action closeHandler, bool selectFirstItem = false)
+		{
+			if (parent.Surface.NativeWidget is Gtk.Widget widget) {
+				Show (widget, x, y, closeHandler, selectFirstItem);
+				return;
+			}
+			#if MAC
+			if (parent.Surface.NativeWidget is AppKit.NSView view) {
+				ContextMenuExtensionsMac.ShowContextMenu ((AppKit.NSView)view, x, y, this, closeHandler, selectFirstItem);
+				return;
+			}
+			#endif
+			throw new NotSupportedException ();
+		}
 
 		public void Show (Gtk.Widget parent, int x, int y)
+		{
+			Show (parent, x, y, null);
+		}
+
+		internal void Show (Xwt.Widget parent, int x, int y)
 		{
 			Show (parent, x, y, null);
 		}

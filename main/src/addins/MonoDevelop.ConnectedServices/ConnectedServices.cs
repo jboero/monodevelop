@@ -15,7 +15,7 @@ namespace MonoDevelop.ConnectedServices
 	/// <summary>
 	/// Defines a set of constants for the Connected Services addin
 	/// </summary>
-	static class ConnectedServices
+	public static class ConnectedServices
 	{
 		/// <summary>
 		/// The extension point for service providers
@@ -25,7 +25,7 @@ namespace MonoDevelop.ConnectedServices
 		/// <summary>
 		/// The name of the node to display in the solution tree
 		/// </summary>
-		internal const string SolutionTreeNodeName = "Connected Services";
+		internal static string SolutionTreeNodeName = GettextCatalog.GetString ("Connected Services");
 
 		/// <summary>
 		/// The name of the folder that is used to store state about each connected service
@@ -41,7 +41,7 @@ namespace MonoDevelop.ConnectedServices
 		/// <summary>
 		/// The name of the Getting Started section that is displayed to the user
 		/// </summary>
-		internal const string GettingStartedSectionDisplayName = "Getting Started";
+		internal static string GettingStartedSectionDisplayName = GettextCatalog.GetString ("Getting Started");
 
 		/// <summary>
 		/// Gets the list of IConnectedService instances that support project
@@ -64,22 +64,49 @@ namespace MonoDevelop.ConnectedServices
 		/// <summary>
 		/// Displays the service details tab for the given service in the given project
 		/// </summary>
-		public static void OpenServicesTab(DotNetProject project, string serviceId = null)
+		internal static async Task OpenServicesTab(DotNetProject project, string serviceId)
 		{
+			if (project == null)
+				project = IdeApp.ProjectOperations.CurrentSelectedProject as DotNetProject;
+
 			ConnectedServicesViewContent servicesView = null;
 
-			foreach (var view in IdeApp.Workbench.Documents) {
-				servicesView = view.PrimaryView.GetContent<ConnectedServicesViewContent> ();
-				if (servicesView != null && servicesView.Project == project) {
+			foreach (var document in IdeApp.Workbench.Documents) {
+				servicesView = document.GetContent<ConnectedServicesViewContent> ();
+				if (servicesView != null && servicesView.Owner == project) {
 					servicesView.UpdateContent(serviceId);
-					view.Window.SelectWindow ();
+					document.Select ();
 					return;
 				}
 			}
 
 			servicesView = new ConnectedServicesViewContent (project);
+			await servicesView.Initialize (null);
+			servicesView.Owner = project;
 			servicesView.UpdateContent (serviceId);
-			IdeApp.Workbench.OpenDocument (servicesView, true);
+			await IdeApp.Workbench.OpenDocument (servicesView, true);
+		}
+
+		/// <summary>
+		/// Displays the service details tab for the given service
+		/// </summary>
+		public static Task OpenServicesTab (this IConnectedService service)
+		{
+			if (service == null)
+				throw new ArgumentNullException (nameof (service));
+
+			return Runtime.RunInMainThread (() => OpenServicesTab (service.Project, service.Id));
+		}
+
+		/// <summary>
+		/// Displays the services gallery tab for the given project
+		/// </summary>
+		public static Task OpenServicesTab (this DotNetProject project)
+		{
+			if (project == null)
+				throw new ArgumentNullException (nameof (project));
+
+			return Runtime.RunInMainThread (() => OpenServicesTab (project, null));
 		}
 
 		/// <summary>
@@ -104,14 +131,14 @@ namespace MonoDevelop.ConnectedServices
 		/// </summary>
 		static void EnsureServiceDetailTabIsClosed (DotNetProject project, string serviceId)
 		{
-			Ide.Gui.Document view = null;
-			var servicesView = LocateServiceView(project, out view);
+			Ide.Gui.Document document = null;
+			var servicesView = LocateServiceView(project, out document);
 			if (servicesView != null) {
-				var docObject = view.GetDocumentObject ();
+				var docObject = servicesView.GetNodeObjext ();
 				var serviceNode = docObject as ConnectedServiceNode;
 				if (serviceNode != null && serviceNode.Id == serviceId) {
 					servicesView.UpdateContent (null);
-					view.Window.SelectWindow ();
+					document.Select ();
 				}
 			}
 		}
@@ -131,10 +158,10 @@ namespace MonoDevelop.ConnectedServices
 		internal static ConnectedServicesViewContent LocateServiceView (DotNetProject project, out Ide.Gui.Document documentView)
 		{
 			documentView = null;
-			foreach (var view in IdeApp.Workbench.Documents) {
-				var servicesView = view.PrimaryView.GetContent<ConnectedServicesViewContent> ();
-				if (servicesView != null && servicesView.Project == project) {
-					documentView = view;
+			foreach (var document in IdeApp.Workbench.Documents) {
+				var servicesView = document.GetContent<ConnectedServicesViewContent> ();
+				if (servicesView != null && servicesView.Owner == project) {
+					documentView = document;
 					return servicesView;
 				}
 			}
@@ -175,7 +202,7 @@ namespace MonoDevelop.ConnectedServices
 					if (service.Dependencies [i].Category == ConnectedServiceDependency.PackageDependencyCategory) {
 						if (i > 0)
 							sb.AppendLine ();
-						sb.Append ("   • " + service.Dependencies [i].DisplayName);
+						sb.Append ("   • ").Append (service.Dependencies [i].DisplayName);
 					}
 				}
 				sb.Append ("\n\n");

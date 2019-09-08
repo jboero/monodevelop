@@ -85,6 +85,7 @@ namespace MonoDevelop.Ide.FindInFiles
 			public TextReader Reader;
 			public List<SearchResult> Results;
 			public string Text { get; internal set; }
+			public System.Text.Encoding Encoding { get; internal set; }
 
 			public FileSearchResult (FileProvider provider, TextReader reader, List<SearchResult> results)
 			{
@@ -98,7 +99,7 @@ namespace MonoDevelop.Ide.FindInFiles
 		public IEnumerable<SearchResult> FindAll (Scope scope, ProgressMonitor monitor, string pattern, string replacePattern, FilterOptions filter, CancellationToken token)
 		{
 			if (filter.RegexSearch) {
-				RegexOptions regexOptions = RegexOptions.Compiled;
+				RegexOptions regexOptions = RegexOptions.Compiled | RegexOptions.Multiline;
 				if (!filter.CaseSensitive)
 					regexOptions |= RegexOptions.IgnoreCase;
 				regex = new Regex (pattern, regexOptions);
@@ -111,19 +112,19 @@ namespace MonoDevelop.Ide.FindInFiles
 				int totalWork = scope.GetTotalWork (filter);
 				int step = Math.Max (1, totalWork / 50);
 
-				var contents = new List<FileSearchResult>();
+				var contents = new List<FileSearchResult> ();
 				var filenames = new List<string> ();
 				foreach (var provider in scope.GetFiles (monitor, filter)) {
 					if (token.IsCancellationRequested)
 						return Enumerable.Empty<SearchResult> ();
 					try {
 						searchedFilesCount++;
-						contents.Add(new FileSearchResult (provider, null, new List<SearchResult> ()));
+						contents.Add (new FileSearchResult (provider, null, new List<SearchResult> ()));
 
 						filenames.Add (Path.GetFullPath (provider.FileName));
 
 						if (searchedFilesCount % step == 0)
-							monitor.Step (2); 
+							monitor.Step (2);
 					} catch (FileNotFoundException) {
 						MessageService.ShowError (string.Format (GettextCatalog.GetString ("File {0} not found.")), provider.FileName);
 					}
@@ -154,7 +155,7 @@ namespace MonoDevelop.Ide.FindInFiles
 					idx++;
 				}
 
-				var results = new List<SearchResult>();
+				var results = new List<SearchResult> ();
 				if (filter.RegexSearch && replacePattern != null) {
 					foreach (var content in contents) {
 						if (token.IsCancellationRequested)
@@ -165,24 +166,25 @@ namespace MonoDevelop.Ide.FindInFiles
 					var options = new ParallelOptions ();
 					options.MaxDegreeOfParallelism = 4;
 					options.CancellationToken = token;
-					Parallel.ForEach (contents, options, content => { 
+					Parallel.ForEach (contents, options, content => {
 						if (token.IsCancellationRequested)
 							return;
 						try {
 							Interlocked.Increment (ref searchedFilesCount);
 							if (replacePattern != null) {
 								content.Text = content.Reader.ReadToEnd ();
+								content.Encoding = content.Provider.CurrentEncoding;
 								content.Reader = new StringReader (content.Text);
 							}
-							content.Results.AddRange(FindAll (monitor, content.Provider, content.Reader, pattern, replacePattern, filter));
+							content.Results.AddRange (FindAll (monitor, content.Provider, content.Reader, pattern, replacePattern, filter));
 							lock (results) {
 								results.AddRange (content.Results);
 							}
 							FoundMatchesCount += content.Results.Count;
 							if (searchedFilesCount % step == 0)
-								monitor.Step (1); 
+								monitor.Step (1);
 						} catch (Exception e) {
-							LoggingService.LogError("Exception during search.", e);
+							LoggingService.LogError ("Exception during search.", e);
 						}
 					});
 
@@ -193,17 +195,19 @@ namespace MonoDevelop.Ide.FindInFiles
 							if (content.Results.Count == 0)
 								continue;
 							try {
-								content.Provider.BeginReplace (content.Text);
+								content.Provider.BeginReplace (content.Text, content.Encoding);
 								Replace (content.Provider, content.Results, replacePattern);
 								content.Provider.EndReplace ();
 							} catch (Exception e) {
-								LoggingService.LogError("Exception during replace.", e);
+								LoggingService.LogError ("Exception during replace.", e);
 							}
 						}
 					}
 				}
 
 				return results;
+			} catch (OperationCanceledException) {
+				return Enumerable.Empty<SearchResult> ();
 			} finally {
 				monitor.EndTask ();
 				IsRunning = false;
@@ -248,14 +252,14 @@ namespace MonoDevelop.Ide.FindInFiles
 						continue;
 					matches.Add(match);
 				}
-				provider.BeginReplace (content);
+				provider.BeginReplace (content, provider.CurrentEncoding);
 				int delta = 0;
 				for (int i = 0; !monitor.CancellationToken.IsCancellationRequested && i < matches.Count; i++) {
 					Match match = matches[i];
 					if (!filter.WholeWordsOnly || FilterOptions.IsWholeWordAt (content, match.Index, match.Length)) {
 						string replacement = match.Result (replacePattern);
 						results.Add (new SearchResult (provider, match.Index + delta, replacement.Length));
-						provider.Replace (match.Index + delta, match.Length, replacement);
+						provider.Replace (match.Index + delta, match.Index, match.Length, replacement);
 						delta += replacement.Length - match.Length;
 					}
 				}
@@ -351,7 +355,7 @@ namespace MonoDevelop.Ide.FindInFiles
 		{
 			int delta = 0;
 			foreach (var sr in searchResult) {
-				provider.Replace (sr.Offset + delta, sr.Length, replacePattern);
+				provider.Replace (sr.Offset + delta, sr.Offset, sr.Length, replacePattern);
 				delta += replacePattern.Length - sr.Length;
 			}
 		}

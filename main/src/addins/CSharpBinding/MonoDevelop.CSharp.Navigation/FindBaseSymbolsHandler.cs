@@ -25,27 +25,31 @@
 // THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.FindInFiles;
 using MonoDevelop.Ide.TypeSystem;
 using MonoDevelop.Core;
+using MonoDevelop.Core.ProgressMonitoring;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Refactoring;
-using System.Threading.Tasks;
-using System.Collections.Generic;
 using ICSharpCode.NRefactory6.CSharp;
 
 namespace MonoDevelop.CSharp.Navigation
 {
 	class FindBaseSymbolsHandler : CommandHandler
 	{
-		void FindSymbols (ISymbol sym)
+		Task FindSymbols (ISymbol sym, CancellationTokenSource cancellationTokenSource)
 		{
 			if (sym == null)
-				return;
-			Task.Run (delegate {
-				using (var monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true)) {
+				return Task.FromResult (0);
+			return Task.Run (delegate {
+				var searchMonitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
+				using (var monitor = searchMonitor.WithCancellationSource (cancellationTokenSource)) {
 					var foundSymbol = sym.OverriddenMember ();
 					while (foundSymbol != null) {
 						foreach (var loc in foundSymbol.Locations) {
@@ -55,7 +59,7 @@ namespace MonoDevelop.CSharp.Navigation
 							if (loc.SourceTree == null)
 								continue;
 							
-							monitor.ReportResult (new MemberReference (foundSymbol, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
+							searchMonitor.ReportResult (new MemberReference (foundSymbol, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
 						}
 						foundSymbol = foundSymbol.OverriddenMember ();
 					}
@@ -63,28 +67,40 @@ namespace MonoDevelop.CSharp.Navigation
 			});
 		}
 
-		internal static async Task<ISymbol> GetSymbolAtCaret (Ide.Gui.Document doc)
+		internal static async Task<ISymbol> GetSymbolAtCaret (Ide.Gui.Document doc, CancellationToken cancelToken = default)
 		{
-			if (doc == null)
+			if (doc == null || doc.Editor == null)
 				return null;
-			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc, doc.Editor);
+			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, doc.Editor, cancelToken);
 			return info.Symbol ?? info.DeclaredSymbol;
 		}
 
-		protected override async void Update (CommandInfo info)
+		protected override async Task UpdateAsync (CommandInfo info, CancellationToken cancelToken)
 		{
-			var sym = await GetSymbolAtCaret (IdeApp.Workbench.ActiveDocument);
+			var sym = await GetSymbolAtCaret (IdeApp.Workbench.ActiveDocument, cancelToken);
 			info.Enabled = sym != null;
 			info.Bypass = !info.Enabled;
 		}
 
 		protected override async void Run ()
 		{
-			var sym = await GetSymbolAtCaret (IdeApp.Workbench.ActiveDocument);
-			if (sym != null)
-				FindSymbols (sym);
-		}
+			using (var timer = Counters.NavigateTo.BeginTiming (new Counters.NavigationMetadata ("BaseSymbols"))) {
+				var sym = await GetSymbolAtCaret (IdeApp.Workbench.ActiveDocument);
+				if (sym == null) {
+					timer.Metadata.SetUserFault ();
+					return;
+				}
 
+				using (var source = new CancellationTokenSource ()) {
+					try {
+						await FindSymbols (sym, source);
+						timer.Metadata.SetResult (true);
+					} finally {
+						timer.Metadata.UpdateUserCancellation (source.Token);
+					}
+				}
+			}
+		}
 	}
 }
 

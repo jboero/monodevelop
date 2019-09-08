@@ -23,72 +23,110 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-using System;
-using MonoDevelop.Ide.Editor.Extension;
-using MonoDevelop.Ide.Editor;
-using MonoDevelop.Ide.CodeCompletion;
-using Microsoft.CodeAnalysis.Options;
+
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Editor;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using Microsoft.CodeAnalysis.Text;
+using MonoDevelop.Core;
+using MonoDevelop.Ide;
+using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.Editor.Extension;
+using Roslyn.Utilities;
+using Microsoft.CodeAnalysis.Options;
+using Microsoft.CodeAnalysis.Editor.Shared.Options;
 
 namespace MonoDevelop.CSharp.Formatting
 {
-	class CSharpTextPasteHandler : TextPasteHandler
+	partial class CSharpTextPasteHandler : TextPasteHandler
 	{
-		readonly ICSharpCode.NRefactory6.CSharp.ITextPasteHandler engine;
+		readonly OptionSet optionSet;
 		readonly CSharpTextEditorIndentation indent;
 
-		public CSharpTextPasteHandler (CSharpTextEditorIndentation indent, ICSharpCode.NRefactory6.CSharp.IStateMachineIndentEngine decoratedEngine, OptionSet formattingOptions)
+		public CSharpTextPasteHandler (CSharpTextEditorIndentation indent, OptionSet optionSet)
 		{
-			this.engine = new ICSharpCode.NRefactory6.CSharp.TextPasteIndentEngine (decoratedEngine, formattingOptions);
 			this.indent = indent;
+			this.optionSet = optionSet;
 		}
 
-		public override string FormatPlainText (int offset, string text, byte[] copyData)
+		public bool InUnitTestMode { get; internal set; }
+
+		public override string FormatPlainText (int offset, string text, byte [] copyData)
 		{
-			return engine.FormatPlainText (indent.Editor, offset, text, copyData);
+			if (indent.DocumentContext?.AnalysisDocument == null)
+				return text;
+			var sourceText = indent.Editor;
+			var syntaxRoot = indent.DocumentContext.AnalysisDocument.GetSyntaxRootAsync ().WaitAndGetResult ();
+			var token = syntaxRoot.FindTokenOnLeftOfPosition (offset);
+
+			if (copyData != null && copyData.Length == 1) {
+				var strategy = TextPasteUtils.Strategies [(PasteStrategy)copyData [0]];
+				text = strategy.Decode (text);
+			}
+			if (CSharpSyntaxFactsService.Instance.IsVerbatimStringLiteral (token)) {
+				int idx = text.IndexOf ('"');
+				if (idx > 0 && !token.Text.EndsWith ("\"", System.StringComparison.Ordinal))
+					return TextPasteUtils.VerbatimStringStrategy.Encode (text.Substring (0, idx)) + text.Substring (idx);
+				return TextPasteUtils.VerbatimStringStrategy.Encode (text);
+			}
+
+			if (CSharpSyntaxFactsService.Instance.IsStringLiteral (token)) {
+				int idx = text.IndexOf ('"');
+				if (idx > 0 && !token.Text.EndsWith ("\"", System.StringComparison.Ordinal))
+					return TextPasteUtils.StringLiteralStrategy.Encode (text.Substring (0, idx)) + text.Substring (idx);
+				return TextPasteUtils.StringLiteralStrategy.Encode (text);
+			}
+
+			return text;
 		}
 
-		public override byte[] GetCopyData (int offset, int length)
+		public override byte [] GetCopyData (int offset, int length)
 		{
-			return engine.GetCopyData (indent.Editor, new TextSpan (offset, length));
+			if (indent.DocumentContext?.AnalysisDocument == null)
+				return null;
+			var syntaxRoot = indent.DocumentContext.AnalysisDocument.GetSyntaxRootAsync ().WaitAndGetResult ();
+			var token = syntaxRoot.FindToken (offset);
+
+			if (token.SpanStart + 1 < offset && CSharpSyntaxFactsService.Instance.IsVerbatimStringLiteral (token))
+				return new [] { (byte)PasteStrategy.VerbatimString };
+
+			if (token.SpanStart < offset && CSharpSyntaxFactsService.Instance.IsStringLiteral (token)) 
+				return new [] { (byte)PasteStrategy.StringLiteral };
+
+			return null;
 		}
 
-		public override void PostFomatPastedText (int insertionOffset, int insertedChars)
+		public override async Task PostFomatPastedText (int offset, int length)
 		{
 			if (indent.Editor.Options.IndentStyle == IndentStyle.None ||
-				indent.Editor.Options.IndentStyle == IndentStyle.Auto)
+			  indent.Editor.Options.IndentStyle == IndentStyle.Auto)
 				return;
-			if (DefaultSourceEditorOptions.Instance.OnTheFlyFormatting) {
-				OnTheFlyFormatter.Format (indent.Editor, indent.DocumentContext, insertionOffset, insertionOffset + insertedChars);
+			var doc = indent.DocumentContext.AnalysisDocument;
+			if (doc == null)
 				return;
-			}
-			// Just correct the start line of the paste operation - the text is already indented.
-			var curLine = indent.Editor.GetLineByOffset (insertionOffset);
-			var curLineOffset = curLine.Offset;
-			indent.SafeUpdateIndentEngine (curLineOffset);
-			if (!indent.stateTracker.IsInsideOrdinaryCommentOrString) {
-				int pos = curLineOffset;
-				string curIndent = curLine.GetIndentation (indent.Editor);
-				int nlwsp = curIndent.Length;
+			var options = await doc.GetOptionsAsync ();
+			if (!options.GetOption (FeatureOnOffOptions.FormatOnPaste, doc.Project.Language))
+				return;
 
-				if (!indent.stateTracker.LineBeganInsideMultiLineComment || (nlwsp < curLine.LengthIncludingDelimiter && indent.Editor.GetCharAt (curLineOffset + nlwsp) == '*')) {
-					// Possibly replace the indent
-					indent.SafeUpdateIndentEngine (curLineOffset + curLine.Length);
-					string newIndent = indent.stateTracker.ThisLineIndent;
-					if (newIndent != curIndent) {
-						if (CompletionWindowManager.IsVisible) {
-							if (pos < CompletionWindowManager.CodeCompletionContext.TriggerOffset)
-								CompletionWindowManager.CodeCompletionContext.TriggerOffset -= nlwsp;
-						}
-						indent.Editor.ReplaceText (pos, nlwsp, newIndent);
-						//						textEditorData.Document.CommitLineUpdate (textEditorData.CaretLine);
-					}
-				}
+			var formattingService = doc.GetLanguageService<IEditorFormattingService> ();
+			if (formattingService == null || !formattingService.SupportsFormatOnPaste)
+				return;
+			var text = await doc.GetTextAsync ();
+			if (offset + length > text.Length) {
+				LoggingService.LogError ($"CSharpTextPasteHandler.PostFormatPastedText out of range {offset}/{length} in a document of length {text.Length} (editor length {indent.Editor.Length}).");
+				return;
 			}
+			var changes = await formattingService.GetFormattingChangesOnPasteAsync (doc, new TextSpan (offset, length), default (CancellationToken));
+			if (changes == null)
+				return;
+
+			indent.Editor.ApplyTextChanges (changes);
 			indent.Editor.FixVirtualIndentation ();
-
 		}
 
 	}
 }
-

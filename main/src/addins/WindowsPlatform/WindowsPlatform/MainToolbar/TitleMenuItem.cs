@@ -61,7 +61,7 @@ namespace WindowsPlatform.MainToolbar
 
 				// FIXME: Use proper keybinding text.
 				if (actionCommand.KeyBinding != null)
-					InputGestureText = actionCommand.KeyBinding.ToString ();
+					InputGestureText = KeyBindingManager.BindingToDisplayLabel (actionCommand.KeyBinding, true);
 				
 				try {
 					if (!actionCommand.Icon.IsNull)
@@ -242,7 +242,7 @@ namespace WindowsPlatform.MainToolbar
 
 		void OnMenuLinkClicked (object sender, RoutedEventArgs e)
 		{
-			DesktopService.ShowUrl (menuLinkEntry.Url);
+			IdeServices.DesktopService.ShowUrl (menuLinkEntry.Url);
 		}
 
 		void OnSubmenuClosing ()

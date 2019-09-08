@@ -1,4 +1,4 @@
-//
+﻿//
 // PropertyEditorCell.cs
 //
 // Author:
@@ -31,6 +31,8 @@ using System.ComponentModel;
 using Gdk;
 using Gtk;
 using MonoDevelop.Ide.Fonts;
+using MonoDevelop.Core;
+using MonoDevelop.Ide;
 
 namespace MonoDevelop.Components.PropertyGrid
 {
@@ -71,7 +73,7 @@ namespace MonoDevelop.Components.PropertyGrid
 			}
 			layout = new Pango.Layout (container.PangoContext);
 			layout.Width = -1;
-			layout.FontDescription = FontService.SansFont.CopyModified (Ide.Gui.Styles.FontScale11);
+			layout.FontDescription = IdeServices.FontService.SansFont.CopyModified (Ide.Gui.Styles.FontScale11);
 			
 			this.context = context;
 			Initialize ();
@@ -115,7 +117,14 @@ namespace MonoDevelop.Components.PropertyGrid
 		}
 		
 		public object Value {
-			get { return Instance != null ? Property.GetValue (Instance) : null; }
+			get {
+				try {
+					return Instance != null ? Property.GetValue (Instance) : null;
+				} catch (Exception e) {
+					LoggingService.LogInternalError ($"Bug 706892: {GetType ()}", e);
+				}
+				return null;
+			}
 		}
 		
 		protected virtual void Initialize ()

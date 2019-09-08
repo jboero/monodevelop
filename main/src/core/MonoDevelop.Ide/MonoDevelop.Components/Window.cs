@@ -33,17 +33,44 @@ namespace MonoDevelop.Components
 		{
 		}
 
-		Window (object widget)
+		internal protected Window (object window) : base (window)
 		{
-			if (widget == null)
-				throw new ArgumentNullException (nameof (widget));
-			
-			this.nativeWidget = widget;
-			cache.Add (widget, new WeakReference<Control> (this));
+		}
+
+		/// <summary>
+		/// If the wrapped (native) control is a GTK Window, this method will return
+		/// true, for when that window is realized (which will be true if the window
+		/// is visible, but can also be true even if it isn't). If the native control
+		/// is an NSWindow, this will return the value of the IsVisible property. 
+		/// </summary>
+		public bool IsRealized {
+			get {
+				if (nativeWidget is Gtk.Window)
+					return ((Gtk.Window)nativeWidget).IsRealized;
+#if MAC
+				if (nativeWidget is AppKit.NSWindow)
+					return ((AppKit.NSWindow)nativeWidget).IsVisible;
+#endif
+				return false;
+			}
+		}
+
+		public override bool HasFocus {
+			get {
+				if (nativeWidget is Gtk.Window)
+					return ((Gtk.Window)nativeWidget).HasToplevelFocus;
+#if MAC
+				if (nativeWidget is AppKit.NSWindow)
+					return nativeWidget == AppKit.NSApplication.SharedApplication.KeyWindow;
+#endif
+				return false;
+			}
 		}
 
 		public static implicit operator Gtk.Window (Window d)
 		{
+			if (d is XwtWindowControl)
+				return (XwtWindowControl)d;
 			return d?.GetNativeWidget<Gtk.Window> ();
 		}
 
@@ -61,6 +88,60 @@ namespace MonoDevelop.Components
 				};
 			}
 			return window;
+		}
+
+#if MAC
+		public static implicit operator AppKit.NSWindow (Window d)
+		{
+			if (d is XwtWindowControl)
+				return (XwtWindowControl)d;
+			if (d?.nativeWidget is Gtk.Window)
+				return Mac.GtkMacInterop.GetNSWindow (d.GetNativeWidget<Gtk.Window> ());
+			
+			return d?.GetNativeWidget<AppKit.NSWindow> ();
+		}
+
+		public static implicit operator Window (AppKit.NSWindow d)
+		{
+			if (d == null)
+				return null;
+			
+			return GetImplicit<Window, AppKit.NSWindow> (d) ?? new Window (d);
+		}
+#endif
+
+		public static implicit operator Window (Xwt.WindowFrame d)
+		{
+			if (d == null)
+				return null;
+
+			var window = GetImplicit<Window, Xwt.WindowFrame> (d);
+			if (window == null) {
+				window = new XwtWindowControl (d);
+				d.Disposed += delegate {
+					GC.SuppressFinalize (window);
+					window.Dispose (true);
+				};
+			}
+			return window;
+		}
+
+		public static implicit operator Xwt.WindowFrame (Window d)
+		{
+			if (d == null)
+				return null;
+
+			if (d is XwtWindowControl)
+				return d.GetNativeWidget<Xwt.WindowFrame> ();
+
+			if (d.nativeWidget is Gtk.Window)
+				return Xwt.Toolkit.Load (Xwt.ToolkitType.Gtk).WrapWindow ((Gtk.Window)d);
+#if MAC
+			if (d.nativeWidget is AppKit.NSWindow)
+				return Xwt.Toolkit.Load (Xwt.ToolkitType.XamMac).WrapWindow ((AppKit.NSWindow)d);
+#endif
+
+			throw new NotSupportedException ();
 		}
 	}
 }

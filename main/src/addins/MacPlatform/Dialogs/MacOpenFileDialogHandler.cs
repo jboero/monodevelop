@@ -1,4 +1,4 @@
-// 
+﻿// 
 // MacSelectFileDialogHandler.cs
 //  
 // Author:
@@ -30,167 +30,198 @@ using System.Linq;
 using System.Text;
 
 using AppKit;
-
+using Foundation;
 using MonoDevelop.Components;
 using MonoDevelop.Core;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.Extensions;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.MacInterop;
-
+using MonoDevelop.Projects.Text;
 
 namespace MonoDevelop.MacIntegration
 {
-	class MacOpenFileDialogHandler : IOpenFileDialogHandler
+	interface ICentrablePanel
 	{
+		bool CenterToParent { get; set; }
+	}
+
+	sealed class OpenPanel : NSOpenPanel, ICentrablePanel
+	{
+	    public bool CenterToParent { get; set; }
+
+		public OpenPanel ()
+		{
+		}
+
+		internal OpenPanel (IntPtr handle) : base (handle)
+		{
+		}
+
+		public override void Center ()
+		{
+			if (ParentWindow != null && CenterToParent) {
+				MessageService.CenterWindow (this, ParentWindow);
+			} else {
+				//default behaviour
+				base.Center ();
+			}
+		}
+	}
+
+	class MacOpenFileDialogHandler : MacCommonFileDialogHandler<OpenFileDialogData, MacOpenFileDialogHandler.SaveState>, IOpenFileDialogHandler
+	{
+		internal class SaveState
+		{
+			public SelectEncodingPopUpButton EncodingSelector { get; }
+			public NSPopUpButton ViewerSelector { get; }
+			public NSButton CloseSolutionButton { get; }
+			public List<FileViewer> CurrentViewers { get; }
+
+			public SaveState (SelectEncodingPopUpButton encodingSelector, NSPopUpButton viewerSelector, NSButton closeSolutionButton, List<FileViewer> currentViewers)
+			{
+				EncodingSelector = encodingSelector;
+				ViewerSelector = viewerSelector;
+				CloseSolutionButton = closeSolutionButton;
+				CurrentViewers = currentViewers;
+			}
+		}
+
+		protected override NSSavePanel OnCreatePanel (OpenFileDialogData data)
+		{
+			if (data.Action == FileChooserAction.Save) {
+				return new NSSavePanel ();
+			}
+
+			return new OpenPanel {
+				CanChooseDirectories = (data.Action & FileChooserAction.FolderFlags) != 0,
+				CanChooseFiles = (data.Action & FileChooserAction.FileFlags) != 0,
+			};
+		}
+
 		public bool Run (OpenFileDialogData data)
 		{
-			NSSavePanel panel = null;
-			
 			try {
-				if (data.Action == FileChooserAction.Save) {
-					panel = new NSSavePanel ();
-				} else {
-					panel = new NSOpenPanel {
-						CanChooseDirectories = (data.Action & FileChooserAction.FolderFlags) != 0,
-						CanChooseFiles = (data.Action & FileChooserAction.FileFlags) != 0,
+				using (var panel = CreatePanel (data, out var state)) {
+					bool pathAlreadySet = false;
+					panel.DidChangeToDirectory += (sender, e) => {
+						var directoryPath = e.NewDirectoryUrl?.AbsoluteString;
+						if (string.IsNullOrEmpty (directoryPath))
+							return;
+						var selectedPath = data.OnDirectoryChanged (this, directoryPath);
+						if (selectedPath.IsNull)
+							return;
+						data.SelectedFiles = new FilePath [] { selectedPath };
+						pathAlreadySet = true;
+
+						// We need to call Cancel on 1ms delay so it's executed after DidChangeToDirectory event handler is finished
+						// this is needed because it's possible that DidChangeToDirectory event is executed while dialog is opening
+						// in that case calling .Cancel() leaves dialog in weird state...
+						// Fun fact: DidChangeToDirectory event is called from Open on 10.12 but not on 10.13
+						System.Threading.Tasks.Task.Delay (1).ContinueWith (delegate { panel.Cancel (panel); }, Runtime.MainTaskScheduler);
 					};
-				}
 
-				MacSelectFileDialogHandler.SetCommonPanelProperties (data, panel);
-				
-				SelectEncodingPopUpButton encodingSelector = null;
-				NSPopUpButton viewerSelector = null;
-				NSButton closeSolutionButton = null;
-				
-				var box = new MDBox (LayoutDirection.Vertical, 2, 2);
-				
-				List<FileViewer> currentViewers = null;
-				var labels = new List<MDAlignment> ();
-				
-				if ((data.Action & FileChooserAction.FileFlags) != 0) {
-					var filterPopup = MacSelectFileDialogHandler.CreateFileFilterPopup (data, panel);
+					panel.SelectionDidChange += delegate {
+						var selection = MacSelectFileDialogHandler.GetSelectedFiles (panel);
+						bool slnViewerSelected = false;
+						if (state.ViewerSelector != null) {
+							slnViewerSelected = FillViewers (state.CurrentViewers, state.ViewerSelector, state.CloseSolutionButton, selection);
+							if (state.CloseSolutionButton != null) {
+								state.CloseSolutionButton.Enabled = slnViewerSelected;
+								state.CloseSolutionButton.State = slnViewerSelected ? NSCellStateValue.On : NSCellStateValue.Off;
+							}
+						}
+						if (state.EncodingSelector != null)
+							state.EncodingSelector.Enabled = !slnViewerSelected;
+					};
 
-					if (filterPopup != null) {
-						var filterLabel = new MDAlignment (new MDLabel (GettextCatalog.GetString ("Show files:")), true);
-						var filterBox = new MDBox (LayoutDirection.Horizontal, 2, 0) {
-							{ filterLabel },
-							{ new MDAlignment (filterPopup, true) { MinWidth = 200 } }
-						};
-						labels.Add (filterLabel);
-						box.Add (filterBox);
-					}
-
-					if (data.ShowEncodingSelector) {
-						encodingSelector = new SelectEncodingPopUpButton (data.Action != FileChooserAction.Save);
-						encodingSelector.SelectedEncodingId = data.Encoding != null ? data.Encoding.CodePage : 0;
-						
-						var encodingLabel = new MDAlignment (new MDLabel (GettextCatalog.GetString ("Encoding:")), true);
-						var encodingBox = new MDBox (LayoutDirection.Horizontal, 2, 0) {
-							{ encodingLabel },
-							{ new MDAlignment (encodingSelector, true) { MinWidth = 200 }  }
-						};
-						labels.Add (encodingLabel);
-						box.Add (encodingBox);
-					}
+					var parent = data.TransientFor ?? MessageService.RootWindow;
 					
-					if (data.ShowViewerSelector && panel is NSOpenPanel) {
-						currentViewers = new List<FileViewer> ();
-						viewerSelector = new NSPopUpButton {
-							Enabled = false,
-						};
-
-						if (encodingSelector != null || IdeApp.Workspace.IsOpen) {
-							viewerSelector.Activated += delegate {
-								var idx = viewerSelector.IndexOfSelectedItem;
-								bool workbenchViewerSelected = idx == 0 && currentViewers [0] == null;
-								if (encodingSelector != null)
-									encodingSelector.Enabled = !workbenchViewerSelected;
-								if (closeSolutionButton != null) {
-									if (closeSolutionButton.Hidden == workbenchViewerSelected) {
-										closeSolutionButton.Hidden = !workbenchViewerSelected;
-										CenterAccessoryView (box);
-									}
-								}
-							};
-						}
-						
-						var viewSelLabel = new MDLabel (GettextCatalog.GetString ("Open with:"));
-						var viewSelBox = new MDBox (LayoutDirection.Horizontal, 2, 0) {
-							{ viewSelLabel, true },
-							{ new MDAlignment (viewerSelector, true) { MinWidth = 200 }  }
-						};
-						
-						if (IdeApp.Workspace.IsOpen) {
-							closeSolutionButton = new NSButton {
-								Title = GettextCatalog.GetString ("Close current workspace"),
-								Hidden = true,
-								State = NSCellStateValue.On,
-							};
-							
-							closeSolutionButton.SetButtonType (NSButtonType.Switch);
-							closeSolutionButton.SizeToFit ();
-							
-							viewSelBox.Add (closeSolutionButton, true);
-						}
-						
-						box.Add (viewSelBox);
+					if (panel is ICentrablePanel centrablePanel) {
+						centrablePanel.CenterToParent = data.CenterToParent;
 					}
-				}
-				
-				if (labels.Count > 0) {
-					float w = labels.Max (l => l.MinWidth);
-					foreach (var l in labels) {
-						l.MinWidth = w;
-						l.XAlign = LayoutAlign.Begin;
+
+					if (panel.RunModal () == 0 && !pathAlreadySet) {
+						IdeServices.DesktopService.FocusWindow (parent);
+						return false;
 					}
-				}
-				
-				if (box.Count > 0) {
-					box.Layout ();
-					panel.AccessoryView = box.View;
-				}
-				
-				panel.SelectionDidChange += delegate {
-					var selection = MacSelectFileDialogHandler.GetSelectedFiles (panel);
-					bool slnViewerSelected = false;
-					if (viewerSelector != null) {
-						slnViewerSelected = FillViewers (currentViewers, viewerSelector, closeSolutionButton, selection);
-						if (closeSolutionButton != null)
-							closeSolutionButton.Hidden = !slnViewerSelected;
-						CenterAccessoryView (box);
-					} 
-					if (encodingSelector != null)
-						encodingSelector.Enabled = !slnViewerSelected;
-				};
+					if (!pathAlreadySet)
+						data.SelectedFiles = MacSelectFileDialogHandler.GetSelectedFiles (panel);
 
-				if (panel.RunModal () == 0) {
-					GtkQuartz.FocusWindow (data.TransientFor ?? MessageService.RootWindow);
-					return false;
-				}
+					if (state.EncodingSelector != null)
+						data.Encoding = state.EncodingSelector.SelectedEncoding?.Encoding;
 
-				data.SelectedFiles = MacSelectFileDialogHandler.GetSelectedFiles (panel);
-				
-				if (encodingSelector != null)
-					data.Encoding = encodingSelector.SelectedEncodingId > 0 ? Encoding.GetEncoding (encodingSelector.SelectedEncodingId) : null;
-				
-				if (viewerSelector != null ) {
-					if (closeSolutionButton != null)
-						data.CloseCurrentWorkspace = closeSolutionButton.State != NSCellStateValue.Off;
-					data.SelectedViewer = viewerSelector.IndexOfSelectedItem >= 0 ?
-						currentViewers[(int)viewerSelector.IndexOfSelectedItem] : null;
+					if (state.ViewerSelector != null) {
+						if (state.CloseSolutionButton != null)
+							data.CloseCurrentWorkspace = state.CloseSolutionButton.State != NSCellStateValue.Off;
+						data.SelectedViewer = state.ViewerSelector.IndexOfSelectedItem >= 0 ?
+							state.CurrentViewers [(int)state.ViewerSelector.IndexOfSelectedItem] : null;
+					}
+
+					IdeServices.DesktopService.FocusWindow (parent);
 				}
-				
-				GtkQuartz.FocusWindow (data.TransientFor ?? MessageService.RootWindow);
 			} catch (Exception ex) {
 				LoggingService.LogInternalError ("Error in Open File dialog", ex);
-			} finally {
-				if (panel != null)
-					panel.Dispose ();
 			}
 			return true;
 		}
-		
+
+		protected override IEnumerable<(NSControl control, string text)> OnGetAccessoryBoxControls (OpenFileDialogData data, NSSavePanel panel, out SaveState saveState)
+		{
+			List<(NSControl, string)> controls = new List<(NSControl, string)> ();
+			SelectEncodingPopUpButton encodingSelector = null;
+			NSPopUpButton viewerSelector = null;
+			NSButton closeSolutionButton = null;
+			List<FileViewer> currentViewers = null;
+
+			if (data.ShowEncodingSelector) {
+				encodingSelector = new SelectEncodingPopUpButton (data.Action != FileChooserAction.Save);
+				encodingSelector.SelectedEncoding = TextEncoding.GetEncoding (data.Encoding);
+
+				controls.Add ((encodingSelector, GettextCatalog.GetString ("Encoding:")));
+			}
+
+			if (data.ShowViewerSelector && panel is NSOpenPanel) {
+				currentViewers = new List<FileViewer> ();
+				viewerSelector = new NSPopUpButton {
+					Enabled = false,
+				};
+
+				if (encodingSelector != null || IdeApp.Workspace.IsOpen) {
+					viewerSelector.Activated += delegate {
+						var idx = viewerSelector.IndexOfSelectedItem;
+						bool workbenchViewerSelected = idx == 0 && currentViewers [0] == null;
+						if (encodingSelector != null)
+							encodingSelector.Enabled = !workbenchViewerSelected;
+						if (closeSolutionButton != null) {
+							if (closeSolutionButton.Enabled != workbenchViewerSelected) {
+								closeSolutionButton.Enabled = workbenchViewerSelected;
+								closeSolutionButton.State = workbenchViewerSelected ? NSCellStateValue.On : NSCellStateValue.Off;
+							}
+						}
+					};
+				}
+
+				if (IdeApp.Workspace.IsOpen) {
+					closeSolutionButton = new NSButton {
+						Title = GettextCatalog.GetString ("Close current workspace"),
+						Enabled = false,
+						State = NSCellStateValue.Off,
+					};
+
+					closeSolutionButton.SetButtonType (NSButtonType.Switch);
+					closeSolutionButton.SizeToFit ();
+
+					controls.Add ((closeSolutionButton, string.Empty));
+				}
+
+				controls.Add ((viewerSelector, GettextCatalog.GetString ("Open With:")));
+			}
+			saveState = new SaveState (encodingSelector, viewerSelector, closeSolutionButton, currentViewers);
+
+			return controls;
+		}
+
 		static bool FillViewers (List<FileViewer> currentViewers, NSPopUpButton button, NSButton closeSolutionButton, FilePath[] filenames)
 		{
 			button.Menu.RemoveAllItems ();
@@ -209,7 +240,7 @@ namespace MonoDevelop.MacIntegration
 			int i = 0;
 			bool hasWorkbenchViewer = false;
 
-			if (IdeApp.Services.ProjectService.IsWorkspaceItemFile (filename) || IdeApp.Services.ProjectService.IsSolutionItemFile (filename)) {
+			if (IdeServices.ProjectService.IsWorkspaceItemFile (filename) || IdeServices.ProjectService.IsSolutionItemFile (filename)) {
 				button.Menu.AddItem (new NSMenuItem { Title = GettextCatalog.GetString ("Solution Workbench") });
 				currentViewers.Add (null);
 				
@@ -222,7 +253,7 @@ namespace MonoDevelop.MacIntegration
 				i++;
 			}
 			
-			foreach (var vw in DisplayBindingService.GetFileViewers (filename, null)) {
+			foreach (var vw in IdeServices.DisplayBindingService.GetFileViewers (filename, null).Result) {
 				if (!vw.IsExternal) {
 					button.Menu.AddItem (new NSMenuItem { Title = vw.Title });
 					currentViewers.Add (vw);
@@ -244,25 +275,7 @@ namespace MonoDevelop.MacIntegration
 
 		static bool CanBeOpenedInAssemblyBrowser (FilePath filename)
 		{
-			return filename.Extension.ToLower () == ".exe" || filename.Extension.ToLower () == ".dll";
-		}
-
-		static void CenterAccessoryView (MDBox box)
-		{
-			box.Layout ();
-
-			//re-center the accessory view in its parent, Cocoa does this for us initially and after
-			//resizing the window, but we need to do it again after altering its layout
-			var superView = box.View.Superview;
-			if (superView == null)
-				return;
-			
-			var superFrame = superView.Frame;
-			var frame = box.View.Frame;
-			//not sure why it's ceiling, but this matches the Cocoa layout
-			frame.X = (float)Math.Ceiling ((superFrame.Width - frame.Width) / 2);
-			frame.Y = (float)Math.Ceiling ((superFrame.Height - frame.Height) / 2);
-			box.View.Frame = frame;
+			return string.Equals (filename.Extension, ".exe", StringComparison.OrdinalIgnoreCase) || string.Equals (filename.Extension, ".dll", StringComparison.OrdinalIgnoreCase);
 		}
 	}
 }

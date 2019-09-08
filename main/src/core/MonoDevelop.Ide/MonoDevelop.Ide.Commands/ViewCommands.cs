@@ -35,6 +35,7 @@ using MonoDevelop.Components.Commands;
 using MonoDevelop.Ide.Gui.Content;
 using MonoDevelop.Components.DockNotebook;
 using System.Collections.Generic;
+using MonoDevelop.Ide.Gui.Shell;
 
 namespace MonoDevelop.Ide.Commands
 {
@@ -76,6 +77,8 @@ namespace MonoDevelop.Ide.Commands
 				ci.Icon = pad.Icon;
 				ci.UseMarkup = true;
 				ci.Description = string.Format (descFormat, pad.Title);
+				// We only want these commands enabled if the main window is visible
+				ci.Enabled = IdeApp.Workbench.RootWindow.Visible;
 
 				ActionCommand cmd = IdeApp.CommandService.GetActionCommand ("Pad|" + pad.Id);
 				if (cmd != null) ci.AccelKey = cmd.AccelKey; 
@@ -129,7 +132,7 @@ namespace MonoDevelop.Ide.Commands
 			pad.Visible = true;
 			pad.BringToFront (true);
 
-			Counters.PadShown.Inc (new Dictionary<string,string> {{ "Pad", pad.Id }});
+			Counters.PadShown.Inc (1, null, new Dictionary<string,object> {{ "Pad", pad.Id }});
 		}
 	}
 
@@ -141,10 +144,10 @@ namespace MonoDevelop.Ide.Commands
 		static LayoutListHandler ()
 		{
 			NameMapping = new Dictionary<string, string> ();
-			NameMapping ["Solution"] = "Code";
-			NameMapping ["Visual Design"] = "Design";
-			NameMapping ["Debug"] = "Debug";
-			NameMapping ["Unit Testing"] = "Test";
+			NameMapping ["Solution"] = GettextCatalog.GetString ("Code");
+			NameMapping ["Visual Design"] = GettextCatalog.GetString ("Design");
+			NameMapping ["Debug"] = GettextCatalog.GetString ("Debug");
+			NameMapping ["Unit Testing"] = GettextCatalog.GetString ("Test");
 		}
 
 		protected override void Update (CommandArrayInfo info)
@@ -153,7 +156,7 @@ namespace MonoDevelop.Ide.Commands
 			foreach (var name in IdeApp.Workbench.Layouts) {
 				if (!NameMapping.TryGetValue (name, out text))
 					text = name;
-				CommandInfo item = new CommandInfo(GettextCatalog.GetString (text));
+				CommandInfo item = new CommandInfo (text);
 				item.Checked = IdeApp.Workbench.CurrentLayout == name;
 				item.Description = GettextCatalog.GetString ("Switch to layout '{0}'", name);
 				info.Add (item, name);
@@ -169,6 +172,11 @@ namespace MonoDevelop.Ide.Commands
 	// MonoDevelop.Ide.Commands.ViewCommands.NewLayout
 	public class NewLayoutHandler : CommandHandler
 	{
+		protected override void Update (CommandInfo info)
+		{
+			info.Visible = IdeApp.Workbench.Visible;
+		}
+
 		protected override void Run ()
 		{
 			string newLayoutName = null;
@@ -190,6 +198,10 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Update (CommandInfo info)
 		{
+			if (!IdeApp.Workbench.Visible) {
+				info.Visible = false;
+				return;
+			}
 			info.Enabled = !String.Equals ("Solution", IdeApp.Workbench.CurrentLayout, StringComparison.OrdinalIgnoreCase);
 			string itemName;
 			if (!LayoutListHandler.NameMapping.TryGetValue (IdeApp.Workbench.CurrentLayout, out itemName))
@@ -220,6 +232,10 @@ namespace MonoDevelop.Ide.Commands
 				info.Text = IdeApp.Workbench.FullScreen
 					? GettextCatalog.GetString ("Exit Full Screen")
 					: GettextCatalog.GetString ("Enter Full Screen");
+				info.Enabled = IdeApp.Workbench.RootWindow.Visible && !WelcomePage.WelcomePageService.WelcomeWindowVisible;
+			} else if (Platform.IsWindows) {
+				//this is currently a no-op on Windows as it's broken, so hide it
+				info.Visible = info.Enabled = false;
 			} else {
 				info.Checked = IdeApp.Workbench.FullScreen;
 			}
@@ -275,14 +291,14 @@ namespace MonoDevelop.Ide.Commands
 			if (IdeApp.Workbench.ActiveDocument == null)
 				info.Enabled = false;
 			else {
-				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 				info.Enabled = zoom != null && zoom.EnableZoomIn;
 			}
 		}
 
 		protected override void Run ()
 		{
-			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 			zoom.ZoomIn ();
 		}
 	}
@@ -294,14 +310,14 @@ namespace MonoDevelop.Ide.Commands
 			if (IdeApp.Workbench.ActiveDocument == null)
 				info.Enabled = false;
 			else {
-				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 				info.Enabled = zoom != null && zoom.EnableZoomOut;
 			}
 		}
 
 		protected override void Run ()
 		{
-			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 			zoom.ZoomOut ();
 		}
 	}
@@ -313,14 +329,14 @@ namespace MonoDevelop.Ide.Commands
 			if (IdeApp.Workbench.ActiveDocument == null)
 				info.Enabled = false;
 			else {
-				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+				IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 				info.Enabled = zoom != null && zoom.EnableZoomReset;
 			}
 		}
 
 		protected override void Run ()
 		{
-			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> ();
+			IZoomable zoom = IdeApp.Workbench.ActiveDocument.GetContent<IZoomable> (true);
 			zoom.ZoomReset ();
 		}
 	}
@@ -336,6 +352,10 @@ namespace MonoDevelop.Ide.Commands
 
 		protected override void Run ()
 		{
+			// Already in 2-column mode?
+			if (DockNotebook.ActiveNotebook?.Container?.SplitCount > 0)
+				return;
+			
 			IdeApp.Workbench.LockActiveWindowChangeEvent ();
 			var container = DockNotebook.ActiveNotebook.Container;
 			var tab = DockNotebook.ActiveNotebook.CurrentTab;
@@ -422,6 +442,7 @@ namespace MonoDevelop.Ide.Commands
 
 		protected override void Run ()
 		{
+			IdeApp.Workbench.ActiveDocument.Select ();
 			IdeApp.Workbench.ActiveDocument.Editor.StartCaretPulseAnimation ();
 		}
 

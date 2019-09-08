@@ -85,7 +85,12 @@ namespace MonoDevelop.Ide.Gui.Components
 		protected ExtensibleTreeView Tree {
 			get { return tree; }
 		}
-		
+
+		public virtual void OnRenameStarting (ref string startingText, ref int selectionStart, ref int selectionLength)
+		{
+			OnRenameStarting (ref selectionStart, ref selectionLength);
+		}
+
 		public virtual void OnRenameStarting (ref int selectionStart, ref int selectionLength)
 		{
 		}
@@ -246,8 +251,10 @@ namespace MonoDevelop.Ide.Gui.Components
 		}
 		
 		DropPosition cachedPosition;
-		
-		public virtual bool CanDropMultipleNodes (object[] dataObjects, DragOperation operation, DropPosition position)
+
+		public virtual bool CanHandleDropFromChild (object [] dataObjects, DragOperation operation, DropPosition position) => false;
+
+		public virtual bool CanDropMultipleNodes (object [] dataObjects, DragOperation operation, DropPosition position)
 		{
 			cachedPosition = position;
 			return CanDropMultipleNodes (dataObjects, operation);

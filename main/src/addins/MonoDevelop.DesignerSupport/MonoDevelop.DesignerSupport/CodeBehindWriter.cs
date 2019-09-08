@@ -37,7 +37,7 @@ using MonoDevelop.Ide;
 
 namespace MonoDevelop.DesignerSupport
 {
-
+	[Obsolete("Use Roslyn")]
 	public class CodeBehindWriter
 	{
 		List<string> openFiles;
@@ -110,10 +110,6 @@ namespace MonoDevelop.DesignerSupport
 					write (sw);
 				}
 				FileService.SystemRename (tempPath, path);
-				//mark the file as changed so it gets reparsed
-				Gtk.Application.Invoke (delegate {
-					FileService.NotifyFileChanged (path);
-				});
 				WrittenCount++;
 			} catch (IOException ex) {
 				if (monitor != null)
@@ -146,9 +142,6 @@ namespace MonoDevelop.DesignerSupport
 				File.WriteAllText (tempPath, contents);
 				FileService.SystemRename (tempPath, path);
 				//mark the file as changed so it gets reparsed
-				Gtk.Application.Invoke (delegate {
-					FileService.NotifyFileChanged (path);
-				});
 				WrittenCount++;
 			} catch (IOException ex) {
 				if (monitor != null)

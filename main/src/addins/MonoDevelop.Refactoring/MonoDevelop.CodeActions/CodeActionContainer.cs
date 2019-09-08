@@ -24,96 +24,71 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System.Collections.Generic;
-using Microsoft.CodeAnalysis.CodeActions;
 using System;
-using MonoDevelop.CodeIssues;
 using System.Linq;
+using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
-using System.Collections;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeRefactorings;
+using System.Collections.Immutable;
+using Microsoft.CodeAnalysis.Text;
 
 namespace MonoDevelop.CodeActions
 {
 	class CodeActionContainer
 	{
-		public static readonly CodeActionContainer Empty = new CodeActionContainer();
+		public static readonly CodeActionContainer Empty = new CodeActionContainer(ImmutableArray<CodeFixCollection>.Empty, ImmutableArray<CodeRefactoring>.Empty);
 
 		public bool IsEmpty {
 			get {
-				return CodeFixActions.Count + DiagnosticsAtCaret.Count + CodeRefactoringActions.Count == 0;
+				return CodeFixActions.Length + CodeRefactoringActions.Length == 0;
 			}
 		}
 
-		IReadOnlyList<ValidCodeDiagnosticAction> codeFixActions;
-		public IReadOnlyList<ValidCodeDiagnosticAction> CodeFixActions {
+		ImmutableArray<CodeFixCollection> codeFixActions;
+		public ImmutableArray<CodeFixCollection> CodeFixActions {
 			get {
-				return codeFixActions ?? new ValidCodeDiagnosticAction[0];
+				return codeFixActions;
 			}
 			private set {
 				codeFixActions = value;
 			}
 		}
 
-		IReadOnlyList<ValidCodeAction> codeRefactoringActions;
-
-		public IReadOnlyList<ValidCodeAction> CodeRefactoringActions {
+		ImmutableArray<CodeRefactoring> codeRefactoringActions;
+		public ImmutableArray<CodeRefactoring> CodeRefactoringActions {
 			get {
-				return codeRefactoringActions ?? new ValidCodeAction[0];
+				return codeRefactoringActions;
 			}
 			private set {
 				codeRefactoringActions = value;
 			}
 		}
 
-		public IEnumerable<ValidCodeAction> AllValidCodeActions {
-			get {
-				return CodeRefactoringActions.Concat (CodeFixActions);
-			}
-		}
+		public TextSpan Span { get; internal set; }
 
-		IReadOnlyList<Diagnostic> diagnosticsAtCaret;
-		public IReadOnlyList<Diagnostic> DiagnosticsAtCaret {
-			get {
-				return diagnosticsAtCaret ?? new Diagnostic[0];
-			}
-			private set {
-				diagnosticsAtCaret = value.Distinct (new DiagnosticComparer()).ToList ();
-			}
-		}
+		public bool FloatingWidgetShown { get; internal set; }
 
-		class DiagnosticComparer : IEqualityComparer<Diagnostic>
+		internal SourceEditor.SmartTagSeverity GetSmartTagSeverity ()
 		{
-			bool IEqualityComparer<Diagnostic>.Equals (Diagnostic x, Diagnostic y)
-			{
-				if (x.Id != null && y.Id != null)
-					return x.Id == y.Id;
-				return x.Equals (y);
+			var result = SourceEditor.SmartTagSeverity.OnlyActions;
+			foreach (var fix in CodeFixActions) {
+				foreach (var codeFix in fix.Fixes) {
+					var severity = codeFix.PrimaryDiagnostic.Severity;
+					if (severity == DiagnosticSeverity.Error) {
+						return SourceEditor.SmartTagSeverity.ErrorFixes;
+					}
+					result = SourceEditor.SmartTagSeverity.Fixes;
+				}
 			}
 
-			int IEqualityComparer<Diagnostic>.GetHashCode (Diagnostic obj)
-			{
-				return obj.Id != null ? obj.Id.GetHashCode () : obj.GetHashCode ();
-			}
+			return result;
 		}
 
-		CodeActionContainer ()
+		internal CodeActionContainer (ImmutableArray<CodeFixCollection> codeDiagnosticActions, ImmutableArray<CodeRefactoring> codeRefactoringActions)
 		{
-			CodeFixActions = new List<ValidCodeDiagnosticAction> ();
-			CodeRefactoringActions = new List<ValidCodeAction> ();
-			DiagnosticsAtCaret = new List<Diagnostic> ();
-		}
-
-		internal CodeActionContainer (List<ValidCodeDiagnosticAction> codeDiagnosticActions, List<ValidCodeAction> codeRefactoringActions, List<Diagnostic> diagnosticsAtCaret)
-		{
-			if (codeDiagnosticActions == null)
-				throw new ArgumentNullException ("codeDiagnosticActions");
-			if (codeRefactoringActions == null)
-				throw new ArgumentNullException ("codeRefactoringActions");
-			if (diagnosticsAtCaret == null)
-				throw new ArgumentNullException ("diagnosticsAtCaret");
 			CodeFixActions = codeDiagnosticActions;
 			CodeRefactoringActions = codeRefactoringActions;
-			DiagnosticsAtCaret = diagnosticsAtCaret;
 		}
 	}
 }

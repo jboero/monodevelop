@@ -27,13 +27,19 @@ using System;
 using MonoDevelop.CSharp.Formatting;
 using MonoDevelop.Ide.Editor;
 using MonoDevelop.Ide.Editor.Extension;
+using System.Collections.Generic;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Editor;
+using Microsoft.CodeAnalysis.Shared.Extensions;
+using System.Threading;
+using MonoDevelop.Ide;
 
 namespace MonoDevelop.CSharp.Highlighting
 {
 	class CSharpSelectionSurroundingProvider : SelectionSurroundingProvider
 	{
 		readonly DocumentContext context;
-		readonly TextEditor editor;
+		readonly Ide.Editor.TextEditor editor;
 
 		public CSharpSelectionSurroundingProvider (MonoDevelop.Ide.Editor.TextEditor editor, DocumentContext context)
 		{
@@ -92,25 +98,32 @@ namespace MonoDevelop.CSharp.Highlighting
 				int minLine = System.Math.Min (selection.Begin.Line, selection.End.Line);
 				int maxLine = System.Math.Max (selection.BeginLine, selection.End.Line);
 
-
+				var changes = new List<TextChange> ();
 				for (int lineNumber = minLine; lineNumber <= maxLine; lineNumber++) {
 					var lineSegment = editor.GetLine (lineNumber);
 
-					if (lineSegment.Offset + startCol < lineSegment.EndOffset)
-						editor.InsertText (lineSegment.Offset + startCol, start);
+					if (lineSegment.Offset + startCol < lineSegment.EndOffset) {
+						changes.Add (new TextChange (new TextSpan (lineSegment.Offset + startCol, 0), start));
+					}
 					if (lineSegment.Offset + endCol < lineSegment.EndOffset)
-						editor.InsertText (lineSegment.Offset + endCol, end);
+						changes.Add (new TextChange (new TextSpan (lineSegment.Offset + endCol, 0), end));
 				}
+
+				editor.ApplyTextChanges (changes);
 
 //				textEditorData.MainSelection = new Selection (
 //					new DocumentLocation (selection.Anchor.Line, endCol == selection.Anchor.Column ? endCol + start.Length : startCol + 1 + start.Length),
 //					new DocumentLocation (selection.Lead.Line, endCol == selection.Anchor.Column ? startCol + 1 + start.Length : endCol + start.Length),
-//					Mono.TextEditor.SelectionMode.Block);
+//					MonoDevelop.Ide.Editor.SelectionMode.Block);
 			} else {
 				var selectionRange = editor.SelectionRange;
 				int anchorOffset = selectionRange.Offset;
 				int leadOffset = selectionRange.EndOffset;
 				var text = editor.GetTextAt (selectionRange);
+
+				var formattingService = context.AnalysisDocument.GetLanguageService<IEditorFormattingService> ();
+
+
 				if (editor.Options.GenerateFormattingUndoStep) {
 					using (var undo = editor.OpenUndoGroup ()) {
 						editor.ReplaceText (selectionRange, start);
@@ -120,8 +133,9 @@ namespace MonoDevelop.CSharp.Highlighting
 						editor.SetSelection (anchorOffset + start.Length, leadOffset + start.Length + end.Length);
 					}
 					if (unicodeKey == '{') {
-						using (var undo = editor.OpenUndoGroup ()) {
-							OnTheFlyFormatter.Format (editor, context, anchorOffset + start.Length - 1, leadOffset + start.Length + end.Length);
+						if (formattingService != null) {
+							var changes = formattingService.GetFormattingChangesAsync (context.AnalysisDocument, TextSpan.FromBounds (anchorOffset + start.Length - 1, leadOffset + start.Length + end.Length), CancellationToken.None).WaitAndGetResult (CancellationToken.None);
+							editor.ApplyTextChanges (changes);
 						}
 					}
 				} else {
@@ -129,7 +143,10 @@ namespace MonoDevelop.CSharp.Highlighting
 						editor.InsertText (anchorOffset, start);
 						editor.InsertText (leadOffset >= anchorOffset ? leadOffset + start.Length : leadOffset, end);
 						if (unicodeKey == '{') {
-							OnTheFlyFormatter.Format (editor, context, anchorOffset + start.Length, leadOffset + start.Length + end.Length);
+							if (formattingService != null) {
+								var changes = formattingService.GetFormattingChangesAsync (context.AnalysisDocument, TextSpan.FromBounds (anchorOffset + start.Length, leadOffset + start.Length), CancellationToken.None).WaitAndGetResult (CancellationToken.None);
+								editor.ApplyTextChanges (changes);
+							}
 						} else {
 							editor.SetSelection (anchorOffset + start.Length, leadOffset + start.Length + end.Length);
 						}

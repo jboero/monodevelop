@@ -36,13 +36,8 @@ namespace MonoDevelop.Projects.Extensions
 	[ExtensionNode (ExtensionAttributeType=typeof(ExportProjectTypeAttribute))]
 	public class ProjectTypeNode: SolutionItemTypeNode
 	{
-		[NodeAttribute ("msbuildSupport")]
-		public MSBuildSupport MSBuildSupport { get; set; }
-
-		public ProjectTypeNode ()
-		{
-			MSBuildSupport = MSBuildSupport.Supported;
-		}
+		[NodeAttribute ("msbuildSupport"), Obsolete]
+		public MSBuildSupport MSBuildSupport { get; set; } = MSBuildSupport.Supported;
 
 		public override async Task<SolutionItem> CreateSolutionItem (ProgressMonitor monitor, SolutionLoadContext ctx, string fileName)
 		{
@@ -50,7 +45,7 @@ namespace MonoDevelop.Projects.Extensions
 			Project project = null;
 
 			if (!string.IsNullOrEmpty (fileName)) {
-				p = await MSBuildProject.LoadAsync (fileName);
+				p = await MSBuildProject.LoadAsync (fileName).ConfigureAwait (false);
 				if (ctx != null && ctx.Solution != null) {
 					p.EngineManager = ctx.Solution.MSBuildEngineManager;
 					p.SolutionDirectory = ctx.Solution.ItemDirectory;
@@ -58,7 +53,7 @@ namespace MonoDevelop.Projects.Extensions
 				
 				var migrators = MSBuildProjectService.GetMigrableFlavors (p.ProjectTypeGuids);
 				if (migrators.Count > 0)
-					await MSBuildProjectService.MigrateFlavors (monitor, fileName, Guid, p, migrators);
+					await MSBuildProjectService.MigrateFlavors (monitor, fileName, Guid, p, migrators).ConfigureAwait (false);
 
 				var unsupporedFlavor = p.ProjectTypeGuids.FirstOrDefault (fid => !MSBuildProjectService.IsKnownFlavorGuid (fid) && !MSBuildProjectService.IsKnownTypeGuid (fid));
 				if (unsupporedFlavor != null) {
@@ -66,8 +61,10 @@ namespace MonoDevelop.Projects.Extensions
 					return MSBuildProjectService.CreateUnknownSolutionItem (monitor, fileName, Guid, unsupporedFlavor, null);
 				}
 
-				if (MSBuildSupport == MSBuildSupport.NotSupported || MSBuildProjectService.GetMSBuildSupportForFlavors (p.ProjectTypeGuids) == MSBuildSupport.NotSupported)
-					p.UseMSBuildEngine = false;
+				#pragma warning disable 612
+				p.UseMSBuildEngine = MSBuildSupport != MSBuildSupport.NotSupported
+					&& MSBuildProjectService.GetMSBuildSupportForFlavors (p.ProjectTypeGuids);
+				#pragma warning restore 612
 
 				// Evaluate the project now. If evaluation fails an exception will be thrown, and when that
 				// happens the solution will create a placeholder project.
@@ -75,7 +72,7 @@ namespace MonoDevelop.Projects.Extensions
 			}
 
 			if (project == null)
-				project = await base.CreateSolutionItem (monitor, ctx, fileName) as Project;
+				project = await base.CreateSolutionItem (monitor, ctx, fileName).ConfigureAwait(false) as Project;
 			
 			if (project == null)
 				throw new InvalidOperationException ("Project node type is not a subclass of MonoDevelop.Projects.Project");
@@ -87,7 +84,10 @@ namespace MonoDevelop.Projects.Extensions
 
 		public virtual Project CreateProject (params string[] flavorGuids)
 		{
-			var p = (Project) CreateSolutionItem (new ProgressMonitor (), null, null).Result;
+			Project p;
+			using (var monitor = new ProgressMonitor ()) {
+				p = (Project)CreateSolutionItem (monitor, null, null).Result;
+			}
 			p.SetCreationContext (Project.CreationContext.Create (Guid, flavorGuids));
 			return p;
 		}

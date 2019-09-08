@@ -34,11 +34,13 @@ using AppKit;
 using CoreGraphics;
 using Foundation;
 using MonoDevelop.MacInterop;
+using Security;
 
 namespace MonoDevelop.MacIntegration
 {
 	class MacProxyCredentialProvider : ICredentialProvider
 	{
+		static nint NSAlertFirstButtonReturn = 1000;
 		object guiLock = new object();
 
 		public ICredentials GetCredentials (Uri uri, IWebProxy proxy, CredentialType credentialType, bool retrying)
@@ -64,11 +66,11 @@ namespace MonoDevelop.MacIntegration
 
 		static ICredentials GetSystemProxyCredentials (Uri uri)
 		{
-			var kind = SecProtocolType.Any;
+			var kind = SecProtocol.Http;
 			if (uri.Scheme == "http")
-				kind = SecProtocolType.HTTPProxy;
+				kind = SecProtocol.HttpProxy;
 			else if (uri.Scheme == "https")
-				kind = SecProtocolType.HTTPSProxy;
+				kind = SecProtocol.HttpsProxy;
 
 			//TODO: get username from SystemConfiguration APIs so we don't trigger a double auth prompt
 			var existing = Keychain.FindInternetUserNameAndPassword (uri, kind);
@@ -113,55 +115,60 @@ namespace MonoDevelop.MacIntegration
 							uri.Host
 						);
 
-					var alert = NSAlert.WithMessage (
-						GettextCatalog.GetString ("Credentials Required"),
-						GettextCatalog.GetString ("OK"),
-						GettextCatalog.GetString ("Cancel"),
-						null,
-						message
-					);
+					using (var alert = new NSAlert ()) {
+						alert.MessageText = GettextCatalog.GetString ("Credentials Required");
+						alert.InformativeText = message;
 
-					alert.Icon = NSApplication.SharedApplication.ApplicationIconImage;
+						var okButton = alert.AddButton (GettextCatalog.GetString ("OK"));
+						var cancelButton = alert.AddButton (GettextCatalog.GetString ("Cancel"));
 
-					var view = new NSView (new CGRect (0, 0, 313, 91));
+						alert.Icon = MacPlatformService.ApplicationIcon;
 
-					var usernameLabel = new NSTextField (new CGRect (17, 55, 71, 17)) {
-						Identifier = "usernameLabel",
-						StringValue = "Username:",
-						Alignment = NSTextAlignment.Right,
-						Editable = false,
-						Bordered = false,
-						DrawsBackground = false,
-						Bezeled = false,
-						Selectable = false,
-					};
-					view.AddSubview (usernameLabel);
+						var view = new NSView (new CGRect (0, 0, 313, 91));
 
-					var usernameInput = new NSTextField (new CGRect (93, 52, 200, 22));
-					view.AddSubview (usernameInput);
+						var usernameLabel = new NSTextField (new CGRect (17, 55, 71, 17)) {
+							Identifier = "usernameLabel",
+							StringValue = "Username:",
+							Alignment = NSTextAlignment.Right,
+							Editable = false,
+							Bordered = false,
+							DrawsBackground = false,
+							Bezeled = false,
+							Selectable = false,
+						};
+						view.AddSubview (usernameLabel);
 
-					var passwordLabel = new NSTextField (new CGRect (22, 23, 66, 17)) {
-						StringValue = "Password:",
-						Alignment = NSTextAlignment.Right,
-						Editable = false,
-						Bordered = false,
-						DrawsBackground = false,
-						Bezeled = false,
-						Selectable = false,
-					};
-					view.AddSubview (passwordLabel);
+						var usernameInput = new NSTextField (new CGRect (93, 52, 200, 22));
+						view.AddSubview (usernameInput);
 
-					var passwordInput = new NSSecureTextField (new CGRect (93, 20, 200, 22));
-					view.AddSubview (passwordInput);
+						var passwordLabel = new NSTextField (new CGRect (22, 23, 66, 17)) {
+							StringValue = "Password:",
+							Alignment = NSTextAlignment.Right,
+							Editable = false,
+							Bordered = false,
+							DrawsBackground = false,
+							Bezeled = false,
+							Selectable = false,
+						};
+						view.AddSubview (passwordLabel);
 
-					alert.AccessoryView = view;
+						var passwordInput = new NSSecureTextField (new CGRect (93, 20, 200, 22));
+						view.AddSubview (passwordInput);
 
-					if (alert.RunModal () != 1)
-						return;
-
-					var username = usernameInput.StringValue;
-					var password = passwordInput.StringValue;
-					result = new NetworkCredential (username, password);
+						using (var alertDelegate = new PasswordAlertWindowDelegate (usernameInput, passwordInput, cancelButton, okButton)) {
+							alert.AccessoryView = view;
+							MonoDevelop.Components.IdeTheme.ApplyTheme (alert.Window);
+							alert.Window.WeakDelegate = alertDelegate;
+							alert.Window.InitialFirstResponder = usernameInput;
+							alert.Window.ReleasedWhenClosed = true;
+							if (alert.RunModal () == NSAlertFirstButtonReturn) {
+								var username = usernameInput.StringValue;
+								var password = passwordInput.StringValue;
+								result = new NetworkCredential (username, password);
+							}
+							alert.Window.Close ();
+						}
+					}
 				}
 			}).Wait ();
 
@@ -171,6 +178,37 @@ namespace MonoDevelop.MacIntegration
 				Keychain.AddInternetPassword (uri, result.UserName, result.Password);
 
 			return result;
+		}
+
+		class PasswordAlertWindowDelegate : NSWindowDelegate
+		{
+			readonly WeakReference<NSTextField> weakUsernameInput;
+			readonly WeakReference<NSTextField> weakPasswordInput;
+			readonly WeakReference<NSButton> weakCancelButton;
+			readonly WeakReference<NSButton> weakOkButton;
+
+			public PasswordAlertWindowDelegate (NSTextField usernameInput, NSTextField passwordInput, NSButton cancelButton, NSButton okButton)
+			{
+				weakUsernameInput = new WeakReference<NSTextField> (usernameInput);
+				weakPasswordInput = new WeakReference<NSTextField> (passwordInput);
+				weakCancelButton = new WeakReference<NSButton> (cancelButton);
+				weakOkButton = new WeakReference<NSButton> (okButton);
+			}
+
+			public override void DidBecomeKey (NSNotification notification)
+			{
+				if (!weakUsernameInput.TryGetTarget (out var usernameInput) ||
+					!weakPasswordInput.TryGetTarget (out var passwordInput) ||
+					!weakCancelButton.TryGetTarget (out var cancelButton) ||
+					!weakOkButton.TryGetTarget (out var okButton))
+					return;
+				// The NSAlert defines the keyviewloop after it is displayed so the tab order is defined
+				// here otherwise once the focus is on the OK and Cancel buttons it is not possible to tab
+				// to the username and password NSTextFields.
+				usernameInput.NextKeyView = passwordInput;
+				passwordInput.NextKeyView = cancelButton;
+				okButton.NextKeyView = usernameInput;
+			}
 		}
 	}
 }

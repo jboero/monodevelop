@@ -1,4 +1,4 @@
-// 
+﻿// 
 // XmlTextEditorExtension.cs
 // 
 // Authors:
@@ -29,7 +29,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Schema;
 
@@ -37,16 +41,12 @@ using MonoDevelop.Components.Commands;
 using MonoDevelop.Core;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.CodeCompletion;
-using MonoDevelop.Ide.Gui.Content;
-using MonoDevelop.Ide.Tasks;
-using MonoDevelop.Ide.CodeFormatting;
 using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.Editor.Extension;
+using MonoDevelop.Ide.Tasks;
 using MonoDevelop.Xml.Completion;
 using MonoDevelop.Xml.Dom;
 using MonoDevelop.Xml.Parser;
-using MonoDevelop.Ide.Editor.Extension;
-using System.Threading.Tasks;
-using System.Threading;
 
 namespace MonoDevelop.Xml.Editor
 {
@@ -72,9 +72,8 @@ namespace MonoDevelop.Xml.Editor
 			XmlSchemaManager.UserSchemaAdded += UserSchemaAdded;
 			XmlSchemaManager.UserSchemaRemoved += UserSchemaRemoved;
 			SetDefaultSchema ();
-			
-			//var view = Document.GetContent<MonoDevelop.SourceEditor.SourceEditorView> ();
-			if (string.IsNullOrEmpty (Editor.MimeType) || Editor.MimeType == "text/plain") {
+
+			if (string.IsNullOrEmpty (Editor.MimeType) || Editor.MimeType == "text/plain" || Editor.MimeType == "application/octet-stream") {
 				Editor.MimeType = ApplicationXmlMimeType;
 				DocumentContext.ReparseDocument ();
 			}
@@ -91,25 +90,15 @@ namespace MonoDevelop.Xml.Editor
 		public override void Dispose()
 		{
 			if (!disposed) {
-				disposed = false;
+				disposed = true;
 				XmlEditorOptions.XmlFileAssociationChanged -= HandleXmlFileAssociationChanged;
 				XmlSchemaManager.UserSchemaAdded -= UserSchemaAdded;
 
 				XmlSchemaManager.UserSchemaRemoved -= UserSchemaRemoved;
-				ClearTasksForStandaloneXmlFile ();
+				if (IdeApp.IsInitialized)
+					IdeServices.TaskService.Errors.ClearByOwner (this);
 				base.Dispose ();
 			}
-		}
-
-		void ClearTasksForStandaloneXmlFile ()
-		{
-			var tasks = TaskService.Errors
-				.GetOwnerTasks (this)
-				.Where (t => t.WorkspaceObject == null)
-				.ToList ();
-
-			if (tasks.Any ())
-				TaskService.Errors.RemoveRange (tasks);
 		}
 
 		#region Code completion
@@ -125,7 +114,7 @@ namespace MonoDevelop.Xml.Editor
 		
 		protected override async Task<CompletionDataList> GetElementCompletions (CancellationToken token)
 		{
-			var list = new CompletionDataList ();
+			CompletionDataList list = null;
 			var path = GetElementPath ();
 
 			if (path.Elements.Count > 0) {
@@ -137,14 +126,17 @@ namespace MonoDevelop.Xml.Editor
 
 					var completionData = await schema.GetChildElementCompletionData (path, token);
 					if (completionData != null)
-						list.AddRange (completionData);
+						list = completionData;
 				}
 
 			} else if (defaultSchemaCompletionData != null) {
-				list.AddRange (await defaultSchemaCompletionData.GetElementCompletionData (defaultNamespacePrefix, token));
+				list = await defaultSchemaCompletionData.GetElementCompletionData (defaultNamespacePrefix, token);
 
 			} else if (inferredCompletionData != null) {
-				list.AddRange (await inferredCompletionData.GetElementCompletionData (token));
+				list = await inferredCompletionData.GetElementCompletionData (token);
+			}
+			if (list == null) {
+				list = new CompletionDataList ();
 			}
 			AddMiscBeginTags (list);
 			return list;
@@ -199,11 +191,8 @@ namespace MonoDevelop.Xml.Editor
 		}
 		
 		/// <summary>
-
 		/// Finds the schema given the xml element path.
-
 		/// </summary>
-
 		public XmlSchemaCompletionData FindSchema (IXmlSchemaCompletionDataCollection schemaCompletionDataItems, XmlElementPath path)
 
 		{
@@ -253,14 +242,10 @@ namespace MonoDevelop.Xml.Editor
 		#region Schema resolution
 		
 		/// <summary>
-
 		/// Gets the XmlSchemaObject that defines the currently selected xml element or attribute.
-
 		/// </summary>
-
 		/// <param name="currentSchemaCompletionData">This is the schema completion data for the schema currently being 
 		/// displayed. This can be null if the document is not a schema.</param>
-
 		public XmlSchemaObject GetSchemaObjectSelected (XmlSchemaCompletionData currentSchemaCompletionData)
 
 		{
@@ -323,29 +308,17 @@ namespace MonoDevelop.Xml.Editor
 		}
 		
 		/// <summary>
-
 		/// If the attribute value found references another item in the schema
-
 		/// return this instead of the attribute schema object. For example, if the
-
 		/// user can select the attribute value and the code will work out the schema object pointed to by the ref
-
 		/// or type attribute:
-
 		///
-
 		/// xs:element ref="ref-name"
-
 		/// xs:attribute type="type-name"
-
 		/// </summary>
-
 		/// <returns>
-
 		/// The <paramref name="attribute"/> if no schema object was referenced.
-
 		/// </returns>
-
 		XmlSchemaObject GetSchemaObjectReferenced (XmlSchemaCompletionData currentSchemaCompletionData, XmlSchemaElement element, XmlSchemaAttribute attribute)
 
 		{
@@ -392,11 +365,8 @@ namespace MonoDevelop.Xml.Editor
 		}
 		
 		/// <summary>
-
 		/// Checks whether the element belongs to the XSD namespace.
-
 		/// </summary>
-
 		static bool IsXmlSchemaNamespace (XmlSchemaElement element)
 
 		{
@@ -414,23 +384,14 @@ namespace MonoDevelop.Xml.Editor
 		}
 		
 		/// <summary>
-
 		/// Attempts to locate the reference name in the specified schema.
-
 		/// </summary>
-
 		/// <param name="name">The reference to look up.</param>
-
 		/// <param name="schemaCompletionData">The schema completion data to use to
-
 		/// find the reference.</param>
-
 		/// <param name="elementName">The element to determine what sort of reference it is
-
 		/// (e.g. group, attribute, element).</param>
-
 		/// <returns><see langword="null"/> if no match can be found.</returns>
-
 		XmlSchemaObject FindSchemaObjectReference(string name, XmlSchemaCompletionData schemaCompletionData, string elementName)
 
 		{
@@ -469,26 +430,15 @@ namespace MonoDevelop.Xml.Editor
 
 		}
 
-		
-
 		/// <summary>
-
 		/// Attempts to locate the type name in the specified schema.
-
 		/// </summary>
-
 		/// <param name="name">The type to look up.</param>
-
 		/// <param name="schemaCompletionData">The schema completion data to use to
-
 		/// find the type.</param>
-
 		/// <param name="elementName">The element to determine what sort of type it is
-
 		/// (e.g. group, attribute, element).</param>
-
 		/// <returns><see langword="null"/> if no match can be found.</returns>
-
 		XmlSchemaObject FindSchemaObjectType(string name, XmlSchemaCompletionData schemaCompletionData, string elementName)
 
 		{
@@ -543,8 +493,7 @@ namespace MonoDevelop.Xml.Editor
 
 		
 
-		/// Updates the default schema association since the schema may have been added.
-
+		// Updates the default schema association since the schema may have been added.
 		void UserSchemaAdded (object source, EventArgs e)
 
 		{	
@@ -554,7 +503,6 @@ namespace MonoDevelop.Xml.Editor
 		
 
 		// Updates the default schema association since the schema may have been removed.
-
 		void UserSchemaRemoved (object source, EventArgs e)
 
 		{
@@ -568,11 +516,8 @@ namespace MonoDevelop.Xml.Editor
 		#region Stylesheet handling
 		
 		/// <summary>
-
 		/// Gets or sets the stylesheet associated with this xml file.
-
 		/// </summary>
-
 		public string StylesheetFileName {
 
 			get { return stylesheetFileName; }
@@ -603,7 +548,7 @@ namespace MonoDevelop.Xml.Editor
 			if (string.IsNullOrEmpty (fileName))
 				return false;
 
-			string mimeType = DesktopService.GetMimeTypeForUri (fileName);
+			string mimeType = IdeServices.DesktopService.GetMimeTypeForUri (fileName);
 			if (IsMimeTypeHandled (mimeType))
 				return true;
 			
@@ -612,7 +557,7 @@ namespace MonoDevelop.Xml.Editor
 		
 		static bool IsMimeTypeHandled (string mimeType)
 		{
-			foreach (var m in DesktopService.GetMimeTypeInheritanceChain (mimeType)) {
+			foreach (var m in IdeServices.DesktopService.GetMimeTypeInheritanceChain (mimeType)) {
 				if (m == TextXmlMimeType || m == ApplicationXmlMimeType)
 					return true;
 			}
@@ -683,14 +628,10 @@ namespace MonoDevelop.Xml.Editor
 		public void CreateSchemaCommand ()
 		{
 			try {
-
-				TaskService.Errors.Clear ();
+				IdeServices.TaskService.Errors.Clear ();
 
 				string xml = Editor.Text;
 				using (ProgressMonitor monitor = XmlEditorService.GetMonitor ()) {
-					XmlDocument doc = XmlEditorService.ValidateWellFormedness (monitor, xml, FileName, DocumentContext.Project);
-					if (doc == null)
-						return;
 					monitor.BeginTask (GettextCatalog.GetString ("Creating schema..."), 0);
 					try {
 						string schema = XmlEditorService.CreateSchema (Editor, xml);
@@ -706,9 +647,7 @@ namespace MonoDevelop.Xml.Editor
 				}
 
 			} catch (Exception ex) {
-
 				MessageService.ShowError (ex.Message);
-
 			}
 		}
 		
@@ -719,9 +658,7 @@ namespace MonoDevelop.Xml.Editor
 			if (!string.IsNullOrEmpty (stylesheetFileName)) {
 
 				try {
-
 					IdeApp.Workbench.OpenDocument (stylesheetFileName, DocumentContext.Project);
-
 				} catch (Exception ex) {
 					LoggingService.LogError ("Could not open document.", ex);
 					MessageService.ShowError ("Could not open document.", ex);
@@ -765,27 +702,48 @@ namespace MonoDevelop.Xml.Editor
 		}
 		
 		[CommandHandler (XmlCommands.Validate)]
-		public void ValidateCommand ()
+		public async void ValidateCommand ()
 		{
-			TaskService.Errors.Clear ();
-			using (ProgressMonitor monitor = XmlEditorService.GetMonitor()) {
-				if (IsSchema)
-					XmlEditorService.ValidateSchema (monitor, Editor.Text, FileName, DocumentContext.Project);
-				else
-					XmlEditorService.ValidateXml (monitor, Editor.Text, FileName, DocumentContext.Project);
+			IdeServices.TaskService.Errors.Clear ();
+			using (var monitor = XmlEditorService.GetMonitor ()) {
+				monitor.BeginTask (GettextCatalog.GetString ("Validating {0}...", FileName.FileName), 0);
+
+				var errors = await XmlEditorService.Validate (Editor.Text, FileName, monitor.CancellationToken);
+
+				if (errors.Count > 0) {
+					foreach (var err in errors) {
+						monitor.Log.WriteLine (err);
+					}
+					monitor.ReportError ("Validation failed");
+				} else {
+					monitor.ReportSuccess ("Validation succeeded");
+				}
+
+				UpdateErrors (errors);
 			}
+		}
+
+		void UpdateErrors (List<Projects.BuildError> errors)
+		{
+			IdeServices.TaskService.Errors.ClearByOwner (this);
+			if (errors.Count == 0)
+				return;
+			foreach (var error in errors) {
+				IdeServices.TaskService.Errors.Add (new TaskListEntry (error) {
+					WorkspaceObject = DocumentContext.Project,
+					Owner = this
+				});
+			}
+			IdeServices.TaskService.ShowErrors ();
 		}
 		
 		[CommandHandler (XmlCommands.AssignStylesheet)]
 		public void AssignStylesheetCommand ()
 		{
-			// Prompt user for filename.
-
 			string fileName = XmlEditorService.BrowseForStylesheetFile ();
-
-			if (!string.IsNullOrEmpty (stylesheetFileName))
-
+			if (!string.IsNullOrEmpty (fileName)) {
 				stylesheetFileName = fileName;
+			}
 		}
 		
 		[CommandHandler (XmlCommands.RunXslTransform)]
@@ -804,28 +762,29 @@ namespace MonoDevelop.Xml.Editor
 					string xsltContent;
 					try {
 						xsltContent = GetFileContent (stylesheetFileName);	
-					} catch (System.IO.IOException) {
+					} catch (IOException) {
 						monitor.ReportError (
 						    GettextCatalog.GetString ("Error reading file '{0}'.", stylesheetFileName), null);
 						return;
 					}
-					System.Xml.Xsl.XslCompiledTransform xslt = 
-						XmlEditorService.ValidateStylesheet (monitor, xsltContent, stylesheetFileName, DocumentContext.Project);
-					if (xslt == null)
+					(var xslt, var errors) =  XmlEditorService.CompileStylesheet (xsltContent, stylesheetFileName);
+					if (xslt == null) {
+						monitor.ReportError (GettextCatalog.GetString ("Failed to compile stylesheet"));
 						return;
-					
-					XmlDocument doc = XmlEditorService.ValidateXml (monitor, Editor.Text, FileName, DocumentContext.Project);
-					if (doc == null)
-						return;
+					}
 					
 					string newFileName = XmlEditorService.GenerateFileName (FileName, "-transformed{0}.xml");
 					
 					monitor.BeginTask (GettextCatalog.GetString ("Executing transform..."), 1);
-					using (XmlTextWriter output = XmlEditorService.CreateXmlTextWriter(Editor)) {
-						xslt.Transform (doc, null, output);
-						IdeApp.Workbench.NewDocument (
-						    newFileName, "application/xml", output.ToString ());
+
+					var output = new EncodedStringWriter (Encoding.UTF8);
+					using (XmlReader input = XmlReader.Create (new StringReader (Editor.Text), null, FileName)) {
+						using (XmlTextWriter writer = XmlEditorService.CreateXmlTextWriter (Editor, output)) {
+							xslt.Transform (input, writer);
+						}
 					}
+					IdeApp.Workbench.NewDocument (newFileName, "application/xml", output.ToString ());
+
 					monitor.ReportSuccess (GettextCatalog.GetString ("Transform completed."));
 					monitor.EndTask ();
 				} catch (Exception ex) {
@@ -840,12 +799,11 @@ namespace MonoDevelop.Xml.Editor
 		string GetFileContent (string fileName)
 
 		{
-			var tf =
-				MonoDevelop.Ide.TextFileProvider.Instance.GetReadOnlyTextEditorData (fileName);
+			var tf = TextFileProvider.Instance.GetReadOnlyTextEditorData (fileName);
  			if (tf != null)
 				return tf.Text;
 
-			System.IO.StreamReader reader = new System.IO.StreamReader (fileName, true);
+			var reader = new System.IO.StreamReader (fileName, true);
 
 			return reader.ReadToEnd();
 
@@ -863,12 +821,13 @@ namespace MonoDevelop.Xml.Editor
 					&& doc.GetErrorsAsync().Result.Count <= inferredCompletionData.ErrorCount)
 			{
 				inferenceQueued = true;
-				System.Threading.ThreadPool.QueueUserWorkItem (delegate {
+				ThreadPool.QueueUserWorkItem (delegate {
 					try {
-						InferredXmlCompletionProvider newData = new InferredXmlCompletionProvider ();
+						var newData = new InferredXmlCompletionProvider {
+							TimeStampUtc = DateTime.UtcNow,
+							ErrorCount = doc.GetErrorsAsync ().Result.Count
+						};
 						newData.Populate (doc.XDocument);
-						newData.TimeStampUtc = DateTime.UtcNow;
-						newData.ErrorCount = doc.GetErrorsAsync().Result.Count;
 						this.inferenceQueued = false;
 						this.inferredCompletionData = newData;
 					} catch (Exception ex) {

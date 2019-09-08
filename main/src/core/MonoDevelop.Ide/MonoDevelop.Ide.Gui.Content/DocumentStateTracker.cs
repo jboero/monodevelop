@@ -35,7 +35,7 @@ using MonoDevelop.Core.Text;
 
 namespace MonoDevelop.Ide.Gui.Content
 {
-	
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public class DocumentStateTracker<T> : IDisposable where T : IDocumentStateEngine
 	{
 		T currentEngine;
@@ -61,8 +61,11 @@ namespace MonoDevelop.Ide.Gui.Content
 		
 		void textChanged (object sender, TextChangeEventArgs args)
 		{
-			if (args.Offset< currentEngine.Position)
-				ResetEngineToPosition (args.Offset);
+			for (int i = 0; i < args.TextChanges.Count; ++i) {
+				var change = args.TextChanges[i];
+				if (change.Offset < currentEngine.Position)
+					ResetEngineToPosition (change.Offset);
+			}
 		}
 		
 		public void ResetEngineToPosition (int position)

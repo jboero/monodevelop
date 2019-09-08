@@ -40,7 +40,7 @@ namespace MonoDevelop.Ide.Extensions
 		/// <summary>
 		/// Called just after the initializer is created
 		/// </summary>
-		internal protected virtual void Initialize ()
+		internal protected virtual void Initialize (StartupInfo startupInfo)
 		{
 		}
 

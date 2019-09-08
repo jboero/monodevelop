@@ -1,4 +1,4 @@
-//
+﻿//
 // GuiBuilderService.cs
 //
 // Author:
@@ -145,12 +145,12 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 		
 		static string OnMimeResolve (string url)
 		{
-			return DesktopService.GetMimeTypeForUri (url);
+			return IdeServices.DesktopService.GetMimeTypeForUri (url);
 		}
 		
 		static void OnShowUrl (string url)
 		{
-			DesktopService.ShowUrl (url);
+			IdeServices.DesktopService.ShowUrl (url);
 		}
 		
 		internal static void StoreConfiguration ()
@@ -218,7 +218,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 				if (!exists) {
 					Pad p = IdeApp.Workbench.GetPad<MonoDevelop.DesignerSupport.ToolboxPad> ();
 					if (p != null) p.Visible = true;
-					p = IdeApp.Workbench.GetPad<MonoDevelop.DesignerSupport.PropertyPad> ();
+					p = IdeApp.Workbench.GetPad<MonoDevelop.DesignerSupport.IPropertyPad> ();
 					if (p != null) p.Visible = true;
 				}
 			}
@@ -253,7 +253,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 		internal static bool HasOpenDesigners (Project project, bool modifiedOnly)
 		{
 			foreach (Document doc in IdeApp.Workbench.Documents) {
-				if ((doc.GetContent<GuiBuilderView>() != null || doc.GetContent<ActionGroupView>() != null) && doc.Project == project && (!modifiedOnly || doc.IsDirty))
+				if ((doc.GetContent<GuiBuilderView>() != null || doc.GetContent<ActionGroupView>() != null) && doc.Owner == project && (!modifiedOnly || doc.IsDirty))
 					return true;
 			}
 			return false;
@@ -377,14 +377,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 			}
 			if (saveToFile)
 				File.WriteAllText (fileName, text);
-			TypeSystemService.NotifyFileChange (fileName, text);
-//			
-//			if (ProjectDomService.HasDom (project)) {
-//				// Only update the parser database if the project is actually loaded in the IDE.
-//				ProjectDomService.Parse (project, fileName, text);
-//				if (saveToFile) 
-//					FileService.NotifyFileChanged (fileName);
-//			}
+			IdeApp.TypeSystemService.NotifyFileChange (fileName, text);
 
 			return fileName;
 		}
@@ -436,13 +429,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 					return null;
 	
 				monitor.Log.WriteLine (GettextCatalog.GetString ("Generating GUI code for project '{0}'...", project.Name));
-				
-				timer.Trace ("Copy support files");
-				
-				// Make sure the referenced assemblies are up to date. It is necessary to do
-				// it now since they may contain widget libraries.
-				project.CopySupportFiles (monitor, configuration);
-				
+
 				timer.Trace ("Update libraries");
 				
 				info.GuiBuilderProject.UpdateLibraries ();
@@ -534,8 +521,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 						timer.Trace ("Writing code");
 						File.WriteAllText (fname, content);
 					} finally {
-						timer.Trace ("Notifying changes");
-						FileService.NotifyFileChanged (fname);
+						timer.Trace ("Code written to file");
 					}
 				}
 				
@@ -543,7 +529,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 				
 				// Make sure the generated files are added to the project
 				if (info.UpdateGtkFolder ()) {
-					Gtk.Application.Invoke (delegate {
+					Gtk.Application.Invoke ((o, args) => {
 						IdeApp.ProjectOperations.SaveAsync (project);
 					});
 				}
@@ -576,13 +562,13 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 		{
 			content = StripHeaderAndBlankLines (content, provider);
 
-			string mt = DesktopService.GetMimeTypeForUri (file);
+			string mt = IdeServices.DesktopService.GetMimeTypeForUri (file);
 			var formatter = MonoDevelop.Ide.CodeFormatting.CodeFormatterService.GetFormatter (mt);
 			if (formatter != null)
 				content = formatter.FormatText (PolicyService.InvariantPolicies, content) ?? content;
 			
 			// The project policies should be taken for generated files (windows git eol problem)
-			var pol = project.Policies.Get<TextStylePolicy> (DesktopService.GetMimeTypeForUri (file));
+			var pol = project.Policies.Get<TextStylePolicy> (IdeServices.DesktopService.GetMimeTypeForUri (file));
 			string eol = pol.GetEolMarker ();
 			if (Environment.NewLine != eol)
 				content = content.Replace (Environment.NewLine, eol);

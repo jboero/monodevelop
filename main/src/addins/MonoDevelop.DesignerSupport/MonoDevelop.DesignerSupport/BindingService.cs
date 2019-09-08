@@ -1,4 +1,4 @@
-//
+﻿//
 // BindingService.cs: Utility methods for binding CodeBehind members.
 //
 // Authors:
@@ -167,7 +167,7 @@ namespace MonoDevelop.DesignerSupport
 //			if (!isChildClass)
 //				throw new ArgumentException ("Class specificPartToAffect is not a part of class cls");
 //			
-//			var dom = TypeSystemService.GetCompilation (project);
+//			var dom = IdeApp.TypeSystemService.GetCompilation (project);
 //			var existingMember = GetCompatibleMemberInClass (dom, cls, member);
 //			
 //			if (existingMember == null)
@@ -194,6 +194,15 @@ namespace MonoDevelop.DesignerSupport
 				return new IMethodSymbol[0];
 			return GetCompatibleMethodsInClass (cls, eveMeth);
 		}
+
+		static IEnumerable<INamedTypeSymbol> GetBaseTypes (ITypeSymbol type)
+		{
+			var current = type.BaseType;
+			while (current != null) {
+				yield return current;
+				current = current.BaseType;
+			}
+		}
 		
 		//TODO: check accessibility
 		public static IEnumerable<IMethodSymbol> GetCompatibleMethodsInClass (ITypeSymbol cls, IMethodSymbol matchMeth)
@@ -202,7 +211,7 @@ namespace MonoDevelop.DesignerSupport
 			List<ITypeSymbol>[] baseTypes = new List<ITypeSymbol>[matchMeth.Parameters.Length];
 			for (int i = 0; i < matchMeth.Parameters.Length; i++) {
 				pars[i] = matchMeth.Parameters[i].Type;
-				baseTypes[i] = new List<ITypeSymbol> (pars[i].GetBaseTypes ());
+				baseTypes[i] = new List<ITypeSymbol> ( (GetBaseTypes (pars[i])));
 			}
 
 			var matchMethType = matchMeth.ReturnType;

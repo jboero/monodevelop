@@ -98,27 +98,32 @@ namespace MonoDevelop.Ide.Gui.Pads.ClassPad
 								 .Where (innerClass => innerClass.DeclaredAccessibility == Accessibility.Public ||
 													   (innerClass.DeclaredAccessibility == Accessibility.Protected && publicProtectedOnly) ||
 													   !publicOnly)
+								 .Where (c => !c.IsImplicitClass)
 								 .Select (innerClass => new ClassData (classData.Project, innerClass)));
 
 			builder.AddChildren (classData.Class.GetMembers ().OfType<IMethodSymbol> ().Where (m => m.MethodKind != MethodKind.PropertyGet && m.MethodKind != MethodKind.PropertySet)
 								 .Where (method => method.DeclaredAccessibility == Accessibility.Public ||
 												   (method.DeclaredAccessibility == Accessibility.Protected && publicProtectedOnly) ||
-												   !publicOnly));
+												   !publicOnly)
+								 .Where (m => !m.IsImplicitlyDeclared));
 
 			builder.AddChildren (classData.Class.GetMembers ().OfType<IPropertySymbol> ()
 								 .Where (property => property.DeclaredAccessibility == Accessibility.Public ||
 										 (property.DeclaredAccessibility == Accessibility.Protected && publicProtectedOnly) ||
-			                             !publicOnly));
+			                             !publicOnly)
+								 .Where (m => !m.IsImplicitlyDeclared));
 
 			builder.AddChildren (classData.Class.GetMembers ().OfType<IFieldSymbol> ()
 								 .Where (field => field.DeclaredAccessibility == Accessibility.Public ||
 										 (field.DeclaredAccessibility == Accessibility.Protected && publicProtectedOnly) ||
-										 !publicOnly));
+										 !publicOnly)
+								 .Where (m => !m.IsImplicitlyDeclared));
 
 			builder.AddChildren (classData.Class.GetMembers ().OfType<IEventSymbol> ()
 								 .Where (e => e.DeclaredAccessibility == Accessibility.Public ||
 										 (e.DeclaredAccessibility == Accessibility.Protected && publicProtectedOnly) ||
-										 !publicOnly));
+										 !publicOnly)
+								 .Where (m => !m.IsImplicitlyDeclared));
 		}
 
 		public override bool HasChildNodes (ITreeBuilder builder, object dataObject)
@@ -126,14 +131,6 @@ namespace MonoDevelop.Ide.Gui.Pads.ClassPad
 			// Checking if a class has member is expensive since it requires loading the whole
 			// info from the db, so we always return true here. After all 99% of classes will have members
 			return true;
-		}
-
-		public override int CompareObjects (ITreeNavigator thisNode, ITreeNavigator otherNode)
-		{
-			if (thisNode.DataItem is ClassData)
-				return DefaultSort;
-			else
-				return 1;
 		}
 	}
 

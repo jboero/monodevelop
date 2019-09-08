@@ -112,6 +112,12 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 				tb.UpdateChildren ();
 			}
 		}
+
+		public override int GetSortIndex (ITreeNavigator node)
+		{
+			// Before items, but after references and other collections
+			return -100;
+		}
 	
 		public override void BuildNode (ITreeBuilder treeBuilder, object dataObject, NodeInfo nodeInfo)
 		{
@@ -338,7 +344,21 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		{
 			return base.CanDropNode (dataObject, operation);
 		}
-		
+
+		public override bool CanHandleDropFromChild (object [] dataObjects, DragOperation operation, DropPosition position)
+		{
+			return CanHandleDropFromChild (dataObjects, position);
+		}
+
+		internal static bool CanHandleDropFromChild (object [] dataObjects, DropPosition position)
+		{
+			foreach (var o in dataObjects) {
+				if (!(o is ProjectFolder || o is ProjectFile))
+					return false;
+			}
+			return position == DropPosition.Into;
+		}
+
 		public override void OnNodeDrop (object dataObject, DragOperation operation)
 		{
 			base.OnNodeDrop (dataObject, operation);
@@ -361,14 +381,9 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			nav.MoveToParent ();
 		}
 		
-		internal static bool PathExistsInProject (Project project, string path)
+		internal static bool PathExistsInProject (Project project, FilePath path)
 		{
-			string basePath = path;
-			foreach (ProjectFile f in project.Files)
-				if (f.Name.StartsWith (basePath)
-				    && (f.Name.Length == basePath.Length || f.Name[basePath.Length] == Path.DirectorySeparatorChar))
-					return true;
-			return false;
+			return project.PathExistsInProject (path);
 		}
 
 		internal static bool ContainsDirectorySeparator (string name)

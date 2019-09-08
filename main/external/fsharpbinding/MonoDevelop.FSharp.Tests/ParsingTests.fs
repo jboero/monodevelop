@@ -1,9 +1,8 @@
 ﻿namespace MonoDevelopTests
 open NUnit.Framework
 open FsUnit
-open MonoDevelop.FSharp
-open ExtCore
-
+open MonoDevelop.FSharp.Shared
+open System
 
 [<TestFixture>]
 type ParsingTests() =
@@ -52,3 +51,9 @@ type ParsingTests() =
     member x.``Find custom operator``() =
         let source = "let ( >|.> ) a b = a + b"
         assertIdents source ">.>" 9
+
+    [<Test>]
+    member x.``Find residue``() =
+        let source = "System.DateTime.Now.ToString().End"
+        Parsing.findResidue source
+        |> should equal "End"

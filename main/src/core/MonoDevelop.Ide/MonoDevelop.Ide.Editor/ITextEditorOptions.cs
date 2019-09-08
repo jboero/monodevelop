@@ -1,4 +1,4 @@
-﻿//
+//
 // ITextEditorOptions.cs
 //
 // Author:
@@ -77,6 +77,8 @@ namespace MonoDevelop.Ide.Editor
 		bool ShowIconMargin { get; }
 		bool ShowLineNumberMargin { get; }
 		bool ShowFoldMargin { get; }
+		bool EnableQuickDiff { get; }
+             
 		bool HighlightCaretLine { get; }
 		int RulerColumn { get; }
 		bool ShowRuler { get; }
@@ -84,14 +86,15 @@ namespace MonoDevelop.Ide.Editor
 		bool OverrideDocumentEolMarker { get; }
 		bool EnableSyntaxHighlighting { get; }
 		bool RemoveTrailingWhitespaces { get; }
-		
+
+		[Obsolete ("Old editor")]
 		bool WrapLines { get; }
 
 		string FontName { get; }
 
 		string GutterFontName { get; }
 
-		string ColorScheme { get;  }
+		string EditorTheme { get;  }
 
 		string DefaultEolMarker { get; }
 
@@ -108,11 +111,11 @@ namespace MonoDevelop.Ide.Editor
 
 	public static class TextEditorOptionsExtension
 	{
-		public static ColorScheme GetColorStyle (this ITextEditorOptions options)
+		public static EditorTheme GetEditorTheme (this ITextEditorOptions options)
 		{
 			if (options == null)
 				throw new ArgumentNullException ("options");
-			return SyntaxModeService.GetColorStyle (options.ColorScheme);
+			return SyntaxHighlightingService.GetEditorTheme (options.EditorTheme);
 		}
 
 		/// <summary>

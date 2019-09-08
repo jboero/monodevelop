@@ -28,9 +28,11 @@ using System;
 using MonoDevelop.Core.Text;
 using System.Text;
 using MonoDevelop.Core;
+using System.Collections.Generic;
 
 namespace MonoDevelop.Ide.Editor
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public interface ITextDocument : IReadonlyTextDocument
 	{
 		/// <summary>
@@ -54,8 +56,6 @@ namespace MonoDevelop.Ide.Editor
 
 		new string MimeType { get; set; }
 
-		new bool UseBOM { get; set; }
-
 		new Encoding Encoding { get; set; }
 
 		void InsertText (int offset, string text);
@@ -67,6 +67,8 @@ namespace MonoDevelop.Ide.Editor
 		void ReplaceText (int offset, int length, string value);
 
 		void ReplaceText (int offset, int length, ITextSource value);
+
+		void ApplyTextChanges (IEnumerable<Microsoft.CodeAnalysis.Text.TextChange> changes);
 
 		bool IsInAtomicUndo {
 			get;
@@ -107,6 +109,7 @@ namespace MonoDevelop.Ide.Editor
 //		event EventHandler<LineEventArgs> LineRemoved;
 	}
 
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public static class DocumentExtensions
 	{
 		public static void RemoveText (this ITextDocument document, ISegment segment)

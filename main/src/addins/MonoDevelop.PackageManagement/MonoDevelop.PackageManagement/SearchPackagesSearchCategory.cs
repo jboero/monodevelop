@@ -42,13 +42,14 @@ namespace MonoDevelop.PackageManagement
 		public SearchPackagesSearchCategory ()
 			: base (GettextCatalog.GetString("Search"))
 		{
+			this.sortOrder = SearchPackagesOrder;
 		}
 		public override Task GetResults (ISearchResultCallback searchResultCallback, SearchPopupSearchPattern pattern, CancellationToken token)
 		{
 			if (IsProjectSelected ()) {
 				searchResultCallback.ReportResult (new SearchPackageSearchResult (pattern));
 			}
-			return SpecializedTasks.EmptyTask;
+			return Task.CompletedTask;
 		}
 
 		class SearchPackageSearchResult : SearchResult
@@ -61,6 +62,8 @@ namespace MonoDevelop.PackageManagement
 				}
 			}
 
+			public override string AccessibilityMessage => GettextCatalog.GetString ("Search for {0} in packages", pattern.Pattern);
+
 			public SearchPackageSearchResult (SearchPopupSearchPattern pattern) : base ("", "", 0)
 			{
 				this.pattern = pattern;
@@ -68,8 +71,8 @@ namespace MonoDevelop.PackageManagement
 
 			public override void Activate ()
 			{
-				var runner = new AddPackagesDialogRunner ();
-				runner.Run (pattern.UnparsedPattern);
+				var runner = new ManagePackagesDialogRunner ();
+				runner.Run (IdeApp.ProjectOperations.CurrentSelectedProject, pattern.UnparsedPattern);
 			}
 
 			public override string GetMarkupText (bool selected)

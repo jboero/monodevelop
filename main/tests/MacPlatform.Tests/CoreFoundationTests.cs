@@ -24,8 +24,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
+using System.IO;
 using MonoDevelop.MacInterop;
 using NUnit.Framework;
+using UnitTests;
 
 namespace MacPlatform.Tests
 {
@@ -40,35 +42,6 @@ namespace MacPlatform.Tests
 			Assert.AreEqual (MonoDevelop.MacInterop.CoreFoundation.FetchString (testString), test);
 
 			MonoDevelop.MacInterop.CoreFoundation.Release (testString);
-		}
-
-		[Test]
-		public static void TestURL ()
-		{
-			string test = "http://www.monodevelop.org";
-			IntPtr testUrl = MonoDevelop.MacInterop.CoreFoundation.CreatePathUrl (test);
-
-			Assert.AreEqual (MonoDevelop.MacInterop.CoreFoundation.UrlToPath (testUrl), test);
-
-			MonoDevelop.MacInterop.CoreFoundation.Release (testUrl);
-		}
-
-		[Test]
-		public static void TestApplicationUrls ()
-		{
-			string test = "/Applications/Xamarin Studio.app/Contents/Info.plist";
-			string[] results = MonoDevelop.MacInterop.CoreFoundation.GetApplicationUrls (test, MonoDevelop.MacInterop.CoreFoundation.LSRolesMask.All);
-
-			Assert.Greater (results.Length, 0);
-		}
-
-		[Test]
-		public static void TestApplicationUrl ()
-		{
-			string test = "/Applications/Xamarin Studio.app/Contents/Info.plist";
-			string result = MonoDevelop.MacInterop.CoreFoundation.GetApplicationUrl (test, MonoDevelop.MacInterop.CoreFoundation.LSRolesMask.All);
-
-			Assert.NotNull (result);
 		}
 	}
 }

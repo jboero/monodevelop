@@ -57,6 +57,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		
 		protected override void Initialize ()
 		{
+			base.Initialize ();
+
 			IdeApp.Workspace.FileAddedToProject += OnAddFile;
 			IdeApp.Workspace.FileRemovedFromProject += OnRemoveFile;
 			
@@ -72,6 +74,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			FileService.FileRenamed -= OnSystemFileRenamed;
 			FileService.FileRemoved -= OnSystemFileDeleted;
 			FileService.FileCreated -= OnSystemFileAdded;
+
+			base.Dispose ();
 		}
 
 		public override void OnNodeAdded (object dataObject)
@@ -244,6 +248,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		
 		void OnSystemFileAdded (object sender, FileEventArgs args)
 		{
+			if (Context.Tree.IsDestroyed)
+				return;
 			foreach (FileEventInfo e in args) {
 				Project project = GetProjectForFile (e.FileName);
 				if (project == null) return;
@@ -259,39 +265,46 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		
 		void OnSystemFileDeleted (object sender, FileEventArgs args)
 		{
+			if (Context.Tree.IsDestroyed)
+				return;
 			foreach (FileEventInfo e in args) {
-				Project project = GetProjectForFile (e.FileName);
+				try {
+					Project project = GetProjectForFile (e.FileName);
 
-				ITreeBuilder tb = Context.GetTreeBuilder ();
-				
-				if (e.IsDirectory) {
-					if (tb.MoveToObject (new ProjectFolder (e.FileName, project))) {
-						if (tb.Options ["ShowAllFiles"] && (project == null || !ProjectFolderCommandHandler.PathExistsInProject (project, e.FileName))) {
+					ITreeBuilder tb = Context.GetTreeBuilder ();
+
+					if (e.IsDirectory) {
+						if (tb.MoveToObject (new ProjectFolder (e.FileName, project))) {
+							if (tb.Options ["ShowAllFiles"] && (project == null || !ProjectFolderCommandHandler.PathExistsInProject (project, e.FileName))) {
+								tb.Remove ();
+								return;
+							}
+						}
+					} else {
+						if (tb.MoveToObject (new SystemFile (e.FileName, project))) {
 							tb.Remove ();
 							return;
 						}
 					}
-				}
-				else {
-					if (tb.MoveToObject (new SystemFile (e.FileName, project))) {
-						tb.Remove ();
-						return;
+
+					// Find the parent folder, and update it's children count
+
+					string parentPath = Path.GetDirectoryName (e.FileName);
+					if (tb.MoveToObject (new ProjectFolder (parentPath, project))) {
+						if (tb.Options ["ShowAllFiles"] && Directory.Exists (parentPath))
+							tb.UpdateChildren ();
 					}
-				}
-				
-				// Find the parent folder, and update it's children count
-				
-				string parentPath = Path.GetDirectoryName (e.FileName);
-				if (tb.MoveToObject (new ProjectFolder (parentPath, project))) {
-					if (tb.Options ["ShowAllFiles"] && Directory.Exists (parentPath))
-						tb.UpdateChildren ();
+				} catch (Exception ex) {
+					LoggingService.LogInternalError ($"Error while updating project tree in OnSystemFileDeleted : {string.Join (", ", args.Select (x => x.FileName))}.", ex);
 				}
 			}
 		}
 		
 		void OnSystemFileRenamed (object sender, FileCopyEventArgs args)
 		{
-			foreach (FileCopyEventInfo e in args) {
+			if (Context.Tree.IsDestroyed)
+				return;
+			foreach (FileEventInfo e in args) {
 				Project project = GetProjectForFile (e.SourceFile);
 				if (project == null) return;
 				

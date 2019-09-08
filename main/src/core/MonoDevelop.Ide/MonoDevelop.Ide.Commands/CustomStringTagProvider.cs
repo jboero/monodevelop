@@ -27,11 +27,11 @@
 
 
 using System;
-using MonoDevelop.Core;
-using MonoDevelop.Ide.Gui;
-using System.IO;
 using System.Collections.Generic;
+using Microsoft.VisualStudio.Text.Editor;
+using MonoDevelop.Core;
 using MonoDevelop.Core.StringParsing;
+using MonoDevelop.Ide.Gui;
 
 namespace MonoDevelop.Ide.Commands
 {
@@ -41,20 +41,20 @@ namespace MonoDevelop.Ide.Commands
 	{
 		public override IEnumerable<StringTagDescription> GetTags ()
 		{
-			yield return new StringTagDescription ("FilePath", "File Path");
-			yield return new StringTagDescription ("FileDir", "File Directory");
-			yield return new StringTagDescription ("FileName", "File Name");
-			yield return new StringTagDescription ("FileNamePrefix", "File Name Without Extension");
-			yield return new StringTagDescription ("FileExt", "File Extension");
-			yield return new StringTagDescription ("CurLine", "Cursor Line", false);
-			yield return new StringTagDescription ("CurColumn", "Cursor Column", false);
-			yield return new StringTagDescription ("CurOffset", "Cursor Offset", false);
-			yield return new StringTagDescription ("CurText", "Selected Editor Text", false);
-			yield return new StringTagDescription ("EditorText", "Editor Text", false);
-			yield return new StringTagDescription ("StartupPath", "MonoDevelop Startup Directory", false);
-			yield return new StringTagDescription ("ConfigDir", "MonoDevelop Configuration Directory", false);
-			yield return new StringTagDescription ("DataDir", "MonoDevelop User Data Directory", false);
-			yield return new StringTagDescription ("LogDir", "MonoDevelop Log Directory", false);
+			yield return new StringTagDescription ("FilePath", GettextCatalog.GetString ("File Path"));
+			yield return new StringTagDescription ("FileDir", GettextCatalog.GetString ("File Directory"));
+			yield return new StringTagDescription ("FileName", GettextCatalog.GetString ("File Name"));
+			yield return new StringTagDescription ("FileNamePrefix", GettextCatalog.GetString ("File Name Without Extension"));
+			yield return new StringTagDescription ("FileExt", GettextCatalog.GetString ("File Extension"));
+			yield return new StringTagDescription ("CurLine", GettextCatalog.GetString ("Cursor Line"), false);
+			yield return new StringTagDescription ("CurColumn", GettextCatalog.GetString ("Cursor Column"), false);
+			yield return new StringTagDescription ("CurOffset", GettextCatalog.GetString ("Cursor Offset"), false);
+			yield return new StringTagDescription ("CurText", GettextCatalog.GetString ("Selected Editor Text"), false);
+			yield return new StringTagDescription ("EditorText", GettextCatalog.GetString ("Editor Text"), false);
+			yield return new StringTagDescription ("StartupPath", GettextCatalog.GetString ("MonoDevelop Startup Directory"), false);
+			yield return new StringTagDescription ("ConfigDir", GettextCatalog.GetString ("MonoDevelop Configuration Directory"), false);
+			yield return new StringTagDescription ("DataDir", GettextCatalog.GetString ("MonoDevelop User Data Directory"), false);
+			yield return new StringTagDescription ("LogDir", GettextCatalog.GetString ("MonoDevelop Log Directory"), false);
 		}
 		
 		public override object GetTagValue (Workbench wb, string tag)
@@ -85,30 +85,43 @@ namespace MonoDevelop.Ide.Commands
 						return !wb.ActiveDocument.IsFile ? String.Empty : wb.ActiveDocument.FileName.Extension;
 					return null;
 					
-				case "CURLINE":
-					if (wb.ActiveDocument != null && wb.ActiveDocument.Editor != null)
-						return wb.ActiveDocument.Editor.CaretLocation.Line;
+				case "CURLINE": {
+					if (wb.ActiveDocument?.GetContent<ITextView> (true) is ITextView view) {
+						var pos = view.Caret.Position.BufferPosition;
+						return pos.Snapshot.GetLineNumberFromPosition (pos.Position) + 1;
+					}
 					return null;
+				}
 					
-				case "CURCOLUMN":
-					if (wb.ActiveDocument != null && wb.ActiveDocument.Editor != null)
-						return wb.ActiveDocument.Editor.CaretLocation.Column;
+				case "CURCOLUMN": {
+					if (wb.ActiveDocument?.GetContent<ITextView> (true) is ITextView view) {
+						var pos = view.Caret.Position.BufferPosition;
+						var line = pos.Snapshot.GetLineFromPosition (pos.Position);
+						return pos.Position - line.Start.Position + 1;
+					}
 					return null;
+				}
 					
-				case "CUROFFSET":
-					if (wb.ActiveDocument != null && wb.ActiveDocument.Editor != null)
-						return wb.ActiveDocument.Editor.CaretOffset;
+				case "CUROFFSET": {
+					if (wb.ActiveDocument?.GetContent<ITextView> (true) is ITextView view) {
+						return view.Caret.Position.BufferPosition.Position;
+					}
 					return null;
+				}
 					
-				case "CURTEXT":
-					if (wb.ActiveDocument != null && wb.ActiveDocument.Editor != null)
-						return wb.ActiveDocument.Editor.SelectedText;
+				case "CURTEXT": {
+					if (wb.ActiveDocument?.GetContent<ITextView> (true) is ITextView view) {
+						return view.Selection.IsEmpty? "" : view.Selection.SelectedSpans[0].GetText ();
+					}
 					return null;
+				}
 					
-				case "EDITORTEXT":
-					if (wb.ActiveDocument != null && wb.ActiveDocument.Editor != null)
-						return wb.ActiveDocument.Editor.Text;
+				case "EDITORTEXT": {
+					if (wb.ActiveDocument?.GetContent<ITextView> (true) is ITextView view) {
+						return view.TextBuffer.CurrentSnapshot.GetText ();
+					}
 					return null;
+				}
 					
 				case "STARTUPPATH":
 					return AppDomain.CurrentDomain.BaseDirectory;

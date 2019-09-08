@@ -1,4 +1,4 @@
-﻿//
+//
 // ProjectedSemanticHighlighting.cs
 //
 // Author:
@@ -30,6 +30,7 @@ using System.Collections.Generic;
 
 namespace MonoDevelop.Ide.Editor.Projection
 {
+	[Obsolete]
 	sealed class ProjectedSemanticHighlighting : SemanticHighlighting
 	{
 		List<Projection> projections;
@@ -90,7 +91,7 @@ namespace MonoDevelop.Ide.Editor.Projection
 						var originalEndOffset = seg.FromProjectedToOriginal (projectedEndOffset);
 
 						foreach (var cs in p.ProjectedEditor.SemanticHighlighting.GetColoredSegments (MonoDevelop.Core.Text.TextSegment.FromBounds (projectedStartOffset, projectedEndOffset))) {
-							yield return new ColoredSegment (cs.Offset - projectedStartOffset + v, cs.Length, cs.ColorStyleKey);
+							yield return new ColoredSegment (cs.Offset - projectedStartOffset + v, cs.Length, cs.ScopeStack);
 						}
 
 						if (originalEndOffset < segment.EndOffset) {

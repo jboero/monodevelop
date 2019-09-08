@@ -32,6 +32,7 @@ using MonoDevelop.Components.Extensions;
 using System.Collections.Generic;
 using Mono.Addins;
 using System.Text;
+using MonoDevelop.Projects.Text;
 
 namespace MonoDevelop.Ide.Gui.Dialogs
 {
@@ -91,13 +92,30 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 		public FileViewer SelectedViewer {
 			get { return data.SelectedViewer; }
 		}
-		
+
+		/// <summary>
+		/// Set to true if we want change the default behaviour to center dialog to parent window
+		/// </summary>
+		public bool CenterToParent {
+			get { return data.CenterToParent; }
+			set { data.CenterToParent = value; }
+		}
+
 		protected override bool RunDefault ()
 		{
 			var win = new FileSelectorDialog (Title, Action.ToGtkAction ());
-			win.SelectedEncoding = Encoding != null ? Encoding.CodePage : 0;
+			win.SelectedEncoding = TextEncoding.GetEncoding (Encoding);
 			win.ShowEncodingSelector = ShowEncodingSelector;
 			win.ShowViewerSelector = ShowViewerSelector;
+			bool pathAlreadySet = false;
+			win.CurrentFolderChanged += (s, e) => {
+				var selectedPath = data.OnDirectoryChanged (this, win.CurrentFolder);
+				if (selectedPath.IsNull)
+					return;
+				data.SelectedFiles = new FilePath [] { selectedPath };
+				pathAlreadySet = true;
+				win.Respond (Gtk.ResponseType.Cancel);
+			};
 			
 			SetDefaultProperties (win);
 			
@@ -105,12 +123,12 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 				var result = MessageService.RunCustomDialog (win, TransientFor ?? MessageService.RootWindow);
 				if (result == (int)Gtk.ResponseType.Ok) {
 					GetDefaultProperties (win);
-					data.Encoding = win.SelectedEncoding > 0 ? Encoding.GetEncoding (win.SelectedEncoding) : null;
+					data.Encoding = win.SelectedEncoding?.Encoding;
 					data.CloseCurrentWorkspace = win.CloseCurrentWorkspace;
 					data.SelectedViewer = win.SelectedViewer;
 					return true;
 				} else
-					return false;
+					return pathAlreadySet;
 			} finally {
 				win.Destroy ();
 				win.Dispose ();

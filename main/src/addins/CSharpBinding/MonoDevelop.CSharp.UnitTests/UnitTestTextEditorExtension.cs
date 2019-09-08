@@ -40,21 +40,35 @@ using MonoDevelop.Ide.Editor;
 using MonoDevelop.Ide.TypeSystem;
 using ICSharpCode.NRefactory.CSharp.Refactoring;
 using System.Collections.Immutable;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 
 namespace MonoDevelop.CSharp
 {
 	class UnitTestTextEditorExtension : AbstractUnitTestTextEditorExtension
 	{
 		static readonly IList<UnitTestLocation> emptyList = new UnitTestLocation[0];
-		public override Task<IList<UnitTestLocation>> GatherUnitTests (IUnitTestMarkers[] unitTestMarkers, CancellationToken token)
+
+		static bool HasMethodMarkerAttribute (SemanticModel model, IUnitTestMarkers[] markers)
 		{
-			var parsedDocument = DocumentContext.ParsedDocument;
-			if (parsedDocument == null)
-				return Task.FromResult (emptyList);
+			var compilation = model.Compilation;
+			foreach (var marker in markers)
+				if (compilation.GetTypeByMetadataName (marker.TestMethodAttributeMarker) != null)
+					return true;
+			return false;
+		}
+
+		public override async Task<IList<UnitTestLocation>> GatherUnitTests (IUnitTestMarkers[] unitTestMarkers, CancellationToken token)
+		{
+			var analysisDocument = DocumentContext.AnalysisDocument;
+			if (analysisDocument == null)
+				return emptyList;
 			
-			var semanticModel = parsedDocument.GetAst<SemanticModel> ();
+			var semanticModel = await analysisDocument.GetSemanticModelAsync (token);
 			if (semanticModel == null)
-				return Task.FromResult (emptyList);
+				return emptyList;
+
+			if (!HasMethodMarkerAttribute (semanticModel, unitTestMarkers))
+				return emptyList;
 
 			var visitor = new NUnitVisitor (semanticModel, unitTestMarkers, token);
 			try {
@@ -63,9 +77,9 @@ namespace MonoDevelop.CSharp
 				throw;
 			}catch (Exception ex) {
 				LoggingService.LogError ("Exception while analyzing ast for unit tests.", ex);
-				return Task.FromResult (emptyList);
+				return emptyList;
 			}
-			return Task.FromResult (visitor.FoundTests);
+			return visitor.FoundTests;
 		}
 
 		class NUnitVisitor : CSharpSyntaxWalker
@@ -123,7 +137,7 @@ namespace MonoDevelop.CSharp
 
 			static string BuildArguments (AttributeData attr)
 			{
-				var sb = new StringBuilder ();
+				var sb = StringBuilderCache.Allocate ();
 				ImmutableArray<TypedConstant> args;
 				if (attr.ConstructorArguments.Length == 1 && attr.ConstructorArguments [0].Kind == TypedConstantKind.Array)
 					args = attr.ConstructorArguments [0].Values;
@@ -137,23 +151,51 @@ namespace MonoDevelop.CSharp
 
 					AddArgument (args [i], sb);
 				}
-				return sb.ToString ();
+				return StringBuilderCache.ReturnAndFree (sb);
 			}
 
 			static void AddArgument(TypedConstant arg, StringBuilder sb)
 			{
-				if (arg.Kind == TypedConstantKind.Array) {
+				switch (arg.Kind) {
+				case TypedConstantKind.Array:
 					sb.Append ("[");
-					for (int i = 0; i < arg.Values.Length; i++)
-					{
+					for (int i = 0; i < arg.Values.Length; i++) {
 						if (i > 0)
 							sb.Append (", ");
-						
+
 						AddArgument (arg.Values [i], sb);
 					}
 					sb.Append ("]");
-				} else
+					break;
+				case TypedConstantKind.Enum:
+					ulong constant;
+					try {
+						constant = Convert.ToUInt64 (arg.Value);
+					} catch (Exception e) {
+						LoggingService.LogError ("Error while converting enum constant to uint: " + arg.Value, e);
+						goto default;
+					}
+					int num = 0;
+					foreach (var member in arg.Type.GetMembers ()) {
+						if (member is IFieldSymbol field && field.HasConstantValue) {
+							try {
+								var fieldValue = Convert.ToUInt64 (field.ConstantValue);
+								var IsDefaultEnum = constant == 0 && fieldValue == 0;
+								if (IsDefaultEnum || fieldValue != 0 && (constant & fieldValue) == fieldValue) {
+									if (num++ > 0)
+										sb.Append (", ");
+									sb.Append (field.Name);
+								}
+							} catch (Exception e) {
+								LoggingService.LogError ("Error while converting enum field constant to uint: " + field.ConstantValue + " enum type:" + arg.Type.ToDisplayString (), e);
+							}
+						}
+					}
+					break;
+				default:
 					AppendConstant (sb, arg.Value);
+					break;
+				}
 			}
 
 			public override void VisitMethodDeclaration (MethodDeclarationSyntax node)
@@ -168,7 +210,7 @@ namespace MonoDevelop.CSharp
 				IUnitTestMarkers markers = null;
 				foreach (var attr in method.GetAttributes ()) {
 					var cname = attr.AttributeClass.GetFullName ();
-					markers = unitTestMarkers.FirstOrDefault (m => (m.TestMethodAttributeMarker == cname || m.TestCaseMethodAttributeMarker == cname));
+					markers = unitTestMarkers.FirstOrDefault (m => (m.TestMethodAttributeMarker == cname || m.TestCaseMethodAttributeMarker == cname || (m as IUnitTestMarkers2)?.TestCaseSourceAttributeMarker == cname));
 					if (markers != null) {
 						if (test == null) {
 							TagClass (parentClass, markers);

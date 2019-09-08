@@ -11,6 +11,7 @@ namespace MonoDevelop.VersionControl
 	{
 		UrlBasedRepository repo;
 		public event EventHandler<EventArgs> PathChanged;
+		public event EventHandler<EventArgs> UrlChanged;
 		bool updating;
 		List<string> protocols = new List<string> ();
 
@@ -30,6 +31,7 @@ namespace MonoDevelop.VersionControl
 
 			updating = true;
 			repositoryUrlEntry.Text = repo.Url;
+			repositoryPortSpin.Adjustment.Lower = -1.0;
 			Fill ();
 			UpdateControls ();
 			updating = false;
@@ -41,16 +43,27 @@ namespace MonoDevelop.VersionControl
 		
 		public bool Validate ()
 		{
-			if (!repo.IsUrlValid (repositoryUrlEntry.Text)) {
+			if (!repo.IsUrlValid (repositoryUrlEntry.Text) || !CanCreateUri ()) {
 				labelError.Show ();
 				return false;
-			} else {
-				return true;
 			}
+			return true;
+		}
+
+		public bool CanCreateUri()
+		{
+			if (string.IsNullOrEmpty (repositoryUrlEntry.Text))
+				return false;
+
+			return Uri.TryCreate (repositoryUrlEntry.Text, UriKind.RelativeOrAbsolute, out Uri serverUri);
 		}
 
 		public string RelativePath {
 			get { return repositoryPathEntry.Text; }
+		}
+
+		public string RepositoryServer {
+			get { return repositoryServerEntry.Text; }
 		}
 
 		bool ParseSSHUrl (string url)
@@ -81,6 +94,7 @@ namespace MonoDevelop.VersionControl
 			comboProtocol.Active = protocols.IndexOf ("ssh");
 			comboProtocol.Sensitive = false;
 			PathChanged?.Invoke (this, EventArgs.Empty);
+			UrlChanged?.Invoke (this, EventArgs.Empty);
 			return true;
 		}
 		
@@ -133,13 +147,14 @@ namespace MonoDevelop.VersionControl
 					repo.Name = repo.Uri.Host;
 			}
 			updating = false;
+			UrlChanged?.Invoke (this, EventArgs.Empty);
 		}
 		
 		void UpdateControls ()
 		{
 			if (repo.Uri != null || repo.SupportedProtocols.Any (p => repositoryUrlEntry.Text.StartsWith (p + "://", StringComparison.Ordinal))) {
 				repositoryPathEntry.Sensitive = true;
-				bool isUrl = Protocol != "file";
+				bool isUrl = IsUrl;
 				repositoryServerEntry.Sensitive = isUrl;
 				repositoryUserEntry.Sensitive = isUrl;
 				repositoryPortSpin.Sensitive = isUrl;
@@ -150,20 +165,33 @@ namespace MonoDevelop.VersionControl
 				repositoryPortSpin.Sensitive = false;
 			}
 		}
-		
+
+		const string FileProtocol = "file";
+		bool IsUrl => Protocol != FileProtocol;
+
 		void SetRepoUrl ()
 		{
 			if (!repo.SupportedProtocols.Contains (Protocol)) {
 				repo.Url = string.Empty;
 				return;
 			}
-			UriBuilder ub = new UriBuilder ();
-			ub.Host = repositoryServerEntry.Text;
-			ub.Scheme = Protocol;
-			ub.UserName = repositoryUserEntry.Text;
-			ub.Port = (int)repositoryPortSpin.Value;
-			ub.Path = repositoryPathEntry.Text;
-			repo.Url = ub.ToString ();
+
+			if (IsUrl) {
+				var ub = new UriBuilder ();
+				ub.Scheme = Protocol;
+				ub.Host = repositoryServerEntry.Text;
+				ub.UserName = repositoryUserEntry.Text;
+				ub.Port = (int)repositoryPortSpin.Value;
+				ub.Path = repositoryPathEntry.Text;
+
+				if (string.IsNullOrEmpty (ub.Host)) {
+					repo.Url = string.Format ("{0}://", Protocol);
+				} else {
+					repo.Url = ub.ToString ();
+				}
+			} else {
+				repo.Url = string.Format ("{0}://{1}", Protocol, repositoryPathEntry.Text);
+			}
 		}
 
 		protected virtual void OnRepositoryServerEntryChanged(object sender, System.EventArgs e)
@@ -210,13 +238,11 @@ namespace MonoDevelop.VersionControl
 
 		protected void OnRepositoryUrlEntryClipboardPasted (object sender, EventArgs e)
 		{
-			Gtk.Clipboard clip = GetClipboard (Gdk.Atom.Intern ("CLIPBOARD", false));
+			var clip = GetClipboard (Gdk.Atom.Intern ("CLIPBOARD", false));
 			clip.RequestText (delegate (Gtk.Clipboard clp, string text) {
-				if (String.IsNullOrEmpty (text))
+				if (string.IsNullOrEmpty (text))
 					return;
-
-				Uri url;
-				if (Uri.TryCreate (text, UriKind.Absolute, out url))
+				if (repo.IsUrlValid (text))
 					repositoryUrlEntry.Text = text;
 			});
 		}

@@ -1,4 +1,4 @@
-//
+﻿//
 // DockBarItem.cs
 //
 // Author:
@@ -33,10 +33,13 @@ using System;
 using Gtk;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Components;
+using MonoDevelop.Components.AtkCocoaHelper;
 using Xwt.Motion;
 using Animations = Xwt.Motion.AnimationExtensions;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Fonts;
+using MonoDevelop.Ide;
+using Gdk;
 
 namespace MonoDevelop.Components.Docking
 {	
@@ -134,10 +137,14 @@ namespace MonoDevelop.Components.Docking
 
 		public DockBarItem (DockBar bar, DockItem it, int size)
 		{
+			var actionHandler = new ActionDelegate (this);
+			actionHandler.PerformPress += OnPerformPress;
+
 			Events = Events | Gdk.EventMask.EnterNotifyMask | Gdk.EventMask.LeaveNotifyMask;
 			this.size = size;
 			this.bar = bar;
 			this.it = it;
+			CanFocus = true;
 			VisibleWindow = false;
 			UpdateTab ();
 			lastFrameSize = bar.Frame.Allocation.Size;
@@ -158,6 +165,9 @@ namespace MonoDevelop.Components.Docking
 			};
 
 			Styles.Changed += UpdateStyle;
+
+			Accessible.Name = "DockbarItem";
+			Accessible.Role = Atk.Role.PushButton;
 		}
 
 		void IAnimatable.BatchBegin () { }
@@ -216,6 +226,7 @@ namespace MonoDevelop.Components.Docking
 			}
 			
 			mainBox = new Alignment (0,0,1,1);
+			mainBox.Accessible.SetShouldIgnore (true);
 			if (bar.Orientation == Gtk.Orientation.Horizontal) {
 				box = new HBox ();
 				if (bar.AlignToEnd)
@@ -230,18 +241,21 @@ namespace MonoDevelop.Components.Docking
 				else
 					mainBox.SetPadding (9, 11, 5, 5);
 			}
-			
+			box.Accessible.SetShouldIgnore (true);
+
 			if (it.Icon != null) {
 				var desat = it.Icon.WithAlpha (0.5);
 				crossfade = new CrossfadeIcon (desat, it.Icon);
+				crossfade.Accessible.SetShouldIgnore (true);
 				box.PackStart (crossfade, false, false, 0);
 				desat.Dispose ();
 			}
 				
 			if (!string.IsNullOrEmpty (it.Label)) {
 				label = new Label (it.Label);
+				label.Accessible.SetShouldIgnore (true);
 				label.UseMarkup = true;
-				label.ModifyFont (FontService.SansFont.CopyModified (Styles.FontScale11));
+				label.ModifyFont (IdeServices.FontService.SansFont.CopyModified (Styles.FontScale11));
 
 				if (bar.Orientation == Orientation.Vertical)
 					label.Angle = 270;
@@ -259,6 +273,10 @@ namespace MonoDevelop.Components.Docking
 				// TODO: VV: Test Linux
 
 				box.PackStart (label, true, true, 0);
+
+				Accessible.SetLabel (it.Label);
+				Accessible.SetTitle (it.Label);
+				Accessible.Description = GettextCatalog.GetString ("Show the {0} pad", it.Label);
 			} else
 				label = null;
 
@@ -318,6 +336,9 @@ namespace MonoDevelop.Components.Docking
 				if (hiddenFrame != null)
 					bar.Frame.AutoHide (it, hiddenFrame, false);
 				autoShowFrame = bar.Frame.AutoShow (it, bar, size);
+				if (!string.IsNullOrEmpty (it.Label)) {
+					autoShowFrame.Title = it.Label;
+				}
 				autoShowFrame.EnterNotifyEvent += OnFrameEnter;
 				autoShowFrame.LeaveNotifyEvent += OnFrameLeave;
 				autoShowFrame.KeyPressEvent += OnFrameKeyPress;
@@ -349,6 +370,12 @@ namespace MonoDevelop.Components.Docking
 			if (autoShowTimeout == uint.MaxValue) {
 				autoShowTimeout = GLib.Timeout.Add (bar.Frame.AutoShowDelay, delegate {
 					autoShowTimeout = uint.MaxValue;
+
+					// Check is mouse over - it may be that the LeaveEvent wasn't fired becaues of a gtk bug. So we double check as a work around.
+					GetPointer (out int x, out int y);
+					bool isMouseOver = x >= 0 && y >= 0 && x <= Allocation.Width && y <= Allocation.Height;
+					if (!isMouseOver)
+						return false;
 					AutoShow ();
 					return false;
 				});
@@ -371,14 +398,20 @@ namespace MonoDevelop.Components.Docking
 					// Don't hide if the context menu for the item is being shown.
 					if (it.ShowingContextMenu)
 						return true;
-					// Don't hide the item if it has the focus. Try again later.
-					if (it.Widget.FocusChild != null && !force && autoShowFrame != null && ((Gtk.Window)autoShowFrame.Toplevel).HasToplevelFocus)
-						return true;
-					// Don't hide the item if the mouse pointer is still inside the window. Try again later.
-					int px, py;
-					it.Widget.GetPointer (out px, out py);
-					if (it.Widget.Visible && it.Widget.IsRealized && it.Widget.Allocation.Contains (px + it.Widget.Allocation.X, py + it.Widget.Allocation.Y) && !force)
-						return true;
+					if (!force) {
+						// Don't hide the item if it has the focus. Try again later.
+						if (it.Widget.FocusChild != null && autoShowFrame != null && ((Gtk.Window)autoShowFrame.Toplevel).HasToplevelFocus)
+							return true;
+						// Don't hide the item if the mouse pointer is still inside the window. Try again later.
+						int px, py;
+						it.Widget.GetPointer (out px, out py);
+						if (it.Widget.Visible && it.Widget.IsRealized && it.Widget.Allocation.Contains (px + it.Widget.Allocation.X, py + it.Widget.Allocation.Y))
+							return true;
+						// Don't hide if the mouse pointer is still inside the DockBar item
+						GetPointer (out px, out py);
+						if (Allocation.Contains (px + Allocation.X, py + Allocation.Y))
+							return true;
+					}
 					autoHideTimeout = uint.MaxValue;
 					AutoHide (true);
 					return false;
@@ -404,11 +437,32 @@ namespace MonoDevelop.Components.Docking
 		
 		protected override bool OnEnterNotifyEvent (Gdk.EventCrossing evnt)
 		{
+			ScheduleAutoShowOnHover();
+			return base.OnEnterNotifyEvent (evnt);
+		}
+
+		protected override bool OnMotionNotifyEvent (EventMotion evnt)
+		{
+			ScheduleAutoHide (true);
+			ScheduleAutoShowOnHover ();
+			return base.OnMotionNotifyEvent (evnt);
+		}
+
+		void ScheduleAutoShowOnHover ()
+		{
 			if (bar.HoverActivationEnabled && autoShowFrame == null) {
 				ScheduleAutoShow ();
 				QueueDraw ();
 			}
-			return base.OnEnterNotifyEvent (evnt);
+		}
+
+		void OnPerformPress (object sender, EventArgs args)
+		{
+			if (autoShowFrame == null) {
+				AutoShow ();
+			} else {
+				AutoHide (false);
+			}
 		}
 		
 		protected override bool OnLeaveNotifyEvent (Gdk.EventCrossing evnt)
@@ -501,7 +555,28 @@ namespace MonoDevelop.Components.Docking
 				}
 				context.Fill ();
 			}
+
+			if (HasFocus) {
+				Gtk.Style.PaintFocus (Style, GdkWindow, State, Allocation, this, "button", Allocation.X + 2, Allocation.Y + 2, Allocation.Width - 4, Allocation.Height - 4);
+			}
 			return base.OnExposeEvent (evnt);
+		}
+
+		protected override bool OnFocusInEvent (Gdk.EventFocus evnt)
+		{
+			QueueDraw ();
+			return base.OnFocusInEvent (evnt);
+		}
+
+		protected override bool OnFocusOutEvent (Gdk.EventFocus evnt)
+		{
+			QueueDraw ();
+			return base.OnFocusOutEvent (evnt);
+		}
+
+		protected override void OnActivate ()
+		{
+			AutoShow ();
 		}
 	}
 }

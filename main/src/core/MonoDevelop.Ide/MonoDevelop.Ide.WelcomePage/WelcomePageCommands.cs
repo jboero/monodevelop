@@ -29,9 +29,6 @@
 
 using MonoDevelop.Core;
 using MonoDevelop.Components.Commands;
-using MonoDevelop.Ide.Gui;
-using MonoDevelop.Ide;
-using System.Linq;
 
 namespace MonoDevelop.Ide.WelcomePage
 {
@@ -39,7 +36,7 @@ namespace MonoDevelop.Ide.WelcomePage
 	{
 		public static void Show ()
 		{
-			WelcomePageService.ShowWelcomePage (true);
+			WelcomePageService.ShowWelcomePageOrWindow (options: new WelcomeWindowShowOptions (false, true));
 		}
 		
 		protected override void Run()
@@ -49,6 +46,11 @@ namespace MonoDevelop.Ide.WelcomePage
 		
 		protected override void Update (CommandInfo info)
 		{
+			if (Platform.IsMac)
+				info.Text = WelcomePageService.HasWindowImplementation ? GettextCatalog.GetString ("Show Start Window") : GettextCatalog.GetString ("Show Welcome Page");
+			else
+				info.Text = WelcomePageService.HasWindowImplementation ? GettextCatalog.GetString ("Start Window") : GettextCatalog.GetString ("Welcome Page");
+			info.Enabled = WelcomePageService.HasWindowImplementation || (!WelcomePageService.HasWindowImplementation && !WelcomePageService.WelcomePageVisible);
 			base.Update (info);
 		}
 	}

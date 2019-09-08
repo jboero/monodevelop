@@ -1,4 +1,4 @@
-// 
+﻿// 
 // CodeGenerationService.cs
 //  
 // Author:
@@ -48,6 +48,9 @@ using Microsoft.CodeAnalysis.CSharp.Formatting;
 using MonoDevelop.CSharp.Formatting;
 using MonoDevelop.Ide.Gui.Content;
 using MonoDevelop.Ide.TypeSystem;
+using Microsoft.VisualStudio.Text.Editor;
+using MonoDevelop.Ide.Composition;
+using Microsoft.VisualStudio.Text.Operations;
 
 namespace MonoDevelop.Refactoring
 {
@@ -57,7 +60,7 @@ namespace MonoDevelop.Refactoring
 		//		{
 		//			bool isOpen;
 		//			var data = TextFileProvider.Instance.GetTextEditorData (type.Region.FileName, out isOpen);
-		//			var parsedDocument = TypeSystemService.ParseFile (data.FileName, data.MimeType, data.Text);
+		//			var parsedDocument = IdeApp.TypeSystemService.ParseFile (data.FileName, data.MimeType, data.Text);
 		//			
 		//			var insertionPoints = GetInsertionPoints (data, parsedDocument, type);
 		//			
@@ -88,7 +91,7 @@ namespace MonoDevelop.Refactoring
 		//					MessageService.ShowError (GettextCatalog.GetString ("Failed to write file '{0}'.", type.Region.FileName));
 		//				}
 		//			}
-		//			var newDocument = TypeSystemService.ParseFile (data.FileName, data.MimeType, data.Text);
+		//			var newDocument = IdeApp.TypeSystemService.ParseFile (data.FileName, data.MimeType, data.Text);
 		//			return newDocument.ParsedFile.GetMember (suitableInsertionPoint.Location.Line, int.MaxValue);
 		//		}
 
@@ -104,7 +107,7 @@ namespace MonoDevelop.Refactoring
 				throw new ArgumentException ("The given type needs to be defined in source code.", nameof (type));
 
 
-			var ws = MonoDevelop.Ide.TypeSystem.TypeSystemService.GetWorkspace (project.ParentSolution);
+			var ws = IdeApp.TypeSystemService.GetWorkspace (project.ParentSolution);
 			var projectId = ws.GetProjectId (project);
 			var docId = ws.GetDocumentId (projectId, part.SourceTree.FilePath);
 
@@ -120,15 +123,16 @@ namespace MonoDevelop.Refactoring
 
 			var newRoot = root.ReplaceNode (typeDecl, typeDecl.AddMembers ((MemberDeclarationSyntax)newMember.WithAdditionalAnnotations (Simplifier.Annotation, Formatter.Annotation)));
 			document = document.WithSyntaxRoot (newRoot);
-			var policy = project.Policies.Get<CSharpFormattingPolicy> ("text/x-csharp");
-			var textPolicy = project.Policies.Get<TextStylePolicy> ("text/x-csharp");
-			var projectOptions = policy.CreateOptions (textPolicy);
+			var projectOptions = await document.GetOptionsAsync (cancellationToken);
 
 			document = await Formatter.FormatAsync (document, Formatter.Annotation, projectOptions, cancellationToken).ConfigureAwait (false);
 			document = await Simplifier.ReduceAsync (document, Simplifier.Annotation, projectOptions, cancellationToken).ConfigureAwait (false);
 			var text = await document.GetTextAsync (cancellationToken).ConfigureAwait (false);
 			var newSolution = ws.CurrentSolution.WithDocumentText (docId, text);
-			ws.TryApplyChanges (newSolution);
+
+			await Runtime.RunInMainThread (() => {
+				ws.TryApplyChanges (newSolution);
+			});
 		}
 
 		readonly static SyntaxAnnotation insertedMemberAnnotation = new SyntaxAnnotation ("INSERTION_ANNOTATAION");
@@ -142,12 +146,14 @@ namespace MonoDevelop.Refactoring
 				throw new ArgumentNullException (nameof (type));
 			if (newMember == null)
 				throw new ArgumentNullException (nameof (newMember));
-			var ws = MonoDevelop.Ide.TypeSystem.TypeSystemService.GetWorkspace (project.ParentSolution);
-			var projectId = ws.GetProjectId (project);
-			var docId = ws.GetDocumentId (projectId, part.SourceTree.FilePath);
-
-			var document = ws.GetDocument (docId, cancellationToken);
-
+			var doc = await IdeApp.Workbench.OpenDocument (part.SourceTree.FilePath, project, true);
+			var textView = await doc.GetContentWhenAvailable<ITextView> (cancellationToken);
+			await doc.DocumentContext.UpdateParseDocument ();
+			var document = doc.DocumentContext.AnalysisDocument;
+			if (document == null) {
+				LoggingService.LogError ("Can't find document to insert member (fileName:" + part.SourceTree.FilePath + ")");
+				return;
+			}
 			var root = await document.GetSyntaxRootAsync (cancellationToken).ConfigureAwait (false);
 			var typeDecl = (ClassDeclarationSyntax)root.FindNode (part.SourceSpan);
 
@@ -157,11 +163,8 @@ namespace MonoDevelop.Refactoring
 			if (systemVoid != null) newMember = newMember.ReplaceNode (systemVoid, SyntaxFactory.ParseTypeName ("void"));
 
 			var newRoot = root.ReplaceNode (typeDecl, typeDecl.AddMembers ((MemberDeclarationSyntax)newMember.WithAdditionalAnnotations (Simplifier.Annotation, Formatter.Annotation, insertedMemberAnnotation)));
-			var doc = await IdeApp.Workbench.OpenDocument (part.SourceTree.FilePath, project, true);
 
-			var policy = project.Policies.Get<CSharpFormattingPolicy> ("text/x-csharp");
-			var textPolicy = project.Policies.Get<TextStylePolicy> ("text/x-csharp");
-			var projectOptions = policy.CreateOptions (textPolicy);
+			var projectOptions = await document.GetOptionsAsync (cancellationToken);
 
 			document = document.WithSyntaxRoot (newRoot);
 			document = await Formatter.FormatAsync (document, Formatter.Annotation, projectOptions, cancellationToken).ConfigureAwait (false);
@@ -170,11 +173,24 @@ namespace MonoDevelop.Refactoring
 			root = await document.GetSyntaxRootAsync (cancellationToken).ConfigureAwait (false);
 
 			var node = root.GetAnnotatedNodes (insertedMemberAnnotation).Single ();
+			var model = await doc.DocumentContext.AnalysisDocument.GetSemanticModelAsync (cancellationToken);
 
-			Application.Invoke (async delegate {
+			Application.Invoke ((o, args) => {
+
+				var editor = doc.Editor;
+				if (editor == null) {
+					// bypass the insertion point selection UI for the new editor
+					document.Project.Solution.Workspace.TryApplyChanges (document.Project.Solution);
+					var editorOperationsFactoryService = CompositionManager.Instance.GetExportedValue<IEditorOperationsFactoryService> ();
+					var editorOperations = editorOperationsFactoryService.GetEditorOperations (textView);
+					var point = new Microsoft.VisualStudio.Text.VirtualSnapshotPoint (textView.TextSnapshot, node.SpanStart);
+					editorOperations.SelectAndMoveCaret (point, point, TextSelectionMode.Stream, EnsureSpanVisibleOptions.AlwaysCenter);
+					return;
+				}
+
 				var insertionPoints = InsertionPointService.GetInsertionPoints (
-					doc.Editor,
-					await doc.UpdateParseDocument (),
+					editor,
+					model,
 					type,
 					part.SourceSpan.Start
 				);
@@ -185,11 +201,11 @@ namespace MonoDevelop.Refactoring
 						if (!point.Success)
 							return;
 						var text = node.ToString ();
-						point.InsertionPoint.Insert (doc.Editor, doc, text);
+						point.InsertionPoint.Insert (editor, doc.DocumentContext, text);
 					}
 				);
 
-				doc.Editor.StartInsertionMode (options);
+				editor.StartInsertionMode (options);
 			});
 		}
 
@@ -248,7 +264,7 @@ namespace MonoDevelop.Refactoring
 			var buffer = TextFileProvider.Instance.GetTextEditorData (fileName, out isOpen);
 
 
-			var code = new StringBuilder ();
+			var code = StringBuilderCache.Allocate ();
 			int pos = cls.Locations.First ().SourceSpan.Start;
 			var line = buffer.GetLineByOffset (pos);
 			code.Append (buffer.GetLineIndent (line));
@@ -266,7 +282,7 @@ namespace MonoDevelop.Refactoring
 			code.Append ("]");
 			code.AppendLine ();
 
-			buffer.InsertText (line.Offset, code.ToString ());
+			buffer.InsertText (line.Offset, StringBuilderCache.ReturnAndFree (code));
 
 			if (!isOpen) {
 				File.WriteAllText (fileName, buffer.Text);
@@ -289,9 +305,8 @@ namespace MonoDevelop.Refactoring
 			using (var sw = new StreamWriter (fileName)) {
 				sw.WriteLine (ns.ToString ());
 			}
-			FileService.NotifyFileChanged (fileName);
-			var roslynProject = MonoDevelop.Ide.TypeSystem.TypeSystemService.GetCodeAnalysisProject (project);
-			var id = MonoDevelop.Ide.TypeSystem.TypeSystemService.GetDocumentId (roslynProject.Id, fileName);
+			var roslynProject = IdeApp.TypeSystemService.GetCodeAnalysisProject (project);
+			var id = IdeApp.TypeSystemService.GetDocumentId (roslynProject.Id, fileName);
 			if (id == null)
 				return null;
 			var model = roslynProject.GetDocument (id).GetSemanticModelAsync ().Result;

@@ -33,11 +33,13 @@ using MonoDevelop.Ide.Editor;
 
 namespace MonoDevelop.Ide.CodeTemplates
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public interface ICodeTemplateHandler
 	{
 		void InsertTemplate (CodeTemplate template, TextEditor editor, DocumentContext context);
 	}
 	
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense.AsyncCompletion APIs")]
 	class CodeTemplateCompletionData : CompletionData
 	{
 		readonly TextEditorExtension doc;
@@ -47,7 +49,7 @@ namespace MonoDevelop.Ide.CodeTemplates
 		{
 			this.doc      = doc;
 			this.template = template;
-			this.CompletionText = "test";
+			this.CompletionText = template.Shortcut;
 			this.Icon        = template.Icon;
 			this.DisplayText = template.Shortcut;
 			this.Description = template.Shortcut + Environment.NewLine + GettextCatalog.GetString (template.Description);

@@ -1,4 +1,4 @@
-// 
+﻿// 
 // LoggingService.cs
 // 
 // Author:
@@ -37,6 +37,7 @@ using MonoDevelop.Core.LogReporting;
 using MonoDevelop.Core.Logging;
 using Mono.Unix.Native;
 using System.Text;
+using System.Collections.Immutable;
 
 namespace MonoDevelop.Core
 {
@@ -46,7 +47,8 @@ namespace MonoDevelop.Core
 		const string ReportCrashesKey = "MonoDevelop.LogAgent.ReportCrashes";
 		const string ReportUsageKey = "MonoDevelop.LogAgent.ReportUsage";
 
-		static List<ILogger> loggers = new List<ILogger> ();
+		static object serviceLock = new object ();
+		static ImmutableList<ILogger> loggers = ImmutableList<ILogger>.Empty;
 		static RemoteLogger remoteLogger;
 		static DateTime timestamp;
 		static int logFileSuffix;
@@ -58,15 +60,20 @@ namespace MonoDevelop.Core
 		// First parameter is the current value of 'ReportCrashes
 		// Second parameter is the exception
 		// Thirdparameter shows if the exception is fatal or not
-		public static Func<bool?, Exception, bool, bool?> UnhandledErrorOccured;
+		[Obsolete("Use UnhandledErrorOccurred.")]
+		public static Func<bool?, Exception, bool, bool?> UnhandledErrorOccured { get => UnhandledErrorOccurred; set => UnhandledErrorOccurred = value; }
+
+		public static Func<bool?, Exception, bool, bool?> UnhandledErrorOccurred;
 
 		static List<CrashReporter> customCrashReporters = new List<CrashReporter> ();
+
+		static TraceListener assertLogger;
 
 		static LoggingService ()
 		{
 			var consoleLogger = new ConsoleLogger ();
-			loggers.Add (consoleLogger);
-			loggers.Add (new InstrumentationLogger ());
+			loggers = loggers.Add (consoleLogger);
+			loggers = loggers.Add (new InstrumentationLogger ());
 			
 			string consoleLogLevelEnv = Environment.GetEnvironmentVariable ("MONODEVELOP_CONSOLE_LOG_LEVEL");
 			if (!string.IsNullOrEmpty (consoleLogLevelEnv)) {
@@ -88,7 +95,7 @@ namespace MonoDevelop.Core
 			if (!string.IsNullOrEmpty (logFileEnv)) {
 				try {
 					var fileLogger = new FileLogger (logFileEnv);
-					loggers.Add (fileLogger);
+					loggers = loggers.Add (fileLogger);
 					string logFileLevelEnv = Environment.GetEnvironmentVariable ("MONODEVELOP_FILE_LOG_LEVEL");
 					fileLogger.EnabledLevel = (EnabledLoggingLevel) Enum.Parse (typeof (EnabledLoggingLevel), logFileLevelEnv, true);
 				} catch (Exception e) {
@@ -107,7 +114,8 @@ namespace MonoDevelop.Core
 			Debug.Listeners.Clear ();
 
 			//add a new listener that just logs failed asserts
-			Debug.Listeners.Add (new AssertLoggingTraceListener ());
+			assertLogger = new AssertLoggingTraceListener ();
+			Debug.Listeners.Add (assertLogger);
 		}
 
 		public static bool? ReportCrashes {
@@ -134,16 +142,11 @@ namespace MonoDevelop.Core
 		/// Creates a session log file with the given identifier.
 		/// </summary>
 		/// <returns>A TextWriter, null if the file cannot be created.</returns>
-		public static TextWriter CreateLogFile (string identifier)
-		{
-			string filename;
-			return CreateLogFile (identifier, out filename);
-		}
+		public static TextWriter CreateLogFile (string identifier) => CreateLogFile (identifier, out _);
 
 		public static TextWriter CreateLogFile (string identifier, out string filename)
 		{
 			FilePath logDir = UserProfile.Current.LogDir;
-			Directory.CreateDirectory (logDir);
 
 			int oldIdx = logFileSuffix;
 
@@ -185,6 +188,7 @@ namespace MonoDevelop.Core
 		
 		public static void Shutdown ()
 		{
+			Debug.Listeners.Remove (assertLogger);
 			RestoreOutputRedirection ();
 		}
 
@@ -220,23 +224,25 @@ namespace MonoDevelop.Core
 
 				reporting = true;
 
-				var oldReportCrashes = ReportCrashes;
+				if (UnhandledErrorOccurred != null) {
+					var oldReportCrashes = ReportCrashes;
 
-				if (UnhandledErrorOccured != null && !silently)
-					ReportCrashes = UnhandledErrorOccured (ReportCrashes, ex, willShutDown);
+					if (!silently)
+						ReportCrashes = UnhandledErrorOccurred.Invoke (ReportCrashes, ex, willShutDown);
 
-				// If crash reporting has been explicitly disabled, disregard this crash
-				if (ReportCrashes.HasValue && !ReportCrashes.Value)
-					return;
+					//ensure we don't lose the setting
+					if (ReportCrashes != oldReportCrashes) {
+						PropertyService.SaveProperties ();
+					}
+
+					// If crash reporting has been explicitly disabled, disregard this crash
+					if (ReportCrashes.HasValue && !ReportCrashes.Value)
+						return;
+				}
 
 				lock (customCrashReporters) {
 					foreach (var cr in customCrashReporters.Concat (AddinManager.GetExtensionObjects<CrashReporter> (true)))
 						cr.ReportCrash (ex, willShutDown, tags);
-				}
-
-				//ensure we don't lose the setting
-				if (ReportCrashes != oldReportCrashes) {
-					PropertyService.SaveProperties ();
 				}
 
 			} catch {
@@ -284,9 +290,11 @@ namespace MonoDevelop.Core
 		static MonoDevelop.Core.ProgressMonitoring.LogTextWriter stderr;
 		static MonoDevelop.Core.ProgressMonitoring.LogTextWriter stdout;
 		static TextWriter writer;
+		static string logFile;
+
 		static void RedirectOutputToFileWindows ()
 		{
-			writer = CreateLogFile ("Ide");
+			writer = CreateLogFile ("Ide", out logFile);
 			if (writer == Console.Out)
 				return;
 
@@ -315,10 +323,8 @@ namespace MonoDevelop.Core
 				FilePermissions.S_IRGRP | FilePermissions.S_IWGRP;
 
 			FilePath logDir = UserProfile.Current.LogDir;
-			Directory.CreateDirectory (logDir);
 
 			int fd;
-			string logFile;
 			int oldIdx = logFileSuffix;
 
 			while (true) {
@@ -412,17 +418,21 @@ namespace MonoDevelop.Core
 		
 		public static void AddLogger (ILogger logger)
 		{
-			if (GetLogger (logger.Name) != null)
-				throw new Exception ("There is already a logger with the name '" + logger.Name + "'");
-			loggers.Add (logger);
+			lock (serviceLock) {
+				if (GetLogger (logger.Name) != null)
+					throw new Exception ("There is already a logger with the name '" + logger.Name + "'");
+				loggers = loggers.Add (logger);
+			}
 		}
 		
 		public static void RemoveLogger (string name)
 		{
-			ILogger logger = GetLogger (name);
-			if (logger == null)
-				throw new Exception ("There is no logger registered with the name '" + name + "'");
-			loggers.Remove (logger);
+			lock (serviceLock) {
+				ILogger logger = GetLogger (name);
+				if (logger == null)
+					throw new Exception ("There is no logger registered with the name '" + name + "'");
+				loggers = loggers.Remove (logger);
+			}
 		}
 		
 #endregion
@@ -529,12 +539,6 @@ namespace MonoDevelop.Core
 		public static void LogError (string message, Exception ex)
 		{
 			Log (LogLevel.Error, message + (ex != null? Environment.NewLine + ex : string.Empty));
-		}
-
-		[Obsolete ("Use LogError")]
-		public static void LogUserError (string message, Exception ex)
-		{
-			Log (LogLevel.Error, FormatExceptionText (message, ex));
 		}
 
 		/// <summary>

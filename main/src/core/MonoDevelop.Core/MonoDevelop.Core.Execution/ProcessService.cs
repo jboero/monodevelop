@@ -82,7 +82,7 @@ namespace MonoDevelop.Core.Execution
 		
 		public void SetExternalConsoleHandler (ExternalConsoleHandler handler)
 		{
-			if (externalConsoleHandler != null)
+			if (handler != null && externalConsoleHandler != null)
 				throw new InvalidOperationException ("External console handler already set");
 			externalConsoleHandler = handler;
 		}
@@ -206,7 +206,7 @@ namespace MonoDevelop.Core.Execution
 						dict[kvp.Key] = kvp.Value;
 				
 				var p = externalConsoleHandler (command, arguments, workingDirectory, dict,
-					GettextCatalog.GetString ("{0} External Console", BrandingService.ApplicationName),
+					externalConsole?.Title ?? GettextCatalog.GetString ("{0} External Console", BrandingService.ApplicationName),
 					externalConsole != null ? !externalConsole.CloseOnDispose : false);
 
 				if (p != null) {
@@ -410,7 +410,7 @@ namespace MonoDevelop.Core.Execution
 			this.exited = exited;
 			this.operation = operation;
 			this.console = console;
-			operation.Task.ContinueWith (t => OnOperationCompleted ());
+			operation.Task.ContinueWith (t => OnOperationCompleted (), console.CancellationToken);
 			cancelRegistration = console.CancellationToken.Register (operation.Cancel);
 		}
 		
@@ -422,11 +422,14 @@ namespace MonoDevelop.Core.Execution
 					Runtime.RunInMainThread (() => {
 						exited (operation, EventArgs.Empty);
 					});
-				
+
 				if (!Platform.IsWindows && Mono.Unix.Native.Syscall.WIFSIGNALED (operation.ExitCode))
 					console.Log.WriteLine (GettextCatalog.GetString ("The application was terminated by a signal: {0}"), Mono.Unix.Native.Syscall.WTERMSIG (operation.ExitCode));
 				else if (operation.ExitCode != 0)
 					console.Log.WriteLine (GettextCatalog.GetString ("The application exited with code: {0}"), operation.ExitCode);
+			} catch (ArgumentException ex) {
+				// ArgumentException comes from Syscall.WTERMSIG when an unknown signal is encountered
+				console.Error.WriteLine (GettextCatalog.GetString ("The application was terminated by an unknown signal: {0}"), ex.Message);
 			} finally {
 				console.Dispose ();
 			}

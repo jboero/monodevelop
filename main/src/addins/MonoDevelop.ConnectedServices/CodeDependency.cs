@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -31,7 +31,6 @@ namespace MonoDevelop.ConnectedServices
 		readonly Dictionary<string, INamedTypeSymbol> lookupTypes;
 
 		IList<INamedTypeSymbol> allTypes;
-		Compilation compilation;
 		IList<INamedTypeSymbol> sourceTypes;
 
 		Image icon;
@@ -89,16 +88,18 @@ namespace MonoDevelop.ConnectedServices
 						LoggingService.LogInfo ("Adding code dependency '{0}' to '{1}'...", this, this.Service.Project.Name);
 					}
 
-					this.compilation = await TypeSystemService.GetCompilationAsync (this.Service.Project).ConfigureAwait (false);
+					var compilation = await IdeApp.TypeSystemService.GetCompilationAsync (this.Service.Project).ConfigureAwait (false);
 
-					if (this.compilation == null) {
+					if (compilation == null) {
 						LoggingService.LogInternalError ("Could not get compilation object.", null);
 						return false;
 					}
 
-					this.InitLookupTypes (token, this.lookupTypes.Keys.ToArray ());
+					this.InitLookupTypes (compilation, token, this.lookupTypes.Keys.ToArray ());
 
-					var result = await this.AddCodeToProject (token).ConfigureAwait (false);
+					var result = await Runtime.RunInMainThread<bool> (
+						() => this.AddCodeToProject (token)
+					);
 
 					LoggingService.LogInfo (result ? "Code dependency added." : "Code dependency was not added.");
 					return result;
@@ -127,14 +128,14 @@ namespace MonoDevelop.ConnectedServices
 						LoggingService.LogInfo ("Removing code dependency '{0}' from '{1}'...", this, this.Service.Project.Name);
 					}
 
-					this.compilation = await TypeSystemService.GetCompilationAsync (this.Service.Project).ConfigureAwait (false);
+					var compilation = await IdeApp.TypeSystemService.GetCompilationAsync (this.Service.Project).ConfigureAwait (false);
 
-					if (this.compilation == null) {
+					if (compilation == null) {
 						LoggingService.LogInternalError ("Could not get compilation object.", null);
 						return false;
 					}
 
-					this.InitLookupTypes (token, this.lookupTypes.Keys.ToArray ());
+					this.InitLookupTypes (compilation, token, this.lookupTypes.Keys.ToArray ());
 
 					var result = await this.RemoveCodeFromProject (token).ConfigureAwait (false);
 
@@ -334,13 +335,13 @@ namespace MonoDevelop.ConnectedServices
 		/// <summary>
 		/// Initializes the type lookup table from the compilation.
 		/// </summary>
-		void InitLookupTypes (CancellationToken cancel, string [] types)
+		void InitLookupTypes (Compilation compilation, CancellationToken cancel, string [] types)
 		{
-			this.allTypes = this.compilation.GetAllTypesInMainAssembly (cancel).ToList ();
+			this.allTypes = compilation.GetAllTypesInMainAssembly (cancel).ToList ();
 			this.lookupTypes.Clear ();
 
 			foreach (var type in types) {
-				this.lookupTypes [type] = this.compilation.GetTypeByMetadataName (type);
+				this.lookupTypes [type] = compilation.GetTypeByMetadataName (type);
 			}
 		}
 

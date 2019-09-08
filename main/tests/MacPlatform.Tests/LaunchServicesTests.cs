@@ -27,24 +27,46 @@ using System;
 using MonoDevelop.MacInterop;
 using MonoDevelop.MacIntegration;
 using NUnit.Framework;
+using MonoDevelop.Ide;
+using AppKit;
+using System.IO;
+using UnitTests;
 
 namespace MacPlatform.Tests
 {
-	public class LaunchServicesTests
+	public class LaunchServicesTests : IdeTestBase
 	{
-		MacPlatformService platformService;
-
-		public LaunchServicesTests ()
+		[Test]
+		public void TestLaunchProcessAndTerminate ()
 		{
-			platformService = new MacPlatformService ();
+			NSRunningApplication app = LaunchServices.OpenApplicationInternal (new ApplicationStartInfo ("/Applications/Calculator.app"));
+			try {
+				Assert.IsNotNull (app);
+				Assert.That (app.ProcessIdentifier, Is.GreaterThan (-1));
+			} finally {
+				Assert.IsTrue (app.Terminate (), "Could not kill Calculator app");
+			}
 		}
 
-		[Ignore ("Requires to be running as a Cocoa application")]
 		[Test]
-		public void TestLaunchProcess ()
+		public void TestLaunchInvalidValues ()
 		{
-			int pid = LaunchServices.OpenApplication ("/Applications/Calculator.app");
-			Assert.Greater (-1, pid);
+			var path = Path.GetTempFileName ();
+
+			Assert.Throws<ArgumentNullException> (() => LaunchServices.OpenApplication ((ApplicationStartInfo)null));
+			Assert.Throws<ArgumentException> (() => LaunchServices.OpenApplication (path));
+		}
+
+		[Test]
+		public void TestLaunchProcessAPIsForInvalidAppBundles ()
+		{
+			var path = Util.CreateTmpDir ("NonExisting.app");
+
+			Assert.AreEqual (-1, LaunchServices.OpenApplication (path));
+			Assert.AreEqual (-1, LaunchServices.OpenApplication (new ApplicationStartInfo (path)));
+
+			NSRunningApplication app = LaunchServices.OpenApplicationInternal (new ApplicationStartInfo (path));
+			Assert.IsNull (app);
 		}
 	}
 }

@@ -33,6 +33,7 @@ using MonoDevelop.Core;
 using MonoDevelop.Ide.Extensions;
 using MonoDevelop.Ide.Gui.Components;
 using MonoDevelop.Components;
+using MonoDevelop.Components.AtkCocoaHelper;
 
 namespace MonoDevelop.Ide.Gui.Dialogs
 {
@@ -87,21 +88,32 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 		public OptionsDialog (MonoDevelop.Components.Window parentWindow, object dataObject, string extensionPath, bool removeEmptySections)
 		{
 			buttonCancel = new Gtk.Button (Gtk.Stock.Cancel);
+			buttonCancel.Accessible.Name = "Dialogs.Options.Cancel";
+			buttonCancel.Accessible.Description = GettextCatalog.GetString ("Close the options dialog and discard any changes");
 			AddActionWidget (this.buttonCancel, ResponseType.Cancel);
 
 			buttonOk = new Gtk.Button (Gtk.Stock.Ok);
+			buttonOk.Accessible.Name = "Dialogs.Options.Ok";
+			buttonOk.Accessible.Description = GettextCatalog.GetString ("Close the options dialog and keep the changes");
 			this.ActionArea.PackStart (buttonOk);
 			buttonOk.Clicked += OnButtonOkClicked;
 
 			mainHBox = new HBox ();
+			mainHBox.Accessible.SetShouldIgnore (true);
 			tree = new TreeView ();
+			tree.Accessible.Name = "Dialogs.Options.Categories";
+			tree.Accessible.Description = GettextCatalog.GetString ("The categories of options that are available in this dialog");
+
 			var sw = new ScrolledWindow ();
+			sw.Accessible.SetShouldIgnore (true);
 			sw.Add (tree);
 			sw.HscrollbarPolicy = PolicyType.Never;
 			sw.VscrollbarPolicy = PolicyType.Automatic;
 			sw.ShadowType = ShadowType.None;
 
 			var fboxTree = new HeaderBox ();
+			fboxTree.Accessible.SetShouldIgnore (true);
+
 			fboxTree.SetMargins (0, 1, 0, 1);
 			fboxTree.SetPadding (0, 0, 0, 0);
 			fboxTree.BackgroundColor = new Gdk.Color (255, 255, 255);
@@ -113,21 +125,28 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			};
 
 			var vbox = new VBox ();
+			vbox.Accessible.SetShouldIgnore (true);
 			mainHBox.PackStart (vbox, true, true, 0);
 			var headerBox = new HBox (false, 6);
+			headerBox.Accessible.SetShouldIgnore (true);
 
 			labelTitle = new Label ();
+			labelTitle.Accessible.Name = "Dialogs.Options.PageTitle";
 			labelTitle.Xalign = 0;
 			textHeader = new Alignment (0, 0, 1, 1);
+			textHeader.Accessible.SetShouldIgnore (true);
 			textHeader.Add (labelTitle);
 			textHeader.BorderWidth = 12;
 			headerBox.PackStart (textHeader, true, true, 0);
 
 			imageHeader = new OptionsDialogHeader ();
 			imageHeader.Hide ();
-			headerBox.PackStart (imageHeader.ToGtkWidget ());
+			var imageHeaderWidget = imageHeader.ToGtkWidget ();
+			imageHeaderWidget.Accessible.SetShouldIgnore (true);
+			headerBox.PackStart (imageHeaderWidget);
 
 			var fboxHeader = new HeaderBox ();
+			fboxHeader.Accessible.SetShouldIgnore (true);
 			fboxHeader.SetMargins (0, 1, 0, 0);
 			fboxHeader.Add (headerBox);
 //			fbox.GradientBackround = true;
@@ -147,7 +166,9 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			vbox.PackStart (fboxHeader, false, false, 0);
 
 			pageFrame = new HBox ();
+			pageFrame.Accessible.SetShouldIgnore (true);
 			var fbox = new HeaderBox ();
+			fbox.Accessible.SetShouldIgnore (true);
 			fbox.SetMargins (0, 1, 0, 0);
 			fbox.ShowTopShadow = true;
 			fbox.Add (pageFrame);
@@ -160,9 +181,6 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			
 			this.mainDataObject = dataObject;
 			this.extensionPath = extensionPath;
-			
-			if (parentWindow != null)
-				TransientFor = parentWindow;
 			
 			ImageService.EnsureStockIconIsLoaded (emptyCategoryIcon);
 
@@ -222,7 +240,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			// Instead, give this some awareness of the mime system.
 			var mimeSection = section as MonoDevelop.Ide.Projects.OptionPanels.MimetypeOptionsDialogSection;
 			if (mimeSection != null && !string.IsNullOrEmpty (mimeSection.MimeType)) {
-				var pix = DesktopService.GetIconForType (mimeSection.MimeType, treeIconSize);
+				var pix = IdeServices.DesktopService.GetIconForType (mimeSection.MimeType, treeIconSize);
 				if (pix != null) {
 					crp.Image = pix;
 				} else {
@@ -511,13 +529,13 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			return false;
 		}
 		
-		internal void ShowPage (OptionsDialogSection section)
+		internal void ShowPage (OptionsDialogSection section, bool forceExpand = false)
 		{
 			if (!IsRealized) {
 				// Defer this until the dialog is realized due to the sizing logic in CreatePageWidget.
 				EventHandler deferredShowPage = null;
 				deferredShowPage = delegate {
-					ShowPage (section);
+					ShowPage (section, true);
 					Realized -= deferredShowPage;
 				};
 				Realized += deferredShowPage;
@@ -537,7 +555,6 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 					}
 				}
 			}
-			
 			foreach (Gtk.Widget w in pageFrame.Children) {
 				Container cc = w as Gtk.Container;
 				if (cc != null) {
@@ -576,8 +593,12 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 				if (c is Notebook)
 					((Notebook)c).Page = 0;
 			}
-			
-			tree.ExpandToPath (store.GetPath (page.Iter));
+
+			if (!IdeServices.DesktopService.AccessibilityInUse && !IdeServices.DesktopService.AccessibilityKeyboardFocusInUse || forceExpand) {
+				// Don't automatically expand trees if using accessibility
+				// as it can be confusing with screen readers
+				tree.ExpandToPath (store.GetPath (page.Iter));
+			}
 			tree.Selection.SelectIter (page.Iter);
 		}
 		
@@ -742,7 +763,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 					nb.InsertPage (box, blab, -1);
 				}
 				foreach (PanelInstance pi in tabPanels) {
-					Gtk.Label lab = new Gtk.Label (GettextCatalog.GetString (pi.Node.Label));
+					Gtk.Label lab = new Gtk.Label (pi.Node.Label);
 					lab.Show ();
 					Gtk.Alignment a = new Alignment (0, 0, 1, 1);
 					a.BorderWidth = 9;

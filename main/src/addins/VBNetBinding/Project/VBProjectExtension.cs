@@ -29,6 +29,7 @@ using MonoDevelop.Projects.MSBuild;
 using MonoDevelop.Core.Serialization;
 using System.Diagnostics;
 using MonoDevelop.Core;
+using System.Collections.Generic;
 
 namespace MonoDevelop.VBNetBinding
 {
@@ -97,21 +98,26 @@ namespace MonoDevelop.VBNetBinding
 			get { return codePage; }
 			set { codePage = value ?? string.Empty; }
 		}
+		protected override void OnGetDefaultImports (List<string> imports)
+		{
+			base.OnGetDefaultImports (imports);
+			imports.Add ("$(MSBuildBinPath)\\Microsoft.VisualBasic.targets");
+		}
 
 		protected override void OnInitialize ()
 		{
 			base.OnInitialize ();
 			DefaultNamespaceIsImplicit = true;
 			SupportsRoslyn = true;
+			RoslynLanguageName = Microsoft.CodeAnalysis.LanguageNames.VisualBasic;
+
 			StockIcon = "md-project";
 		}
 
-		VBBindingCompilerServices compilerServices = new VBBindingCompilerServices();
-
+		[Obsolete]
 		protected override BuildResult OnCompileSources (ProjectItemCollection items, DotNetProjectConfiguration configuration, ConfigurationSelector configSelector, MonoDevelop.Core.ProgressMonitor monitor)
 		{
-			Debug.Assert(compilerServices != null);
-			return compilerServices.Compile (items, configuration, configSelector, monitor);
+			return VBBindingCompilerServices.InternalCompile (items, configuration, configSelector, monitor);
 		}
 
 		protected override DotNetCompilerParameters OnCreateCompilationParameters (DotNetProjectConfiguration config, ConfigurationKind kind)

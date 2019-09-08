@@ -35,7 +35,7 @@ using System.Linq;
 namespace MonoDevelop.Core
 {
 	[Serializable]
-	public struct FilePath: IComparable<FilePath>, IComparable, IEquatable<FilePath>
+	public readonly struct FilePath: IComparable<FilePath>, IComparable, IEquatable<FilePath>
 	{
 		public static readonly StringComparer PathComparer = (Platform.IsWindows || Platform.IsMac) ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 		public static readonly StringComparison PathComparison = (Platform.IsWindows || Platform.IsMac) ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -143,6 +143,14 @@ namespace MonoDevelop.Core
 			}
 		}
 
+		[Pure]
+		internal bool HasFileName (string name)
+		{
+			return fileName.Length > name.Length
+				&& fileName.EndsWith (name, PathComparison)
+				&& fileName [fileName.Length - name.Length - 1] == Path.DirectorySeparatorChar;
+		}
+
 		public string Extension {
 			get {
 				return Path.GetExtension (fileName);
@@ -153,8 +161,27 @@ namespace MonoDevelop.Core
 		public bool HasExtension (string extension)
 		{
 			return fileName.Length > extension.Length
-				&& fileName.EndsWith (extension, StringComparison.OrdinalIgnoreCase)
-				&& fileName[fileName.Length - extension.Length - 1] != Path.PathSeparator;
+				&& (extension == string.Empty
+					? HasNoExtension (fileName)
+					: fileName.EndsWith (extension, PathComparison) && fileName [fileName.Length - extension.Length] == '.');
+
+			static bool HasNoExtension (string path)
+			{
+				// Look for the last dot that's after the last path separator
+				for (int i = path.Length - 1; i >= 0; --i) {
+					var ch = path [i];
+					if (ch == '.') {
+						// Check if it's the dot is the last character
+						// if it is, then we have no extension
+						return i == path.Length - 1;
+					}
+
+					if (ch == Path.DirectorySeparatorChar)
+						return true;
+				}
+
+				return true;
+			}
 		}
 
 		public string FileNameWithoutExtension {
@@ -176,12 +203,18 @@ namespace MonoDevelop.Core
 		[Pure]
 		public bool IsChildPathOf (FilePath basePath)
 		{
+			if (string.IsNullOrEmpty (basePath.fileName) || string.IsNullOrEmpty (fileName))
+				return false;
 			bool startsWith = fileName.StartsWith (basePath.fileName, PathComparison);
-			if (startsWith && basePath.fileName [basePath.fileName.Length - 1] != Path.DirectorySeparatorChar) {
+			if (startsWith && basePath.fileName [basePath.fileName.Length - 1] != Path.DirectorySeparatorChar &&
+				basePath.fileName [basePath.fileName.Length - 1] != Path.AltDirectorySeparatorChar) {
 				// If the last character isn't a path separator character, check whether the string we're searching in
 				// has more characters than the string we're looking for then check the character.
+				// Otherwise, if the path lengths are equal, we return false.
 				if (fileName.Length > basePath.fileName.Length)
-					startsWith &= fileName [basePath.fileName.Length] == Path.DirectorySeparatorChar;
+					startsWith &= fileName [basePath.fileName.Length] == Path.DirectorySeparatorChar || fileName [basePath.fileName.Length] == Path.AltDirectorySeparatorChar;
+				else
+					startsWith = false;
 			}
 			return startsWith;
 		}
@@ -212,9 +245,33 @@ namespace MonoDevelop.Core
 		}
 
 		[Pure]
+		public FilePath Combine (FilePath path)
+		{
+			return new FilePath (Path.Combine (fileName, path.fileName));
+		}
+
+		[Pure]
+		public FilePath Combine (FilePath path1, FilePath path2)
+		{
+			return new FilePath (Path.Combine (fileName, path1.fileName, path2.fileName));
+		}
+
+		[Pure]
 		public FilePath Combine (params string[] paths)
 		{
 			return new FilePath (Path.Combine (fileName, Path.Combine (paths)));
+		}
+
+		[Pure]
+		public FilePath Combine (string path)
+		{
+			return new FilePath (Path.Combine (fileName, path));
+		}
+
+		[Pure]
+		public FilePath Combine (string path1, string path2)
+		{
+			return new FilePath (Path.Combine (fileName, path1, path2));
 		}
 		
 		public Task DeleteAsync ()
@@ -278,6 +335,18 @@ namespace MonoDevelop.Core
 		public static FilePath Build (params string[] paths)
 		{
 			return Empty.Combine (paths);
+		}
+
+		[Pure]
+		public static FilePath Build (string path)
+		{
+			return Empty.Combine (path);
+		}
+
+		[Pure]
+		public static FilePath Build (string path1, string path2)
+		{
+			return Empty.Combine (path1, path2);
 		}
 
 		[Pure]

@@ -39,6 +39,16 @@ namespace MonoDevelop.Components.MainToolbar
 		Stop
 	}
 
+	public enum SearchPopupCommand
+	{
+		PreviousItem,
+		NextItem,
+		PreviousCategory,
+		NextCategory,
+		Cancel,
+		Activate
+	};
+
 	/// <summary>
 	/// Event arguments which specify if the event succeeded in at least one handler.
 	/// </summary>
@@ -197,6 +207,7 @@ namespace MonoDevelop.Components.MainToolbar
 		/// Occurs when a key is pressed in the search entry.
 		/// </summary>
 		event EventHandler<Xwt.KeyEventArgs> SearchEntryKeyPressed;
+		event EventHandler<SearchEntryCommandArgs> PerformCommand;
 
 		/// <summary>
 		/// Occurs when the search entry is resized.
@@ -219,6 +230,12 @@ namespace MonoDevelop.Components.MainToolbar
 		/// </summary>
 		/// <value>The placeholder message.</value>
 		string SearchPlaceholderMessage { set; }
+
+		/// <summary>
+		/// Shows an accessibility announcement.
+		/// </summary>
+		/// <param name="message">The accessibility message.</param>
+		void ShowAccessibilityAnnouncement (string message);
 	}
 
 	/// <summary>
@@ -241,8 +258,8 @@ namespace MonoDevelop.Components.MainToolbar
 		/// <summary>
 		/// Rebuilds the toolbar.
 		/// </summary>
-		/// <param name="buttons">A list of buttons.</param>
-		void RebuildToolbar (IEnumerable<IButtonBarButton> buttons);
+		/// <param name="groups">A list of ButtonBarGroups.</param>
+		void RebuildToolbar (IEnumerable<ButtonBarGroup> groups);
 
 		/// <summary>
 		/// Sets a value indicating whether the button bar is interactible.
@@ -256,6 +273,7 @@ namespace MonoDevelop.Components.MainToolbar
 	/// </summary>
 	public interface IMainToolbarView : IRunButtonView, ISelectorView, ISearchEntryView, IStatusBarView, IButtonBarView
 	{
+		void Focus (Gtk.DirectionType direction, Action<Gtk.DirectionType> exitAction);
 	}
 }
 

@@ -1,4 +1,4 @@
-//
+﻿//
 // CommitDialog.cs
 //
 // Authors:
@@ -30,24 +30,22 @@
 // THE SOFTWARE.
 
 using System;
-using System.Collections;
-using Gtk;
-using MonoDevelop.Core;
- 
-using MonoDevelop.Ide.Gui;
-using Mono.Addins;
-using MonoDevelop.Ide;
-using MonoDevelop.Projects;
-using MonoDevelop.Components;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Gtk;
+using Mono.Addins;
+using MonoDevelop.Components;
+using MonoDevelop.Core;
+using MonoDevelop.Projects;
 
 namespace MonoDevelop.VersionControl.Dialogs
 {
 	partial class CommitDialog : Gtk.Dialog
 	{
 		ListStore store;
-		List<FilePath> selected = new List<FilePath> ();
+		HashSet<FilePath> selected = new HashSet<FilePath> ();
 		List<CommitDialogExtension> extensions = new List<CommitDialogExtension> ();
 		ChangeSet changeSet;
 		string oldMessage;
@@ -93,6 +91,7 @@ namespace MonoDevelop.VersionControl.Dialogs
 					continue;
 				}
 				if (ext.Initialize (changeSet)) {
+					ext.CommitDialog = this;
 					var newTitle = ext.FormatDialogTitle (changeSet, Title);
 					if (newTitle != null)
 						Title = newTitle;
@@ -112,24 +111,7 @@ namespace MonoDevelop.VersionControl.Dialogs
 			}
 			HandleAllowCommitChanged (null, null);
 
-			foreach (ChangeSetItem info in changeSet.Items) {
-				Xwt.Drawing.Image statusicon = VersionControlService.LoadIconForStatus (info.Status);
-				string lstatus = VersionControlService.GetStatusLabel (info.Status);
-				string localpath;
-
-				if (info.IsDirectory)
-					localpath = (!info.LocalPath.IsChildPathOf (changeSet.BaseLocalPath)?
-									".":
-									(string) info.LocalPath.ToRelative (changeSet.BaseLocalPath));
-				else
-					localpath = System.IO.Path.GetFileName((string) info.LocalPath);
-
-				if (localpath.Length > 0 && localpath[0] == System.IO.Path.DirectorySeparatorChar) localpath = localpath.Substring(1);
-				if (localpath == "") { localpath = "."; } // not sure if this happens
-				
-				store.AppendValues (statusicon, lstatus, localpath, true, info);
-				selected.Add (info.LocalPath);
-			}
+			LoadChangeset (changeSet.Items);
 
 			if (string.IsNullOrEmpty (changeSet.GlobalComment)) {
 				AuthorInformation aInfo;
@@ -150,6 +132,67 @@ namespace MonoDevelop.VersionControl.Dialogs
 			textview.Buffer.MarkSet += OnMarkSet;
 
 			SetResponseSensitive (ResponseType.Ok, responseSensitive);
+
+			VersionControlService.FileStatusChanged += OnFileStatusChanged;
+		}
+
+		void OnFileStatusChanged (object sender, FileUpdateEventArgs args)
+		{
+			foreach (FileUpdateEventInfo f in args) {
+				OnFileStatusChanged (f);
+			}
+		}
+
+		async void OnFileStatusChanged (FileUpdateEventInfo args)
+		{
+			VersionInfo newInfo = null;
+			try {
+				if (args.FilePath.IsNullOrEmpty)
+					return;
+				// Reuse remote status from old version info
+				var token = destroyTokenSource.Token;
+				changeSet.Repository.TryGetVersionInfo (args.FilePath, out newInfo);
+				if (token.IsCancellationRequested)
+					return;
+				await AddFile (newInfo);
+			} catch (Exception ex) {
+				LoggingService.LogError (ex.ToString ());
+			}
+			
+		}
+
+		async Task AddFile (VersionInfo vinfo)
+		{
+			if (vinfo != null && (vinfo.HasLocalChanges || vinfo.HasRemoteChanges)) {
+				var token = destroyTokenSource.Token;
+				await changeSet.AddFileAsync (vinfo.LocalPath, token);
+				if (token.IsCancellationRequested)
+					return;
+				bool added = selected.Add (vinfo.LocalPath);
+				if (added)
+					AppendFileInfo (vinfo);
+			}
+		}
+
+		TreeIter AppendFileInfo (VersionInfo info)
+		{
+			Xwt.Drawing.Image statusicon = VersionControlService.LoadIconForStatus (info.Status);
+			string lstatus = VersionControlService.GetStatusLabel (info.Status);
+			string localpath;
+
+			if (info.IsDirectory)
+				localpath = (!info.LocalPath.IsChildPathOf (changeSet.BaseLocalPath) ?
+								"." :
+								(string)info.LocalPath.ToRelative (changeSet.BaseLocalPath));
+			else
+				localpath = System.IO.Path.GetFileName ((string)info.LocalPath);
+
+			if (localpath.Length > 0 && localpath [0] == System.IO.Path.DirectorySeparatorChar) localpath = localpath.Substring (1);
+			if (localpath == "") { localpath = "."; } 
+
+			TreeIter it = store.AppendValues (statusicon, lstatus, localpath, true, info);
+
+			return it;
 		}
 
 		void HandleAllowCommitChanged (object sender, EventArgs e)
@@ -159,7 +202,7 @@ namespace MonoDevelop.VersionControl.Dialogs
 				allowCommit &= ext.AllowCommit;
 			SetResponseSensitive (Gtk.ResponseType.Ok, allowCommit);
 		}
-		
+
 		protected override void OnResponse (Gtk.ResponseType type)
 		{
 			if (type != Gtk.ResponseType.Ok) {
@@ -170,8 +213,14 @@ namespace MonoDevelop.VersionControl.Dialogs
 			base.OnResponse (type);
 		}
 
+		CancellationTokenSource destroyTokenSource = new CancellationTokenSource ();
+
 		protected override void OnDestroyed ()
 		{
+			destroyTokenSource.Cancel ();
+
+			VersionControlService.FileStatusChanged -= OnFileStatusChanged;
+
 			foreach (var ob in extensions) {
 				var ext = ob as CommitDialogExtension;
 				if (ext != null)
@@ -180,60 +229,38 @@ namespace MonoDevelop.VersionControl.Dialogs
 			base.OnDestroyed ();
 		}
 
+		void LoadChangeset (IEnumerable<ChangeSetItem> items)
+		{
+			fileList.Model = null;
+			store.Clear ();
+
+			foreach (ChangeSetItem info in items) {
+				Xwt.Drawing.Image statusicon = VersionControlService.LoadIconForStatus (info.Status);
+				string lstatus = VersionControlService.GetStatusLabel (info.Status);
+				string localpath;
+
+				if (info.IsDirectory)
+					localpath = (!info.LocalPath.IsChildPathOf (changeSet.BaseLocalPath) ?
+									"." :
+									(string)info.LocalPath.ToRelative (changeSet.BaseLocalPath));
+				else
+					localpath = System.IO.Path.GetFileName ((string)info.LocalPath);
+
+				if (localpath.Length > 0 && localpath [0] == System.IO.Path.DirectorySeparatorChar) localpath = localpath.Substring (1);
+				if (localpath == "") { localpath = "."; } // not sure if this happens
+
+				store.AppendValues (statusicon, lstatus, localpath, true, info);
+				selected.Add (info.LocalPath);
+			}
+
+			fileList.Model = store;
+		}
+
 		bool ButtonCommitClicked ()
 		{
-			// In case we have local unsaved files with changes, throw a dialog for the user.
-			System.Collections.Generic.List<Document> docList = new System.Collections.Generic.List<Document> ();
-			foreach (var item in IdeApp.Workbench.Documents) {
-				if (!item.IsDirty || !selected.Contains (item.FileName))
-					continue;
-				docList.Add (item);
-			}
-
-			if (docList.Count != 0) {
-				AlertButton response = MessageService.GenericAlert (
-					MonoDevelop.Ide.Gui.Stock.Question,
-					GettextCatalog.GetString ("You are trying to commit files which have unsaved changes."),
-					GettextCatalog.GetString ("Do you want to save the changes before committing?"),
-					new AlertButton[] {
-						AlertButton.Cancel,
-						new AlertButton (GettextCatalog.GetString ("Don't Save")),
-						AlertButton.Save
-					}
-				);
-
-				if (response == AlertButton.Cancel)
-					return false;
-
-				if (response == AlertButton.Save) {
-					// Go through all the items and save them.
-					foreach (var item in docList)
-						item.Save ();
-
-					// Check if save failed on any item and abort.
-					foreach (var item in docList)
-						if (item.IsDirty) {
-							MessageService.ShowMessage (GettextCatalog.GetString (
-								"Some files could not be saved. Commit operation aborted"));
-							return false;
-						}
-				}
-
-				docList.Clear ();
-			}
-
-			// Update the change set
-			List<FilePath> todel = new List<FilePath> ();
-			foreach (ChangeSetItem it in changeSet.Items) {
-				if (!selected.Contains (it.LocalPath))
-					todel.Add (it.LocalPath);
-			}
-			foreach (string file in todel)
-				changeSet.RemoveFile (file);
 			changeSet.GlobalComment = Message;
 			
 			// Perform the commit
-			
 			int n;
 			for (n=0; n<extensions.Count; n++) {
 				CommitDialogExtension ext = extensions [n];
@@ -250,7 +277,9 @@ namespace MonoDevelop.VersionControl.Dialogs
 						ext = extensions [m];
 						try {
 							ext.OnEndCommit (changeSet, false);
-						} catch {}
+						} catch (Exception ex) {
+							LoggingService.LogInternalError ("Commit operation failed.", ex);
+						}
 					}
 					return false;
 				}

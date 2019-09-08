@@ -1,4 +1,4 @@
-// 
+﻿// 
 // UserProfile.cs
 //  
 // Author:
@@ -24,13 +24,15 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
+using System.IO;
+using System.Linq;
 
 namespace MonoDevelop.Core
 {
 	public class UserProfile
 	{
 		const string PROFILE_ENV_VAR = "MONODEVELOP_PROFILE";
-		
+
 		//These are the known profile versions that can be migrated.
 		//MUST BE SORTED, low to high.
 		//The last is the current profile version.
@@ -43,37 +45,90 @@ namespace MonoDevelop.Core
 			"3.0",
 			"4.0",
 			"5.0",
-			"6.0"
+			"6.0",
+			"7.0",
+			"8.0"
 		};
-		
+
+		bool createFolders = false;
+
 		static UserProfile ()
 		{
 			Current = GetProfile (ProfileVersions[ProfileVersions.Length-1]);
 		}
 		
 		public static UserProfile Current { get; private set; }
-		
+
+		FilePath cacheDir;
 		/// <summary>Location for cached data that can be regenerated.</summary>
-		public FilePath CacheDir { get; private set; }
-		
+		public FilePath CacheDir {
+			get => cacheDir;
+			private set {
+				cacheDir = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath configDir;
 		/// <summary>Location for current preferences/settings.</summary>
-		public FilePath ConfigDir { get; private set; }
-		
+		public FilePath ConfigDir {
+			get => configDir;
+			private set {
+				configDir = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath localConfigDir;
 		/// <summary>Preferences/settings specific to the local machine.</summary>
-		public FilePath LocalConfigDir { get; private set; }
-		
+		public FilePath LocalConfigDir {
+			get => localConfigDir;
+			private set {
+				localConfigDir = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath userDataRoot;
 		/// <summary>User-visible root location for user-created data files such as templates, snippets and color schemes.</summary>
-		public FilePath UserDataRoot { get; private set; }
-		
+		public FilePath UserDataRoot {
+			get => userDataRoot;
+			private set {
+				userDataRoot = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath logDir;
 		/// <summary>Location for log files.</summary>
-		public FilePath LogDir { get; private set; }
-		
+		public FilePath LogDir {
+			get => logDir;
+			private set {
+				logDir = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath localInstallPath;
 		/// <summary>Location for files installed from external sources.</summary>
-		public FilePath LocalInstallDir { get; private set; }
-		
+		public FilePath LocalInstallDir {
+			get => localInstallPath;
+			private set {
+				localInstallPath = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
+
+		FilePath tempDir;
 		//TODO: clear out temp files at startup
 		/// <summary>Location for temporary files.</summary>
-		public FilePath TempDir { get; private set; }
+		public FilePath TempDir {
+			get => tempDir;
+			private set {
+				tempDir = value;
+				EnsureDirectoryExistsIfNeeded (value);
+			}
+		}
 		
 		/// <summary>Gets a location by its ID.</summary>
 		internal FilePath GetLocation (UserDataKind kind)
@@ -98,32 +153,38 @@ namespace MonoDevelop.Core
 			}
 		}
 		
-		internal static UserProfile GetProfile (string profileVersion)
+		internal static UserProfile GetProfile (string profileVersion, bool ensureCreated = true)
 		{
-			FilePath testProfileRoot = Environment.GetEnvironmentVariable (PROFILE_ENV_VAR);
+			var brandedEnvVar = BrandingService.BrandEnvironmentVariable (PROFILE_ENV_VAR);
+
+			FilePath testProfileRoot = Environment.GetEnvironmentVariable (brandedEnvVar);
 			if (!testProfileRoot.IsNullOrEmpty)
-				return UserProfile.ForTest (profileVersion, testProfileRoot);
+				return UserProfile.ForTest (profileVersion, testProfileRoot, ensureCreated);
 			
 			if (Platform.IsWindows)
-				return UserProfile.ForWindows (profileVersion);
+				return UserProfile.ForWindows (profileVersion, ensureCreated);
 			else if (Platform.IsMac)
-				return UserProfile.ForMac (profileVersion);
+				return UserProfile.ForMac (profileVersion, ensureCreated);
 			else
-				return UserProfile.ForUnix (profileVersion);
+				return UserProfile.ForUnix (profileVersion, ensureCreated);
 		}
 
 		static string GetAppId (string version)
 		{
-			return BrandingService.ProfileDirectoryName + "-" + version;;
+			if (Version.Parse (version).Major < 7) {
+				return BrandingService.ProfileDirectoryName + "-" + version; ;
+			}
+			return System.IO.Path.Combine (BrandingService.ProfileDirectoryName, version);
 		}
 		
 		/// <summary>
 		/// Creates locations in a specific folder, for testing.
 		/// </summary>
-		internal static UserProfile ForTest (string version, FilePath profileLocation)
+		internal static UserProfile ForTest (string version, FilePath profileLocation, bool ensureCreated = true)
 		{
 			string appId = GetAppId (version);
 			return new UserProfile () {
+				createFolders = ensureCreated,
 				CacheDir = profileLocation.Combine (appId, "Cache"),
 				UserDataRoot = profileLocation.Combine (appId, "UserData"),
 				ConfigDir = profileLocation.Combine (appId, "Config"),
@@ -133,8 +194,8 @@ namespace MonoDevelop.Core
 				TempDir = profileLocation.Combine (appId, "Temp"),
 			};
 		}
-		
-		internal static UserProfile ForWindows (string version)
+
+		internal static UserProfile ForWindows (string version, bool ensureCreated = true)
 		{
 			string appId = GetAppId (version);
 			FilePath local = Environment.GetFolderPath (Environment.SpecialFolder.LocalApplicationData);
@@ -143,8 +204,9 @@ namespace MonoDevelop.Core
 			
 			local = local.Combine (appId);
 			roaming = roaming.Combine (appId);
-			
+
 			return new UserProfile () {
+				createFolders = ensureCreated,
 				UserDataRoot = roaming,
 				ConfigDir = roaming.Combine ("Config"),
 				LocalConfigDir = local.Combine ("Config"),
@@ -155,7 +217,7 @@ namespace MonoDevelop.Core
 			};
 		}
 		
-		internal static UserProfile ForMac (string version)
+		internal static UserProfile ForMac (string version, bool ensureCreated = true)
 		{
 			string appId = GetAppId (version);
 			FilePath home = Environment.GetFolderPath (Environment.SpecialFolder.Personal);
@@ -168,6 +230,7 @@ namespace MonoDevelop.Core
 			FilePath appSupport = library.Combine ("Application Support", appId);
 			
 			return new UserProfile () {
+				createFolders = ensureCreated,
 				CacheDir = cache,
 				UserDataRoot = data,
 				ConfigDir = preferences,
@@ -178,7 +241,7 @@ namespace MonoDevelop.Core
 			};
 		}
 		
-		internal static UserProfile ForUnix (string version)
+		internal static UserProfile ForUnix (string version, bool ensureCreated = true)
 		{
 			FilePath home = Environment.GetFolderPath (Environment.SpecialFolder.Personal);
 			FilePath xdgDataHome = Environment.GetEnvironmentVariable ("XDG_DATA_HOME");
@@ -197,6 +260,7 @@ namespace MonoDevelop.Core
 			FilePath cache = xdgCacheHome.Combine (appId);
 			
 			return new UserProfile () {
+				createFolders = ensureCreated,
 				UserDataRoot = data,
 				LocalInstallDir = data.Combine ("LocalInstall"),
 				ConfigDir = config,
@@ -206,7 +270,7 @@ namespace MonoDevelop.Core
 				LogDir = cache.Combine ("Logs"),
 			};
 		}
-		
+
 		internal static UserProfile ForMD24 ()
 		{
 			FilePath appdata = Environment.GetFolderPath (Environment.SpecialFolder.ApplicationData);
@@ -240,7 +304,13 @@ namespace MonoDevelop.Core
 		static extern int SHGetKnownFolderPath ([MarshalAs (UnmanagedType.LPStruct)] Guid rfid,
 			uint dwFlags, IntPtr hToken, out IntPtr pszPath);
 		*/
-    }
+
+		void EnsureDirectoryExistsIfNeeded (string dir) 
+		{
+			if(createFolders)
+				Directory.CreateDirectory (dir);
+		}
+	}
 	
 	enum UserDataKind
 	{

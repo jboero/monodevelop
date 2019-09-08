@@ -26,6 +26,7 @@
 
 using System;
 using System.Xml.Linq;
+using NuGet.Common;
 using NuGet.Packaging;
 using NuGet.ProjectManagement;
 
@@ -39,16 +40,22 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 
 		public XDocument OriginalPackagesConfig { get; set; }
 
+		public Guid OperationId { get; set; }
+
 		public PackageExtractionContext PackageExtractionContext { get; set; }
 
 		public ISourceControlManagerProvider SourceControlManagerProvider {
 			get { return null; }
 		}
 
+		public bool LogToConsole { get; set; }
+
 		public void Log (MessageLevel level, string message, params object [] args)
 		{
 			LastLogLevel = level;
 			LastMessageLogged = String.Format (message, args);
+			if (LogToConsole)
+				Console.WriteLine (LastMessageLogged);
 		}
 
 		public MessageLevel? LastLogLevel { get; set; }
@@ -61,6 +68,14 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 		public FileConflictAction ResolveFileConflict (string message)
 		{
 			return FileConflictAction.Ignore;
+		}
+
+		public void Log (ILogMessage message)
+		{
+		}
+
+		public void ReportError (ILogMessage message)
+		{
 		}
 	}
 }

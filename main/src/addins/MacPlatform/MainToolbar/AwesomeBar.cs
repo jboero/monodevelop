@@ -62,6 +62,8 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			SearchBar = new SearchBar ();
 			AddSubview (SearchBar);
 
+			StatusBar.SearchBar = SearchBar;
+
 			Ide.Gui.Styles.Changed +=  (o, e) => UpdateLayout ();
 		}
 
@@ -82,6 +84,11 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			base.ViewDidMoveToWindow ();
 
 			if (IdeApp.Preferences.UserInterfaceTheme == Theme.Light) {
+				return;
+			}
+
+			// no hacks are required on HighSierra+
+			if (MacSystemInformation.OsVersion >= MacSystemInformation.HighSierra) {
 				return;
 			}
 

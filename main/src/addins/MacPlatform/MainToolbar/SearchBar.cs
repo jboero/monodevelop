@@ -32,11 +32,12 @@ using MonoDevelop.Core;
 
 using MonoDevelop.Ide;
 using Xwt.Mac;
+using MonoDevelop.Components.MainToolbar;
 
 namespace MonoDevelop.MacIntegration.MainToolbar
 {
 	[Register]
-	class SearchBar : NSSearchField
+	class SearchBar : NSSearchField, INSSearchFieldDelegate
 	{
 		internal Widget gtkWidget;
 		internal event EventHandler<Xwt.KeyEventArgs> KeyPressed;
@@ -52,7 +53,9 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			public override void DrawWithFrame (CGRect cellFrame, NSView inView)
 			{
 				if (IdeApp.Preferences.UserInterfaceTheme == Theme.Dark) {
+#pragma warning disable EPS06 // Hidden struct copy operation
 					var inset = cellFrame.Inset (0.25f, 0.25f);
+#pragma warning restore EPS06 // Hidden struct copy operation
 					if (!ShowsFirstResponder) {
 						var path = NSBezierPath.FromRoundedRect (inset, 3, 3);
 						path.LineWidth = 0.5f;
@@ -181,10 +184,45 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 		{
 			Cell = new DarkThemeSearchFieldCell ();
 
+			Delegate = this;
+
+			var nsa = (INSAccessibility)this;
+
+			AccessibilitySubrole = NSAccessibilitySubroles.SearchFieldSubrole;
+			nsa.AccessibilityIdentifier = "MainToolbar.SearchField";
+			AccessibilityHelp = GettextCatalog.GetString ("Search");
+			// Hide this from the A11y system because we actually care about the inner search field
+			// and not this one according to Cocoa?
+			AccessibilityElement = false;
+
 			Initialize ();
 
 			Ide.Gui.Styles.Changed +=  (o, e) => UpdateLayout ();
 			UpdateLayout ();
+		}
+
+		// Protection against the delegate being replaced by an external caller.
+		// The delegate needs to be set to make key handling work correctly
+		public override NSObject WeakDelegate {
+			get => base.WeakDelegate;
+			set {
+				if (base.WeakDelegate != null) {
+					throw new ApplicationException ("Cannot change the delegate of SearchBar");
+				}
+
+				base.WeakDelegate = value;
+			}
+		}
+
+		public override bool AccessibilityPerformShowMenu ()
+		{
+			Cell.SearchButtonCell.PerformClick (this);
+			return true;
+		}
+
+		public override bool AccessibilityPerformConfirm ()
+		{
+			return true;
 		}
 
 		NSAttributedString MakePlaceholderString (string t)
@@ -209,33 +247,87 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 				var other = (NSWindow)notification.Object;
 
 				if (notification.Object == Window) {
-					if (LostFocus != null)
-						LostFocus (this, null);
+					if (IsFirstResponderOfWindow (Window)) {
+						if (LostFocus != null)
+							LostFocus (this, null);
+					}
 				}
 			}));
 			NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.DidResizeNotification, notification => Runtime.RunInMainThread (() => {
 				var other = (NSWindow)notification.Object;
 				if (notification.Object == Window) {
-					if (LostFocus != null)
-						LostFocus (this, null);
+					if (IsFirstResponderOfWindow (Window)) {
+						if (LostFocus != null)
+							LostFocus (this, null);
+					}
 				}
 			}));
 		}
 
-		bool SendKeyPressed (Xwt.KeyEventArgs kargs)
+		bool IsFirstResponderOfWindow (NSWindow window)
+		{
+			if (window.FirstResponder is NSTextView tv) {
+				var field = tv.WeakDelegate;
+				if (field == this)
+					return true;
+			}
+
+			return false;
+		}
+
+		void SendKeyPressed (Xwt.KeyEventArgs kargs)
 		{
 			if (KeyPressed != null)
 				KeyPressed (this, kargs);
-
-			return kargs.Handled;
 		}
 
-		public override bool PerformKeyEquivalent (NSEvent theEvent)
+		internal event EventHandler<SearchEntryCommandArgs> PerformCommand;
+
+		[Export ("control:textView:doCommandBySelector:")]
+		bool CommandBySelector (NSControl control, NSTextField field, ObjCRuntime.Selector sel)
 		{
-			var popupHandled = SendKeyPressed (theEvent.ToXwtKeyEventArgs ());
-			if (popupHandled)
-				return true;
-			return base.PerformKeyEquivalent (theEvent);;
+			SearchPopupCommand command;
+
+			switch (sel.Name) {
+			case "moveDown:": // down arrow
+				command = SearchPopupCommand.NextItem;
+				break;
+
+			case "moveUp:": // up arrow
+				command = SearchPopupCommand.PreviousItem;
+				break;
+
+			case "scrollPageDown:": // page down
+			case "moveToEndOfDocument:": // cmd+down arrow
+				command = SearchPopupCommand.NextCategory;
+				break;
+
+			case "scrollPageUp:": // page up
+			case "moveToBeginningOfDocument:": // cmd+up arrow
+				command = SearchPopupCommand.PreviousCategory;
+				break;
+
+			case "insertNewline:": // Return
+				command = SearchPopupCommand.Activate;
+				break;
+
+			case "cancelOperation:": // Escape
+				command = SearchPopupCommand.Cancel;
+				break;
+
+			default:
+				return false;
+			}
+
+			var args = new SearchEntryCommandArgs (command);
+			PerformCommand?.Invoke (this, args);
+			return args.Handled;
+		}
+
+		[Export ("controlTextDidChange:")]
+		void ControlTextDidChange (NSNotification note)
+		{
+			SendKeyPressed (null);
 		}
 
 		bool ignoreEndEditing = false;
@@ -252,7 +344,8 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 
 			nint value = ((NSNumber)notification.UserInfo.ValueForKey ((NSString)"NSTextMovement")).LongValue;
 			if (value == (nint)(long)NSTextMovement.Tab) {
-				SelectText (this);
+				Window.MakeFirstResponder(null);
+				LostFocus?.Invoke(this, EventArgs.Empty);
 				return;
 			}
 

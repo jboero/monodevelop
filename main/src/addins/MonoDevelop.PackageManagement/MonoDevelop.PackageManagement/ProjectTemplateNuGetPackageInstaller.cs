@@ -28,6 +28,7 @@ using System.Collections.Generic;
 using System.Linq;
 using MonoDevelop.Ide.Templates;
 using MonoDevelop.Projects;
+using NuGet.ProjectManagement;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 
@@ -56,7 +57,7 @@ namespace MonoDevelop.PackageManagement
 
 			ProgressMonitorStatusMessage progressMessage = ProgressMonitorStatusMessageFactory.CreateInstallingProjectTemplatePackagesMessage ();
 			PackageManagementMSBuildExtension.PackageRestoreTask =
-				backgroundPackageActionRunner.RunAsync (progressMessage, installPackageActions);
+				backgroundPackageActionRunner.RunAsync (progressMessage, installPackageActions, clearConsole: false);
 		}
 
 		List<IPackageAction> CreatePackageActions (Solution solution, IList<PackageReferencesForCreatedProject> packageReferencesForCreatedProjects)
@@ -105,13 +106,20 @@ namespace MonoDevelop.PackageManagement
 		{
 			var primaryRepositories = repositoryProvider.GetRepositories (packageReference).ToList ();
 			var secondaryRepositories = GetSecondaryRepositories (primaryRepositories, packageReference);
+			var solutionManager = PackageManagementServices.Workspace.GetSolutionManager (dotNetProject.ParentSolution);
 
+			var context = new NuGetProjectContext (solutionManager.Settings) {
+				FileConflictResolution = FileConflictAction.IgnoreAll
+			};
 			return new InstallNuGetPackageAction (
 				primaryRepositories,
 				secondaryRepositories,
-				PackageManagementServices.Workspace.GetSolutionManager (dotNetProject.ParentSolution),
+				solutionManager,
 				new DotNetProjectProxy (dotNetProject),
-				new NuGetProjectContext ());
+				context) {
+				LicensesMustBeAccepted = packageReference.RequireLicenseAcceptance,
+				OpenReadmeFile = false
+			};
 		}
 
 		/// <summary>

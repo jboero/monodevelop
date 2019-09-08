@@ -37,6 +37,7 @@ using MonoDevelop.Ide.Gui;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace MonoDevelop.Ide
 {
@@ -46,11 +47,85 @@ namespace MonoDevelop.Ide
 
 		class GtkSynchronizationContext: SynchronizationContext
 		{
+			[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
+			internal delegate bool GSourceFuncInternal (IntPtr ptr);
+
+			internal class TimeoutProxy
+			{
+				internal SendOrPostCallback d;
+				object state;
+				ManualResetEventSlim resetEvent;
+
+				public TimeoutProxy (SendOrPostCallback d, object state) : this (d, state, null)
+				{
+				}
+
+				public TimeoutProxy (SendOrPostCallback d, object state, ManualResetEventSlim lockObject)
+				{
+					this.d = d;
+					this.state = state;
+					this.resetEvent = lockObject;
+				}
+
+				internal static readonly GSourceFuncInternal SourceHandler = HandlerInternal;
+
+				static bool HandlerInternal (IntPtr data)
+				{
+					var proxy = (TimeoutProxy)((GCHandle)data).Target;
+
+					try {
+						proxy.d (proxy.state);
+					} catch (Exception e) {
+						GLib.ExceptionManager.RaiseUnhandledException (e, false);
+					} finally {
+						proxy.resetEvent?.Set ();
+					}
+					return false;
+				}
+			}
+
+			const int defaultPriority = 0;
+
+			[DllImport ("libglib-2.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+			static extern uint g_timeout_add_full (int priority, uint interval, GSourceFuncInternal d, IntPtr data, GLib.DestroyNotify notify);
+
+			class ExceptionWithStackTraceWithoutThrowing : Exception
+			{
+				readonly string stacktrace;
+
+				public ExceptionWithStackTraceWithoutThrowing (string message) : base (message)
+				{
+					stacktrace = Environment.StackTrace;
+				}
+
+				public override string StackTrace => stacktrace;
+			}
+
+			static void AddTimeout (TimeoutProxy proxy)
+			{
+				if (proxy.d == null) {
+					// Create an exception without throwing it, as throwing is expensive and these exceptions can be
+					// hit a lot of times.
+
+					const string exceptionMessage = "Unexpected null delegate sent to synchronization context";
+					LoggingService.LogInternalError (exceptionMessage,
+					                                 new ExceptionWithStackTraceWithoutThrowing (exceptionMessage));
+
+					// Return here without queueing the UI operation. Async calls which await on the given callback
+					// will continue immediately, but at least we won't crash.
+					// Having a null continuation won't do anything anyway.
+					return;
+				}
+
+				var gch = GCHandle.Alloc (proxy);
+
+				g_timeout_add_full (defaultPriority, 0, TimeoutProxy.SourceHandler, (IntPtr)gch, GLib.DestroyHelper.NotifyHandler);
+			}
+
 			public override void Post (SendOrPostCallback d, object state)
 			{
-				Gtk.Application.Invoke (delegate {
-					d (state);
-				});
+				var proxy = new TimeoutProxy (d, state);
+				AddTimeout (proxy);
 			}
 
 			public override void Send (SendOrPostCallback d, object state)
@@ -59,16 +134,12 @@ namespace MonoDevelop.Ide
 					d (state);
 					return;
 				}
-				var ob = new object ();
-				lock (ob) {
-					Gtk.Application.Invoke (delegate {
-						try {
-							d (state);
-						} finally {
-							Monitor.Pulse (ob);
-						}
-					});
-					Monitor.Wait (ob);
+
+				using (var ob = new ManualResetEventSlim (false)) {
+					var proxy = new TimeoutProxy (d, state, ob);
+
+					AddTimeout (proxy);
+					ob.Wait ();
 				}
 			}
 
@@ -93,11 +164,16 @@ namespace MonoDevelop.Ide
 		static DateTime lastPendingEvents;
 		internal static void RunPendingEvents ()
 		{
+			RunPendingEvents (500);
+		}
+
+		internal static void RunPendingEvents (int minRunInterval)
+		{
 			// The loop is limited to 1000 iterations as a workaround for an issue that some users
 			// have experienced. Sometimes EventsPending starts return 'true' for all iterations,
 			// causing the loop to never end.
 			//
-			// The loop is also limited to running at most twice a second as some of the classes
+			// The loop is also by default limited to running at most twice a second as some of the classes
 			// inheriting from BaseProgressMonitor call RunPendingEvents for every method invocation.
 			// This means we pump the main loop dozens of times a second resulting in many screen
 			// redraws and significantly slow down the running task.
@@ -109,7 +185,7 @@ namespace MonoDevelop.Ide
 
 			// Check for less than zero in case there's a system time change
 			var diff = DateTime.UtcNow - lastPendingEvents;
-			if (diff > TimeSpan.FromMilliseconds (500) || diff < TimeSpan.Zero) {
+			if (diff > TimeSpan.FromMilliseconds (minRunInterval) || diff < TimeSpan.Zero) {
 				lastPendingEvents = DateTime.UtcNow;
 				while (Gtk.Application.EventsPending () && sw.ElapsedMilliseconds < maxLength) {
 					Gtk.Application.RunIteration (false);
@@ -120,7 +196,35 @@ namespace MonoDevelop.Ide
 
 			Gdk.Threads.Leave();
 		}
-		
+
+		/// <summary>
+		/// This method executes an async method on the main thread, but does not
+		/// technically block the calling thread. It does however "loop" and pumps
+		/// events in the mean time. This is a workaround for times when some of our
+		/// model (which is aync) is called by an external party (i.e. Roslyn) which
+		/// does not support async methods and potentially causes a deadlock. 
+		/// </summary>
+		/// <param name="asyncMethod"></param>
+		/// <remarks>See: https://github.com/mono/monodevelop/pull/7823</remarks>
+		internal static void PumpingWait (Func<Task> asyncMethod)
+		{
+			// This method can be called by Roslyn or the editor in a context which is not the GTK UI context
+			// that MonoDevelop uses. In that case, before starting async an operation that may queue
+			// task continuations into the current context, we switch to the GTK context, so that
+			// whatever is queued will be dispatched when we run RunPendingEvents.
+			var oldContext = SynchronizationContext.Current;
+			try {
+				SynchronizationContext.SetSynchronizationContext (Runtime.MainSynchronizationContext);
+				Task task = asyncMethod (); 
+				// Can't wait for the task to finish synchronously since doing so would deadlock the UI thread.
+				while (task != null && !task.IsCompleted) {
+					DispatchService.RunPendingEvents (30);
+				}
+			} finally {
+				SynchronizationContext.SetSynchronizationContext (oldContext);
+			}
+		}
+
 		#region Animations
 
 		/// <summary>

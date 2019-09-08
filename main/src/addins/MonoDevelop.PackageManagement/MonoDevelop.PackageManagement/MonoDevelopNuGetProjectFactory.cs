@@ -38,15 +38,17 @@ namespace MonoDevelop.PackageManagement
 	internal class MonoDevelopNuGetProjectFactory
 	{
 		ISettings settings;
+		ConfigurationSelector configuration;
 
 		public MonoDevelopNuGetProjectFactory ()
-			: this (SettingsLoader.LoadDefaultSettings ())
+			: this (SettingsLoader.LoadDefaultSettings (), ConfigurationSelector.Default)
 		{
 		}
 
-		public MonoDevelopNuGetProjectFactory (ISettings settings)
+		public MonoDevelopNuGetProjectFactory (ISettings settings, ConfigurationSelector configuration)
 		{
 			this.settings = settings;
+			this.configuration = configuration;
 		}
 
 		public NuGetProject CreateNuGetProject (IDotNetProject project)
@@ -66,23 +68,27 @@ namespace MonoDevelop.PackageManagement
 
 		public NuGetProject CreateNuGetProject (DotNetProject project, INuGetProjectContext context)
 		{
-			Runtime.AssertMainThread ();
-
 			var nugetAwareProject = project as INuGetAwareProject;
 			if (nugetAwareProject != null)
 				return nugetAwareProject.CreateNuGetProject ();
+
+			NuGetProject dotNetCoreProject = DotNetCoreNuGetProject.Create (project, configuration);
+			if (dotNetCoreProject != null)
+				return dotNetCoreProject;
+
+			NuGetProject packageReferenceProject = PackageReferenceNuGetProject.Create (project, configuration);
+			if (packageReferenceProject != null)
+				return packageReferenceProject;
 
 			var projectSystem = new MonoDevelopMSBuildNuGetProjectSystem (project, context);
 
 			string projectJsonPath = ProjectJsonPathUtilities.GetProjectConfigPath (project.BaseDirectory, project.Name);
 
 			if (File.Exists (projectJsonPath)) {
-				return new BuildIntegratedProjectSystem (
+				return new ProjectJsonBuildIntegratedNuGetProject (
 					projectJsonPath,
 					project.FileName,
 					project,
-					projectSystem,
-					project.Name,
 					settings);
 			}
 
@@ -91,7 +97,7 @@ namespace MonoDevelop.PackageManagement
 
 			string packagesConfigFolderPath = project.BaseDirectory;
 
-			return new MSBuildNuGetProject (
+			return new MonoDevelopMSBuildNuGetProject (
 				projectSystem, 
 				folderNuGetProjectFullPath, 
 				packagesConfigFolderPath);

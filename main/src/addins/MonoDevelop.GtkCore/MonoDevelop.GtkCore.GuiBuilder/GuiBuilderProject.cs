@@ -1,4 +1,4 @@
-//
+﻿//
 // GuiBuilderProject.cs
 //
 // Author:
@@ -40,8 +40,6 @@ using MonoDevelop.Ide;
 using MonoDevelop.Ide.TypeSystem;
 using System.Linq;
 using Microsoft.CodeAnalysis;
-using ICSharpCode.NRefactory6.CSharp.Completion;
-using ICSharpCode.NRefactory6.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace MonoDevelop.GtkCore.GuiBuilder
@@ -342,10 +340,10 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 		void OnFileAdded (object sender, ProjectFileEventArgs e)
 		{
 			foreach (ProjectFileEventInfo args in e) {
-				var docId = TypeSystemService.GetDocumentId (args.Project, args.ProjectFile.Name);
+				var docId = IdeApp.TypeSystemService.GetDocumentId (args.Project, args.ProjectFile.Name);
 				if (docId == null)
 					continue;
-				var doc = TypeSystemService.GetCodeAnalysisDocument (docId);
+				var doc = IdeApp.TypeSystemService.GetCodeAnalysisDocument (docId);
 				if (doc == null)
 					continue;
 	
@@ -375,10 +373,10 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 
 			foreach (ProjectFileEventInfo args in e) {
 
-				var docId = TypeSystemService.GetDocumentId (args.Project, args.ProjectFile.Name);
+				var docId = IdeApp.TypeSystemService.GetDocumentId (args.Project, args.ProjectFile.Name);
 				if (docId == null)
 					continue;
-				var doc = TypeSystemService.GetCodeAnalysisDocument (docId);
+				var doc = IdeApp.TypeSystemService.GetCodeAnalysisDocument (docId);
 				if (doc == null)
 					continue;
 				var semanticModel = doc.GetSemanticModelAsync ().Result;
@@ -435,7 +433,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 				if (p != null)
 					path = p.GetOutputFileName (IdeApp.Workspace.ActiveConfiguration);
 			} else if (pref.ReferenceType == ReferenceType.Assembly) {
-				path = pref.Reference;
+				path = pref.HintPath;
 			} else if (pref.ReferenceType == ReferenceType.Package) {
 				path = pref.Reference;
 			}
@@ -546,8 +544,6 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 						}
 						continue;
 					}
-					if (getUserClass && !string.IsNullOrEmpty (cls.Locations.First ().SourceTree.FilePath) && ((FilePath)cls.Locations.First ().SourceTree.FilePath).IsChildPathOf (gui_folder))
-						continue;
 					return cls;
 				}
 			}
@@ -558,7 +554,7 @@ namespace MonoDevelop.GtkCore.GuiBuilder
 		{
 			System.Threading.Tasks.Task<Compilation> task;
 			do {
-				task = TypeSystemService.GetCompilationAsync (Project);
+				task = IdeApp.TypeSystemService.GetCompilationAsync (Project);
 				task.Wait (500);
 			} while (!task.IsCompleted);
 

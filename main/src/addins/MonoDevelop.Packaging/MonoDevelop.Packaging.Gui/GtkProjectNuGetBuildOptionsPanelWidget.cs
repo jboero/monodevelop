@@ -25,6 +25,8 @@
 // THE SOFTWARE.
 
 using System;
+using MonoDevelop.Components.AtkCocoaHelper;
+using MonoDevelop.Core;
 
 namespace MonoDevelop.Packaging.Gui
 {
@@ -38,6 +40,18 @@ namespace MonoDevelop.Packaging.Gui
 			UpdateMissingMetadataLabelVisibility ();
 			packOnBuildButton.Toggled += PackOnBuildButtonToggled;
 			GtkNuGetPackageMetadataOptionsPanelWidget.OnProjectHasMetadataChanged = OnProjectHasMetadataChanged;
+
+			SetupAccessibility ();
+		}
+
+		void SetupAccessibility (bool includeMissingMetadataLabelText = false)
+		{
+			string accessibilityLabel = packOnBuildButton.Label;
+			if (includeMissingMetadataLabelText) {
+				accessibilityLabel += " " + missingMetadataLabel.Text;
+			}
+			packOnBuildButton.SetCommonAccessibilityAttributes ("NugetBuildOptionsPanel.PackOnBuild", accessibilityLabel,
+			                                                    GettextCatalog.GetString ("Check to create a NuGet package when building"));
 		}
 
 		public bool PackOnBuild {
@@ -63,10 +77,15 @@ namespace MonoDevelop.Packaging.Gui
 
 		void UpdateMissingMetadataLabelVisibility ()
 		{
-			if (packOnBuildButton.Active) {
-				missingMetadataLabel.Visible = !ProjectHasMetadata;
+			bool visible = packOnBuildButton.Active && !ProjectHasMetadata;
+			missingMetadataLabel.Visible = visible;
+
+			// Refresh accessibility information so missing metadata label text is available to Voice Over
+			// when the check box is selected.
+			if (visible) {
+				SetupAccessibility (includeMissingMetadataLabelText: true);
 			} else {
-				missingMetadataLabel.Visible = false;
+				SetupAccessibility ();
 			}
 		}
 
@@ -75,10 +94,10 @@ namespace MonoDevelop.Packaging.Gui
 			ProjectHasMetadata = hasMetadata;
 		}
 
-		public override void Destroy ()
+		protected override void OnDestroyed ()
 		{
 			GtkNuGetPackageMetadataOptionsPanelWidget.OnProjectHasMetadataChanged = null;
-			base.Destroy ();
+			base.OnDestroyed ();
 		}
 	}
 }

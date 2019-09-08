@@ -1,4 +1,4 @@
-//
+﻿//
 // ViewCommandHandlers.cs
 //
 // Author:
@@ -44,15 +44,15 @@ namespace MonoDevelop.Ide.Gui
 		IWorkbenchWindow window;
 		Document doc;
 
-		public ViewCommandHandlers (IWorkbenchWindow window)
+		public void Initialize (Document doc)
 		{
-			this.window = window;
-			doc = IdeApp.Workbench.WrapDocument (window);
+			window = doc.Window;
+			this.doc = doc;
 		}
 		
 		public T GetContent <T>() where T : class
 		{
-			return (T) window.ActiveViewContent.GetContent (typeof(T));
+			return doc.GetContent<T> (true);
 		}
 		
 		[CommandHandler (FileCommands.Save)]
@@ -91,7 +91,7 @@ namespace MonoDevelop.Ide.Gui
 		[CommandUpdateHandler (FileCommands.ReloadFile)]
 		protected void OnUpdateReloadFile (CommandInfo info)
 		{
-			info.Enabled = window.ViewContent.ContentName != null && !window.ViewContent.IsViewOnly && window.Document != null && window.Document.IsDirty;
+			info.Enabled = !doc.IsNewDocument && !doc.IsViewOnly && !doc.IsDirty;
 		}
 
 		[CommandHandler (FileCommands.OpenContainingFolder)]
@@ -99,7 +99,7 @@ namespace MonoDevelop.Ide.Gui
 		{
 			// A tab will always hold a file, never a folder.
 			FilePath path = Path.GetDirectoryName (doc.FileName);
-			DesktopService.OpenFolder (path, doc.FileName);
+			IdeServices.DesktopService.OpenFolder (path, doc.FileName);
 		}
 		
 		[CommandUpdateHandler (FileCommands.OpenContainingFolder)]
@@ -263,7 +263,7 @@ namespace MonoDevelop.Ide.Gui
 			string selectedText = buffer.SelectedText;
 			if (string.IsNullOrEmpty (selectedText)) {
 				int pos = buffer.CaretOffset;
-				string ch = buffer.GetTextAt (pos, pos + 1);
+				string ch = buffer.GetTextAt (pos, 1);
 				string upper = ch.ToUpper ();
 				if (upper == ch) {
 					buffer.CaretOffset = pos + 1;
@@ -304,7 +304,7 @@ namespace MonoDevelop.Ide.Gui
 			string selectedText = buffer.SelectedText;
 			if (string.IsNullOrEmpty (selectedText)) {
 				int pos = buffer.CaretOffset;
-				string ch = buffer.GetTextAt (pos, pos + 1);
+				string ch = buffer.GetTextAt (pos, 1);
 				string lower = ch.ToLower ();
 				if (lower == ch) {
 					buffer.CaretOffset = pos + 1;
@@ -338,85 +338,82 @@ namespace MonoDevelop.Ide.Gui
 
 		// Text editor commands
 		
-		[CommandUpdateHandler (TextEditorCommands.LineEnd)]
-		[CommandUpdateHandler (TextEditorCommands.LineStart)]
-		[CommandUpdateHandler (TextEditorCommands.DeleteLeftChar)]
-		[CommandUpdateHandler (TextEditorCommands.DeleteRightChar)]
 		[CommandUpdateHandler (TextEditorCommands.CharLeft)]
 		[CommandUpdateHandler (TextEditorCommands.CharRight)]
-		[CommandUpdateHandler (TextEditorCommands.LineUp)]
-		[CommandUpdateHandler (TextEditorCommands.LineDown)]
-		[CommandUpdateHandler (TextEditorCommands.DocumentStart)]
-		[CommandUpdateHandler (TextEditorCommands.DocumentEnd)]
+		[CommandUpdateHandler (TextEditorCommands.DeleteLeftChar)]
 		[CommandUpdateHandler (TextEditorCommands.DeleteLine)]
-		[CommandUpdateHandler (TextEditorCommands.MoveBlockUp)]
-		[CommandUpdateHandler (TextEditorCommands.MoveBlockDown)]		
-		[CommandUpdateHandler (TextEditorCommands.GotoMatchingBrace)]		
+		[CommandUpdateHandler (TextEditorCommands.DeleteRightChar)]
+		[CommandUpdateHandler (TextEditorCommands.DocumentEnd)]
+		[CommandUpdateHandler (TextEditorCommands.DocumentStart)]
+		[CommandUpdateHandler (TextEditorCommands.LineDown)]
+		[CommandUpdateHandler (TextEditorCommands.LineEnd)]
+		[CommandUpdateHandler (TextEditorCommands.LineStart)]
+		[CommandUpdateHandler (TextEditorCommands.LineUp)]
 		protected void OnUpdateLineEnd (CommandInfo info)
 		{
 			// If the current document is not an editor, just ignore the text
 			// editor commands.
-			info.Bypass = doc.Editor == null;
+			info.Bypass = doc.Editor?.HasFocus == false;
 		}
 		
 		[CommandHandler (TextEditorCommands.LineEnd)]
 		protected void OnLineEnd ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretToLineEnd ();
+			doc.Editor.EditorOperations.MoveToEndOfLine (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.LineStart)]
 		protected void OnLineStart ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretToLineStart ();
+			doc.Editor.EditorOperations.MoveToStartOfLine (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.DeleteLeftChar)]
 		protected void OnDeleteLeftChar ()
 		{
-			doc.Editor.EditorActionHost.Backspace ();
+			doc.Editor.EditorOperations.Backspace ();
 		}
 		
 		[CommandHandler (TextEditorCommands.DeleteRightChar)]
 		protected void OnDeleteRightChar ()
 		{
-			doc.Editor.EditorActionHost.Delete ();
+			doc.Editor.EditorOperations.Delete ();
 		}
 		
 		[CommandHandler (TextEditorCommands.CharLeft)]
 		protected void OnCharLeft ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretLeft ();
+			doc.Editor.EditorOperations.MoveToPreviousCharacter (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.CharRight)]
 		protected void OnCharRight ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretRight ();
+			doc.Editor.EditorOperations.MoveToNextCharacter (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.LineUp)]
 		protected void OnLineUp ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretUp ();
+			doc.Editor.EditorOperations.MoveLineUp (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.LineDown)]
 		protected void OnLineDown ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretDown ();
+			doc.Editor.EditorOperations.MoveLineDown (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.DocumentStart)]
 		protected void OnDocumentStart ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretToDocumentStart ();
+			doc.Editor.EditorOperations.MoveToStartOfDocument (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.DocumentEnd)]
 		protected void OnDocumentEnd ()
 		{
-			doc.Editor.EditorActionHost.MoveCaretToDocumentEnd ();
+			doc.Editor.EditorOperations.MoveToEndOfDocument (false);
 		}
 		
 		[CommandHandler (TextEditorCommands.DeleteLine)]
@@ -524,8 +521,16 @@ namespace MonoDevelop.Ide.Gui
 		[CommandUpdateHandler (EditCommands.EnableDisableFolding)]
 		protected void UpdateEnableDisableFolding (CommandInfo info)
 		{
+#if WINDOWS
+			info.Enabled = info.Visible = false;
+#else
 			info.Text = IsFoldMarkerMarginEnabled ? GettextCatalog.GetString ("Disable _Folding") : GettextCatalog.GetString ("Enable _Folding");
-			info.Enabled = GetContent<IFoldable> () != null;
+			info.Enabled = GetContent<IFoldable> () != null ||
+				GetContent<Microsoft.VisualStudio.Text.Editor.ITextView3> () != null;
+			// As we need to support both the new and the legacy editor, we need to check if perhaps
+			// we are running in the new one. The legacy editor already implements <see cref="ITextView"/>
+			// so we can't simply look for that and we do not want to import anything related to Cocoa. 
+#endif
 		}
 
 		[CommandUpdateHandler (EditCommands.ToggleAllFoldings)]

@@ -3,8 +3,8 @@
 open MonoDevelop
 open MonoDevelop.Ide.Editor
 open MonoDevelop.Ide.Editor.Extension
-open Microsoft.FSharp.Compiler
-open Microsoft.FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler
+open FSharp.Compiler.SourceCodeServices
 
 type FSharpNavigationTextEditorExtension() =
     inherit AbstractNavigationExtension()
@@ -14,7 +14,7 @@ type FSharpNavigationTextEditorExtension() =
         let editor = base.Editor
         let documentContext = base.DocumentContext
 
-        let computation = async {
+        async {
             if documentContext :? FsiDocumentContext then return Seq.empty
             else
             match documentContext.ParsedDocument |> Option.tryCast<FSharpParsedDocument> with
@@ -53,5 +53,5 @@ type FSharpNavigationTextEditorExtension() =
 
             | None -> return Seq.empty
         }
+        |> StartAsyncAsTask token
 
-        Async.StartAsTask(computation, cancellationToken = token)

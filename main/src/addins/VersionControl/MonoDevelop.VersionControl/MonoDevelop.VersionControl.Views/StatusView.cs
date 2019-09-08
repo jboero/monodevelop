@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.IO;
@@ -12,8 +12,10 @@ using MonoDevelop.Components;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Projects;
 using MonoDevelop.Ide;
-using Mono.TextEditor;
 using System.Text;
+using MonoDevelop.Ide.Gui.Documents;
+using MonoDevelop.Ide.Gui;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.VersionControl.Views
 {
@@ -50,7 +52,7 @@ namespace MonoDevelop.VersionControl.Views
 				get; private set;
 			}
 
-			public Lazy<DiffInfo> Diff {
+			public Task<DiffInfo> Diff {
 				get; set;
 			}
 
@@ -61,12 +63,12 @@ namespace MonoDevelop.VersionControl.Views
 			public DiffData (Repository vc, FilePath root, VersionInfo info, bool remote)
 			{
 				VersionInfo = info;
-				Diff = new Lazy<DiffInfo> (() => {
+				Diff = Task.Run(async () => {
 					try {
 						DiffInfo result = null;
 						if (!remote)
-							result = vc.GenerateDiff (root, info);
-						return result ?? vc.PathDiff (root, new [] { info.LocalPath }, remote).FirstOrDefault ();
+							result = await vc.GenerateDiffAsync (root, info);
+						return result ?? (await vc.PathDiffAsync (root, new [] { info.LocalPath }, remote)).FirstOrDefault ();
 					} catch (Exception ex) {
 						Exception = ex;
 						return null;
@@ -81,7 +83,7 @@ namespace MonoDevelop.VersionControl.Views
 		bool updatingComment;
 		ChangeSet changeSet;
 		bool firstLoad = true;
-		VersionControlItemList fileList;
+		volatile VersionControlItemList fileList;
 
 		const int ColIcon = 0;
 		const int ColStatus = 1;
@@ -101,7 +103,7 @@ namespace MonoDevelop.VersionControl.Views
 
 		delegate void DiffDataHandler (List<DiffData> diffdata);
 
-		public static bool Show (VersionControlItemList items, bool test, bool solution)
+		public static async Task<bool> ShowAsync (VersionControlItemList items, bool test, bool solution)
 		{
 			FilePath path = items.FindMostSpecificParent ();
 			bool isSingleDirectory = false;
@@ -113,11 +115,16 @@ namespace MonoDevelop.VersionControl.Views
 				path = path.ParentDirectory;
 			else if (items.Count == 1)
 				isSingleDirectory = true;
-
-			if (items.Any (v => v.VersionInfo.IsVersioned)) {
+			bool isSomethingVesioned = false;
+			foreach (var i in items) {
+				if ((await i.GetVersionInfoAsync ()).IsVersioned) {
+					isSomethingVesioned = true;
+					break;
+				}
+			}
+			if (isSomethingVesioned) {
 				if (test)
 					return true;
-
 				if (!BringStatusViewToFront (path)) {
 					StatusView d = new StatusView (path, items [0].Repository, isSingleDirectory || solution ? null : items);
 					IdeApp.Workbench.OpenDocument (d, true);
@@ -289,14 +296,8 @@ namespace MonoDevelop.VersionControl.Views
 			Init ();
 		}
 
-		protected override void OnWorkbenchWindowChanged ()
+		void SetupToolbar (DocumentToolbar toolbar)
 		{
-			base.OnWorkbenchWindowChanged ();
-			if (WorkbenchWindow == null)
-				return;
-
-			var toolbar = WorkbenchWindow.GetToolbar (this);
-
 			buttonCommit.Clicked += new EventHandler (OnCommitClicked);
 			toolbar.Add (buttonCommit);
 
@@ -383,7 +384,7 @@ namespace MonoDevelop.VersionControl.Views
 			return ((IComparable)o1).CompareTo (o2);
 		}
 
-		public override void Dispose ()
+		protected override void OnDispose ()
 		{
 			disposed = true;
 			if (colCommit != null) {
@@ -424,14 +425,15 @@ namespace MonoDevelop.VersionControl.Views
 			}
 			localDiff.Clear ();
 			remoteDiff.Clear ();
-			base.Dispose ();
+			base.OnDispose ();
 		}
 
-		public override Control Control {
-			get {
-				return widget;
-			}
+		protected override Control OnGetViewControl (DocumentViewContent view)
+		{
+			SetupToolbar (view.GetToolbar ());
+			return widget;
 		}
+		object updateLock = new object ();
 
 		void StartUpdate ()
 		{
@@ -447,27 +449,61 @@ namespace MonoDevelop.VersionControl.Views
 			showRemoteStatus.Sensitive = false;
 			buttonCommit.Sensitive = false;
 
-			ThreadPool.QueueUserWorkItem (delegate {
+			lock (updateLock) {
+				if (!cancelUpdate.IsCancellationRequested)
+					cancelUpdate.Cancel ();
+				cancelUpdate = new CancellationTokenSource ();
+				var token = cancelUpdate.Token;
+				updateTask = updateTask.ContinueWith (async t => await RunUpdate (token), token, TaskContinuationOptions.LazyCancellation, TaskScheduler.Default);
+			}
+		}
+
+		CancellationTokenSource cancelUpdate = new CancellationTokenSource ();
+		Task updateTask = Task.FromResult (true);
+
+		async Task RunUpdate (CancellationToken cancel)
+		{
+			try {
+				if (disposed)
+					return;
+				cancel.ThrowIfCancellationRequested ();
 				if (fileList != null) {
 					var group = fileList.GroupBy (v => v.IsDirectory || v.WorkspaceObject is SolutionFolderItem);
 					foreach (var item in group) {
 						// Is directory.
 						if (item.Key) {
 							foreach (var directory in item)
-								changeSet.AddFiles (vc.GetDirectoryVersionInfo (directory.Path, remoteStatus, true));
-						} else
-							changeSet.AddFiles (item.Select (v => v.VersionInfo).ToArray ());
+								changeSet.AddFiles (await vc.GetDirectoryVersionInfoAsync (directory.Path, remoteStatus, true, cancel));
+						} else {
+							var files = new List<VersionInfo> ();
+							foreach (var i in item) {
+								var info = await i.GetVersionInfoAsync (cancel);
+								files.Add (info);
+							}
+
+							changeSet.AddFiles (files);
+						}
 					}
-					changeSet.AddFiles (fileList.Where (v => !v.IsDirectory).Select (v => v.VersionInfo).ToArray ());
 					fileList = null;
 				}
-				List<VersionInfo> newList = new List<VersionInfo> ();
-				newList.AddRange (vc.GetDirectoryVersionInfo (filepath, remoteStatus, true));
+
+				cancel.ThrowIfCancellationRequested ();
+				var newList = new List<VersionInfo> ();
+				newList.AddRange (await vc.GetDirectoryVersionInfoAsync (filepath, remoteStatus, true, cancel));
+
+				cancel.ThrowIfCancellationRequested ();
 				Runtime.RunInMainThread (delegate {
-					if (!disposed)
+					// skip status reloading if another update is queued
+					if (!cancel.IsCancellationRequested && !disposed)
 						LoadStatus (newList);
-				});
-			});
+				}).Ignore ();
+			} catch (OperationCanceledException) {
+				return;
+			} catch (Exception ex) {
+				if (!(ex is OperationCanceledException))
+					LoggingService.LogError ("VCS StatusView update failed", ex);
+				throw;
+			}
 		}
 
 		void LoadStatus (List<VersionInfo> newList)
@@ -591,7 +627,7 @@ namespace MonoDevelop.VersionControl.Views
 			if (n.IsDirectory)
 				fileIcon = ImageService.GetIcon (MonoDevelop.Ide.Gui.Stock.ClosedFolder, Gtk.IconSize.Menu);
 			else
-				fileIcon = DesktopService.GetIconForFile (n.LocalPath, Gtk.IconSize.Menu);
+				fileIcon = IdeServices.DesktopService.GetIconForFile (n.LocalPath, Gtk.IconSize.Menu);
 
 			TreeIter it = filestore.AppendValues (statusicon, lstatus, GLib.Markup.EscapeText (localpath).Split ('\n'), rstatus, commit, false, n.LocalPath.ToString (), true, hasComment, fileIcon, n.HasLocalChanges, rstatusicon, scolor, n.HasRemoteChange (VersionStatus.Modified));
 			if (!n.IsDirectory)
@@ -654,34 +690,38 @@ namespace MonoDevelop.VersionControl.Views
 			}
 		}
 
-		void OnCommitTextChanged (object o, EventArgs args)
+		async void OnCommitTextChanged (object o, EventArgs args)
 		{
-			if (updatingComment)
-				return;
+			try {
+				if (updatingComment)
+					return;
 
-			string msg = commitText.Buffer.Text;
+				string msg = commitText.Buffer.Text;
 
-			// Update the comment in all selected files
-			string[] files = GetCurrentFiles ();
-			foreach (string file in files)
-				SetCommitMessage (file, msg);
+				// Update the comment in all selected files
+				string [] files = GetCurrentFiles ();
+				foreach (string file in files)
+					await SetCommitMessage (file, msg);
 
-			// Make the comment icon visible in all selected rows
-			TreePath[] paths = filelist.Selection.GetSelectedRows ();
-			foreach (TreePath path in paths) {
-				TreeIter iter;
-				filestore.GetIter (out iter, path);
-				if (filestore.IterDepth (iter) != 0)
-					filestore.IterParent (out iter, iter);
+				// Make the comment icon visible in all selected rows
+				TreePath [] paths = filelist.Selection.GetSelectedRows ();
+				foreach (TreePath path in paths) {
+					TreeIter iter;
+					filestore.GetIter (out iter, path);
+					if (filestore.IterDepth (iter) != 0)
+						filestore.IterParent (out iter, iter);
 
-				bool curv = (bool) filestore.GetValue (iter, ColShowComment);
-				if (curv != (msg.Length > 0))
-					filestore.SetValue (iter, ColShowComment, msg.Length > 0);
+					bool curv = (bool)filestore.GetValue (iter, ColShowComment);
+					if (curv != (msg.Length > 0))
+						filestore.SetValue (iter, ColShowComment, msg.Length > 0);
 
-				string fp = (string) filestore.GetValue (iter, ColFullPath);
-				filestore.SetValue (iter, ColCommit, changeSet.ContainsFile (fp));
+					string fp = (string)filestore.GetValue (iter, ColFullPath);
+					filestore.SetValue (iter, ColCommit, changeSet.ContainsFile (fp));
+				}
+				UpdateSelectionStatus ();
+			} catch (Exception e) {
+				LoggingService.LogInternalError (e);
 			}
-			UpdateSelectionStatus ();
 		}
 
 		static string GetCommitMessage (string file)
@@ -690,12 +730,12 @@ namespace MonoDevelop.VersionControl.Views
 			return txt ?? String.Empty;
 		}
 
-		void SetCommitMessage (string file, string text)
+		async Task SetCommitMessage (string file, string text)
 		{
 			if (text.Length > 0) {
 				ChangeSetItem item = changeSet.GetFileItem (file);
 				if (item == null)
-					item = changeSet.AddFile (file);
+					item = await changeSet.AddFileAsync (file);
 				item.Comment = text;
 			} else {
 				VersionControlService.SetCommitComment (file, text, true);
@@ -754,7 +794,7 @@ namespace MonoDevelop.VersionControl.Views
 			StartUpdate ();
 		}
 
-		void OnCommitClicked (object src, EventArgs args)
+		async void OnCommitClicked (object src, EventArgs args)
 		{
 			// Nothing to commit
 			if (changeSet.IsEmpty)
@@ -769,7 +809,7 @@ namespace MonoDevelop.VersionControl.Views
 					return;
 			}
 
-			CommitCommand.Commit (vc, changeSet.Clone ());
+			await CommitCommand.CommitAsync (vc, changeSet.Clone ());
 		}
 
 
@@ -812,7 +852,7 @@ namespace MonoDevelop.VersionControl.Views
 				} else
 					opset.AddSeparator ();
 			}
-			IdeApp.CommandService.ShowContextMenu (filelist, evnt, opset, commandChain);
+			filelist.ShowContextMenu (evnt, opset, commandChain);
 		}
 
 		public VersionControlItemList GetSelectedItems ()
@@ -821,7 +861,7 @@ namespace MonoDevelop.VersionControl.Views
 			VersionControlItemList items = new VersionControlItemList ();
 			foreach (string file in files) {
 				Project prj = IdeApp.Workspace.GetProjectsContainingFile (file).FirstOrDefault ();
-				items.Add (new VersionControlItem (vc, prj, file, Directory.Exists (file), null));
+				items.Add (new VersionControlItem (vc, prj, file, Directory.Exists (file), GetVersionInfo (file)));
 			}
 			return items;
 		}
@@ -902,7 +942,13 @@ namespace MonoDevelop.VersionControl.Views
 		/// </summary>
 		void OnCreatePatch (object s, EventArgs args)
 		{
-			CreatePatchCommand.CreatePatch (changeSet, false);
+			Task.Run (async () => {
+				try {
+					await CreatePatchCommand.CreatePatchAsync (changeSet, false);
+				} catch (Exception e) {
+					LoggingService.LogError ("Error while creating patch.", e);
+				}
+			});
 		}
 
 		void OnRefresh (object s, EventArgs args)
@@ -912,7 +958,7 @@ namespace MonoDevelop.VersionControl.Views
 
 		void OnRevert (object s, EventArgs args)
 		{
-			RevertCommand.Revert (GetSelectedItems (), false);
+			RevertCommand.RevertAsync (GetSelectedItems (), false, default).Ignore ();
 		}
 
 		void OnOpen (object s, EventArgs args)
@@ -942,21 +988,27 @@ namespace MonoDevelop.VersionControl.Views
 			}
 		}
 
-		void OnFileStatusChanged (object s, FileUpdateEventArgs args)
+		async void OnFileStatusChanged (object s, FileUpdateEventArgs args)
 		{
-			if (args.Any (f => f.FilePath == filepath || (f.FilePath.IsChildPathOf (filepath) && f.IsDirectory))) {
-				StartUpdate ();
-				return;
+			try {
+				if (args.Any (f => f.FilePath == filepath || (filepath != null && !f.FilePath.IsNullOrEmpty && f.FilePath.IsChildPathOf (filepath) && f.IsDirectory))) {
+					StartUpdate ();
+					return;
+				}
+				foreach (FileUpdateEventInfo f in args) {
+					if (!await OnFileStatusChanged (f))
+						break;
+				}
+				UpdateControlStatus ();
+			} catch (Exception e) {
+				LoggingService.LogInternalError (e);
 			}
-			foreach (FileUpdateEventInfo f in args) {
-				if (!OnFileStatusChanged (f))
-					break;
-			}
-			UpdateControlStatus ();
 		}
 
-		bool OnFileStatusChanged (FileUpdateEventInfo args)
+		async Task<bool> OnFileStatusChanged (FileUpdateEventInfo args)
 		{
+			if (args.FilePath.IsNullOrEmpty)
+				return false;
 			if (!args.FilePath.IsChildPathOf (filepath) && args.FilePath != filepath)
 				return true;
 
@@ -998,7 +1050,7 @@ namespace MonoDevelop.VersionControl.Views
 			VersionInfo newInfo;
 			try {
 				// Reuse remote status from old version info
-				newInfo = vc.GetVersionInfo (args.FilePath);
+				vc.TryGetVersionInfo (args.FilePath, out newInfo);
 				if (found && newInfo != null) {
 					VersionInfo oldInfo = statuses [oldStatusIndex];
 					if (oldInfo != null) {
@@ -1074,22 +1126,22 @@ namespace MonoDevelop.VersionControl.Views
 				// which is not in our list
 				text =  new[] { GettextCatalog.GetString ("No differences found") };
 				LoggingService.LogError ("Attempted to generate the diff for a file not in the changeset", (Exception) null);
-			} else if (!info.Diff.IsValueCreated) {
+			} else if (!info.Diff.IsCompleted) {
 				text = new [] { GettextCatalog.GetString ("Loading data...") };
 				ThreadPool.QueueUserWorkItem (delegate {
 					// Here we just touch the  property so that the Lazy<T> creates
 					// the value. Do not capture the TreeIter as it may invalidate
 					// before the diff data has asyncronously loaded.
-					GC.KeepAlive (info.Diff.Value);
-					Gtk.Application.Invoke (delegate { if (!disposed) FillDifs (); });
+
+					Gtk.Application.Invoke ((o, args) => { if (!disposed) FillDifs (); });
 				});
 			} else if (info.Exception != null) {
 				text = new [] { GettextCatalog.GetString ("Could not get diff information. ") };
 				LoggingService.LogError ("Could not get diff information", info.Exception);
-			} else if (info.Diff.Value == null || string.IsNullOrEmpty (info.Diff.Value.Content)) {
+			} else if (string.IsNullOrEmpty (info.Diff.WaitAndGetResult ()?.Content)) {
 				text = new [] { GettextCatalog.GetString ("No differences found") };
 			} else {
-				text = info.Diff.Value.Content.Split ('\n');
+				text = info.Diff.WaitAndGetResult ().Content.Split ('\n');
 				asText = false;
 			}
 
@@ -1225,10 +1277,9 @@ namespace MonoDevelop.VersionControl.Views
 				}
 			}
 
-			handled = handled || (
-				IsClickedNodeSelected ((int)evnt.X, (int)evnt.Y)
+			handled |= (IsClickedNodeSelected ((int)evnt.X, (int)evnt.Y) && ctxMenu)
 				&& this.Selection.GetSelectedRows ().Length > 1
-				&& (evnt.State & selectionModifiers) == 0);
+				&& (evnt.State & selectionModifiers) == 0;
 
 			if (!handled)
 				handled = base.OnButtonPressEvent (evnt);

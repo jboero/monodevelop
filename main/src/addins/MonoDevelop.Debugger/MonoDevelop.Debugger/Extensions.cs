@@ -65,10 +65,11 @@ namespace MonoDevelop.Debugger
 
 		public static AsyncOperation DebugApplication (this ProjectOperations opers, string executableFile, string args, string workingDir, IDictionary<string,string> envVars)
 		{
-			if (opers.CurrentRunOperation != null && !opers.CurrentRunOperation.IsCompleted)
-				return opers.CurrentRunOperation;
+			if (!IdeApp.Workbench.Visible) {
+				IdeApp.Workbench.Present ();
+			}
 
-			var monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor ();
+			var monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor (System.IO.Path.GetFileName (executableFile));
 
 			var oper = DebuggingService.Run (executableFile, args, workingDir, envVars, monitor.Console);
 			opers.AddRunOperation (oper);
@@ -82,8 +83,9 @@ namespace MonoDevelop.Debugger
 
 		public static AsyncOperation AttachToProcess (this ProjectOperations opers, DebuggerEngine debugger, ProcessInfo proc)
 		{
-			if (opers.CurrentRunOperation != null && !opers.CurrentRunOperation.IsCompleted)
-				return opers.CurrentRunOperation;
+			if (!IdeApp.Workbench.Visible) {
+				IdeApp.Workbench.Present ();
+			}
 
 			var oper = DebuggingService.AttachToProcess (debugger, proc);
 

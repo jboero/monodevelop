@@ -1,4 +1,4 @@
-﻿//
+//
 // DocumentContext.cs
 //
 // Author:
@@ -39,7 +39,7 @@ namespace MonoDevelop.Ide.Editor
 	/// A document context puts a textual document in a semantic context inside a project and gives access
 	/// to the parse information of the textual document.
 	/// </summary>
-	public abstract class DocumentContext
+	public abstract class DocumentContext : IDisposable
 	{
 		/// <summary>
 		/// The name of the document. It's the file name for files on disc. 
@@ -67,7 +67,18 @@ namespace MonoDevelop.Ide.Editor
 			get;
 		}
 
-		WorkspaceId workspaceId = WorkspaceId.Empty;
+
+		/// <summary>
+		/// Determine if the file has already saved on disk. Untitled files are open
+		/// in the IDE only. After the first save the file is no longer untitled.
+		/// </summary>
+		public virtual bool IsUntitled {
+			get {
+				return false;
+			}
+		}
+
+		Microsoft.CodeAnalysis.Workspace workspace;
 
 		public virtual T GetPolicy<T> (IEnumerable<string> types) where T : class, IEquatable<T>, new ()
 		{
@@ -78,24 +89,36 @@ namespace MonoDevelop.Ide.Editor
 			return MonoDevelop.Projects.Policies.PolicyService.GetDefaultPolicy<T> (types);
 		}
 
+		[Obsolete ("Use Roslyn directly")]
 		public Microsoft.CodeAnalysis.Workspace RoslynWorkspace
 		{
-			get { return TypeSystemService.GetWorkspace (workspaceId); }
-			protected set { workspaceId = ((MonoDevelopWorkspace)value).Id; }
+			get { return workspace ?? IdeApp.TypeSystemService.emptyWorkspace; }
+			protected set { workspace = value; }
 		}
 
 		/// <summary>
 		/// Returns the roslyn document for this document. This may return <c>null</c> if it's no compileable document.
-		/// Even if it's a C# file.
+		/// Even if it's a C# file. Is always not <c>null</c> when the parser returns <c>true</c> on CanGenerateAnalysisDocument.
 		/// </summary>
+		[Obsolete ("Use Roslyn directly")]
 		public abstract Microsoft.CodeAnalysis.Document AnalysisDocument
 		{
 			get;
 		}
 
+		[Obsolete ("Use Roslyn directly")]
+		public event EventHandler AnalysisDocumentChanged;
+
+		[Obsolete ("Use Roslyn directly")]
+		protected virtual void OnAnalysisDocumentChanged (global::System.EventArgs e)
+		{
+			AnalysisDocumentChanged?.Invoke (this, e);
+		}
+
 		/// <summary>
 		/// The parsed document. Contains all syntax information about the text.
 		/// </summary>
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		public abstract ParsedDocument ParsedDocument
 		{
 			get;
@@ -104,6 +127,7 @@ namespace MonoDevelop.Ide.Editor
 		/// <summary>
 		/// If true, the document is part of the ProjectContent.
 		/// </summary>
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		public virtual bool IsCompileableInProject
 		{
 			get
@@ -130,8 +154,10 @@ namespace MonoDevelop.Ide.Editor
 		/// <summary>
 		/// This is called after the ParsedDocument updated.
 		/// </summary>
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		public event EventHandler DocumentParsed;
 
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		protected void OnDocumentParsed (EventArgs e)
 		{
 			var handler = DocumentParsed;
@@ -145,14 +171,14 @@ namespace MonoDevelop.Ide.Editor
 		/// Forces a reparse of the document. This call doesn't block the ui thread. 
 		/// The next call to ParsedDocument will give always the current parsed document but may block the UI thread.
 		/// </summary>
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		public abstract void ReparseDocument ();
 
 		public abstract OptionSet GetOptionSet ();
 
+		[Obsolete ("Use Visual Studio Editor APIs")]
 		public abstract Task<ParsedDocument> UpdateParseDocument ();
 
-		// TODO: IMO that needs to be handled differently (this is atm only used in the ASP.NET binding)
-		// Maybe using the file service. Files can be changed/saved w/o beeing opened.
 		public event EventHandler Saved;
 
 		protected virtual void OnSaved (EventArgs e)
@@ -162,9 +188,30 @@ namespace MonoDevelop.Ide.Editor
 				handler (this, e);
 		}
 
+		[Obsolete]
 		internal virtual Task<IReadOnlyList<Editor.Projection.Projection>> GetPartialProjectionsAsync (CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return null;
 		}
+
+		[Obsolete]
+		internal virtual void UpdateDocumentId (Microsoft.CodeAnalysis.DocumentId newId)
+		{
+		}
+
+		#region IDisposable Support
+
+		public bool IsDisposed { get; private set; }
+
+		public void Dispose ()
+		{
+			OnDispose (true);
+			IsDisposed = true;
+		}
+
+		protected virtual void OnDispose (bool disposing)
+		{
+		}
+		#endregion
 	}
 }

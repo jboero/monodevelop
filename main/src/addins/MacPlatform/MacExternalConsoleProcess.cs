@@ -80,12 +80,18 @@ using exec -a to name the process has problems because the terminal can get into
 where running an explicit exec causes it to quit after the exec runs, so we can't use the 
 bash pause on exit trick
 */ 
-
 		//use full path to fix command failure when users have another app called "Terminal"
 		//this happens with Parallels exporting a stub for the Unbuntu "Terminal"
-		const string TERMINAL_APP = "/Applications/Utilities/Terminal.app";
+		const string TERMINAL_APP_PATH = "/Applications/Utilities/Terminal.app";
+
+		//Terminal default path was changes after MacOS Catalina (10.15)
+		const string TERMINAL_APP_CATALINA_PATH = "/System/Applications/Utilities/Terminal.app";
 
 		string windowId;
+
+		//TODO: This path is strongly typed and could change it easily by user
+		static string TERMINAL_APP = MacSystemInformation.OsVersion >= MacSystemInformation.Catalina ?
+			 TERMINAL_APP_CATALINA_PATH : TERMINAL_APP_PATH;
 
 		public MacExternalConsoleProcess (string command, string arguments, string workingDirectory,
 			IDictionary<string, string> environmentVariables,
@@ -129,6 +135,7 @@ bash pause on exit trick
 					sb.AppendFormat ("export {0}=\"{1}\"; ", env, val);
 				}
 			}
+
 			if (command != null) {
 				sb.AppendFormat ("\"{0}\" {1}", Escape (command), arguments);
 				var tempFileName = Path.GetTempFileName ();
@@ -145,12 +152,20 @@ bash pause on exit trick
 				};
 				
 				if (pauseWhenFinished)
-					sb.Append ("; echo; read -p 'Press any key to continue...' -n1");
+					sb.Append ("; echo; read -p \"Press any key to continue...\" -n1");
 				sb.Append ("; exit");
 			}
 
 			//run the command in Terminal.app and extract tab and window IDs
-			var ret = AppleScript.Run ("tell app \"{0}\" to do script \"{1}\"", TERMINAL_APP, Escape (sb.ToString ()));
+			string appleScript;
+			if (string.IsNullOrEmpty (command)) {
+				appleScript = string.Format ("tell app \"{0}\" to do script \"{1}\"", TERMINAL_APP, Escape (sb.ToString ()));
+			} else {
+				// run the command inside Bash because we do echo $? and that is a bash extension and breaks when people
+				// use other shells such as zsh or fish. https://bugzilla.xamarin.com/show_bug.cgi?id=56053
+				appleScript = string.Format ("tell app \"{0}\" to do script \"bash -c '{1}'; exit\"", TERMINAL_APP, Escape (sb.ToString ()));
+			}
+			var ret = AppleScript.Run (appleScript);
 			int i = ret.IndexOf ("of", StringComparison.Ordinal);
 			tabId = ret.Substring (0, i -1);
 			windowId = ret.Substring (i + 3);

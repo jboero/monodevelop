@@ -3,6 +3,7 @@
 //
 // Author:
 //   Geoff Norton  <gnorton@novell.com>
+//   Matthias Gliwka <hello@gliwka.eu>
 //
 // Copyright (C) 2007 Novell, Inc (http://www.novell.com)
 // 
@@ -54,7 +55,9 @@ namespace MonoDevelop.Platform
 		}
 		
 		struct GnomeVfsApp {
+			#pragma warning disable 649 // never assigned
 			public string Id, DisplayName, Command;
+			#pragma warning restore 649
 		}
 
 		protected override string OnGetMimeTypeDescription (string mt)
@@ -69,16 +72,6 @@ namespace MonoDevelop.Platform
 			
 			return Gio.GetMimeTypeForUri (uri);
 		}
-		
-		protected override bool OnGetMimeTypeIsText (string mimeType)
-		{
-			// If gedit can open the file, this editor also can do it
-			foreach (DesktopApplication app in GetApplicationsForMimeType (mimeType))
-				if (app.Id == "gedit")
-					return true;
-			return base.OnGetMimeTypeIsText (mimeType);
-		}
-
 
 		public override void ShowUrl (string url)
 		{
@@ -149,7 +142,7 @@ namespace MonoDevelop.Platform
 		}
 		
 		
-		delegate string TerminalRunnerHandler (string command, string args, string dir, string title, bool pause);
+		delegate string TerminalRunnerHandler (string command, string args, string dir, string title, bool pause, Guid applicationId);
 		delegate string TerminalOpenFolderRunnerHandler (string dir);
 
 		string terminal_command;
@@ -163,29 +156,82 @@ namespace MonoDevelop.Platform
 		{
 			ProbeTerminal ();
 			
-			string exec = runner (command, arguments, workingDirectory, title, pauseWhenFinished);
+			//generate unique guid to derive application id for gnome terminal server
+			var consoleGuid = Guid.NewGuid (); 
+
+			string exec = runner (command, arguments, workingDirectory, title, pauseWhenFinished, consoleGuid);
+
 			var psi = new ProcessStartInfo (terminal_command, exec) {
 				CreateNoWindow = true,
 				UseShellExecute = false,
 			};
-			foreach (var env in environmentVariables)
-				psi.EnvironmentVariables [env.Key] = env.Value;
+			if (environmentVariables != null) {
+				foreach (var env in environmentVariables)
+					psi.EnvironmentVariables [env.Key] = env.Value;
+			}
 			
 			ProcessWrapper proc = new ProcessWrapper ();
-			proc.StartInfo = psi;
-			proc.Start ();
+			if (terminal_command.Contains ("gnome-terminal")) {
+				var parameter = String.Format ("--app-id {0}", GenerateAppId (consoleGuid));
+				var terminalProcessStartInfo = new ProcessStartInfo ("/usr/lib/gnome-terminal/gnome-terminal-server", parameter) {
+					CreateNoWindow = true,
+					UseShellExecute = false,
+				};
+				proc.StartInfo = terminalProcessStartInfo;
+				proc.Start ();
+				proc.WaitForExit (500); //give the terminal server some warm up time
+
+				Process.Start (psi);
+			} else {
+				proc.StartInfo = psi;
+				proc.Start ();
+			}
 			return proc.ProcessAsyncOperation;
 		}
 		
 #region Terminal runner implementations
 		
-		private static string GnomeTerminalRunner (string command, string args, string dir, string title, bool pause)
+		private static string GnomeTerminalRunner (string command, string args, string dir, string title, bool pause, Guid applicationId)
 		{
 			string extra_commands = pause 
 				? BashPause.Replace ("'", "\\\"")
 				: String.Empty;
 			
-			return String.Format (@" --disable-factory --title ""{4}"" -e ""bash -c 'cd {3} ; {0} {1} ; {2}'""",
+			return String.Format (@" --app-id {5} --name ""{4}"" -e ""bash -c 'cd {3} ; {0} {1} ; {2}'""",
+				command,
+				EscapeArgs (args),
+				extra_commands,
+				EscapeDir (dir),
+				title,
+				GenerateAppId (applicationId));
+		}
+		
+		private static string MateTerminalRunner (string command, string args, string dir, string title, bool pause, Guid applicationId)
+		{
+			string extra_commands = pause 
+				? BashPause.Replace ("'", "\\\"")
+				: String.Empty;
+			
+			return String.Format (@"--name ""{4}"" -e ""bash -c 'cd {3} ; {0} {1} ; {2}'""",
+				command,
+				EscapeArgs (args),
+				extra_commands,
+				EscapeDir (dir),
+				title);
+		}
+
+		private static string GenerateAppId (Guid applicationId)
+ 		{
+			return String.Format("mono.develop.id{0}", applicationId.ToString ().Replace ("-", ""));
+ 		}
+		
+		private static string XtermRunner (string command, string args, string dir, string title, bool pause, Guid applicationId)
+		{
+			string extra_commands = pause 
+				? BashPause
+				: String.Empty;
+			
+			return String.Format (@" -title ""{4}"" -e bash -c ""cd {3} ; '""{0}""' {1} ; {2}""",
 				command,
 				EscapeArgs (args),
 				extra_commands,
@@ -193,13 +239,13 @@ namespace MonoDevelop.Platform
 				title);
 		}
 		
-		private static string XtermRunner (string command, string args, string dir, string title, bool pause)
+		private static string Xfce4TerminalRunner (string command, string args, string dir, string title, bool pause, Guid applicationId)
 		{
 			string extra_commands = pause 
 				? BashPause
 				: String.Empty;
 			
-			return String.Format (@" -title ""{4}"" -e bash -c ""cd {3} ; '{0}' {1} ; {2}""",
+			return String.Format (@" -T ""{4}"" --working-directory=""{3}"" -x bash -c ""'{0}' {1} ; {2}""",
 				command,
 				EscapeArgs (args),
 				extra_commands,
@@ -207,18 +253,17 @@ namespace MonoDevelop.Platform
 				title);
 		}
 
-		private static string KdeTerminalRunner (string command, string args, string dir, string title, bool pause)
+		private static string KdeTerminalRunner (string command, string args, string dir, string title, bool pause, Guid applicationId)
 		{
 			string extra_commands = pause 
 				? BashPause.Replace ("'", "\"")
 					: String.Empty;
 
-			return String.Format (@" --nofork --caption ""{4}"" --workdir=""{3}"" -e ""bash"" -c '{0} {1} ; {2}'",
+			return String.Format (@" --nofork --workdir=""{3}"" -e ""bash"" -c '""{0}"" {1} ; {2}'",
 			                      command,
 			                      args,
 			                      extra_commands,
-			                      EscapeDir (dir),
-			                      title);
+			                      EscapeDir (dir));
 		}
 
 		private static string GnomeTerminalOpenFolderRunner (string dir) {
@@ -227,6 +272,10 @@ namespace MonoDevelop.Platform
 
 		private static string XtermOpenFolderRunner (string dir) {
 			return string.Format(@" -e bash -c ""cd {0}""", EscapeDir(dir));
+		}
+
+		private static string Xfce4TerminalOpenFolderRunner (string dir) {
+			return string.Format(@" --working-directory=""{0}""", EscapeDir(dir));
 		}
 
 		private static string KdeTerminalOpenFolderRunner (string dir) {
@@ -274,7 +323,7 @@ namespace MonoDevelop.Platform
 			}
 			else if (!String.IsNullOrEmpty (Environment.GetEnvironmentVariable ("MATE_DESKTOP_SESSION_ID"))) {
 				preferred_terminal = "mate-terminal";
-				preferred_runner = GnomeTerminalRunner;
+				preferred_runner = MateTerminalRunner;
 				preferedOpenFolderRunner = GnomeTerminalOpenFolderRunner;
 			} 
 			else if (!String.IsNullOrEmpty (Environment.GetEnvironmentVariable ("KDE_SESSION_VERSION"))) { 
@@ -282,6 +331,11 @@ namespace MonoDevelop.Platform
 				preferred_runner = KdeTerminalRunner;
 				preferedOpenFolderRunner = KdeTerminalOpenFolderRunner;
 			}
+			else if ((Environment.GetEnvironmentVariable ("XDG_CURRENT_DESKTOP") ?? string.Empty).IndexOf("XFCE", StringComparison.OrdinalIgnoreCase) > -1) {
+				preferred_terminal = "xfce4-terminal";
+				preferred_runner = Xfce4TerminalRunner;
+				preferedOpenFolderRunner = Xfce4TerminalOpenFolderRunner;
+			} 
 			else {
 				preferred_terminal = fallback_terminal;
 				preferred_runner = fallback_runner;

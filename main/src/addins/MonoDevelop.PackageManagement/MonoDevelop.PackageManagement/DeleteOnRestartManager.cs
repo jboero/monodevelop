@@ -26,6 +26,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using NuGet.PackageManagement;
 using NuGet.Packaging.Core;
 using NuGet.ProjectManagement;
@@ -34,7 +35,9 @@ namespace MonoDevelop.PackageManagement
 {
 	internal class DeleteOnRestartManager : IDeleteOnRestartManager
 	{
+		#pragma warning disable 67
 		public event EventHandler<PackagesMarkedForDeletionEventArgs> PackagesMarkedForDeletionFound;
+		#pragma warning restore 67
 
 		public void CheckAndRaisePackageDirectoriesMarkedForDeletion ()
 		{
@@ -51,6 +54,11 @@ namespace MonoDevelop.PackageManagement
 
 		public void MarkPackageDirectoryForDeletion (PackageIdentity package, string packageDirectory, INuGetProjectContext projectContext)
 		{
+		}
+
+		public Task DeleteMarkedPackageDirectoriesAsync (INuGetProjectContext projectContext)
+		{
+			return Task.CompletedTask;
 		}
 	}
 }

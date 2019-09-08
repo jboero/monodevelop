@@ -31,13 +31,15 @@ using MonoDevelop.Ide.TypeSystem;
 
 namespace MonoDevelop.Ide.CodeCompletion
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense.AsyncCompletion APIs")]
 	public interface IMutableCompletionDataList : ICompletionDataList, IDisposable
 	{
 		bool IsChanging { get; }
 		event EventHandler Changing;
 		event EventHandler Changed;
 	}
-	
+
+	[Obsolete ("This is no longer functional")]
 	public class ProjectDomCompletionDataList : CompletionDataList, IMutableCompletionDataList
 	{
 		public ProjectDomCompletionDataList ()

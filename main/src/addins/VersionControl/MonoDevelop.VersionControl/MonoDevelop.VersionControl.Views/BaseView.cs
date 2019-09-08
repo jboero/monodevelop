@@ -1,18 +1,21 @@
 using MonoDevelop.Ide.Gui;
+using MonoDevelop.Ide.Gui.Documents;
 
 namespace MonoDevelop.VersionControl
 {
-	public abstract class BaseView : ViewContent
+	public abstract class BaseView : DocumentController
 	{
 		readonly string name;
+		readonly string accessibilityDescription;
 
-		protected BaseView (string name)
+		protected BaseView (string name) :this (name, "")
 		{
-			ContentName = this.name = name;
 		}
 
-		public override string TabPageLabel {
-			get { return name; }
+		protected BaseView (string name, string description)
+		{
+			DocumentTitle = this.name = name;
+			accessibilityDescription = description;
 		}
 	}
 }

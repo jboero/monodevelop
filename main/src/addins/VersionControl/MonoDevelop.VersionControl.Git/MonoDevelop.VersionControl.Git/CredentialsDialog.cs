@@ -35,24 +35,30 @@ namespace MonoDevelop.VersionControl.Git
 	partial class CredentialsDialog : Gtk.Dialog
 	{
 		uint r;
+		ConfigurationProperty<string> username = ConfigurationProperty.Create ("MonoDevelop.VersionControl.Git.CredentialsDialog.UserName", "");
+
 		public CredentialsDialog (string uri, SupportedCredentialTypes type, Credentials cred)
 		{
 			this.Build ();
 
 			this.UseNativeContextMenus ();
 
-			labelTop1.Text = string.Format (labelTop1.Text, uri);
+			labelTop1.LabelProp = string.Format (labelTop1.LabelProp, uri);
 
 			var table = new Table (0, 0, false);
 			table.ColumnSpacing = 6;
 			vbox.PackStart (table, true, true, 0);
 
-			Widget firstEditor = null;
+			Entry firstEditor = null;
 			switch (type) {
 			case SupportedCredentialTypes.UsernamePassword:
 				upcred = (UsernamePasswordCredentials)cred;
 				firstEditor = CreateEntry (table, GettextCatalog.GetString ("Username:"), false);
+				firstEditor.Text = username;
 				CreateEntry (table, GettextCatalog.GetString ("Password:"), true);
+				buttonOk.Clicked += delegate {
+					username.Set (firstEditor.Text);
+				};
 				break;
 			case SupportedCredentialTypes.Ssh:
 				sshcred = (SshUserKeyCredentials)cred;
@@ -60,11 +66,12 @@ namespace MonoDevelop.VersionControl.Git
 				break;
 			}
 			table.ShowAll ();
+
 			Focus = firstEditor;
 			Default = buttonOk;
 		}
 
-		Widget CreateEntry (Table table, string text, bool password)
+		Entry CreateEntry (Table table, string text, bool password)
 		{
 			var lab = new Label (text);
 			lab.Xalign = 0;
@@ -73,7 +80,7 @@ namespace MonoDevelop.VersionControl.Git
 			tc.XOptions = AttachOptions.Shrink;
 
 			var e = new Entry ();
-			Widget editor = e;
+			var editor = e;
 			e.ActivatesDefault = true;
 			if (password)
 				e.Visibility = false;

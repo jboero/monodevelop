@@ -1,4 +1,4 @@
-// 
+﻿// 
 // AutoTestServer.cs
 //  
 // Author:
@@ -40,6 +40,7 @@ using MonoDevelop.Components.Commands;
 using MonoDevelop.Core;
 
 using System.Xml;
+using System.Runtime.Remoting;
 
 namespace MonoDevelop.Components.AutoTest
 {
@@ -51,12 +52,13 @@ namespace MonoDevelop.Components.AutoTest
 		[System.Runtime.InteropServices.DllImport("/System/Library/Frameworks/ApplicationServices.framework/Versions/Current/ApplicationServices", EntryPoint="CGMainDisplayID")]
 		internal static extern int MainDisplayID();
 
-		readonly ManualResetEvent syncEvent = new ManualResetEvent (false);
 		public readonly AutoTestSessionDebug SessionDebug = new AutoTestSessionDebug ();
 		public IAutoTestSessionDebug<MarshalByRefObject> DebugObject { 
 			get { return SessionDebug.DebugObject; }
 			set { SessionDebug.DebugObject = value; }
 		}
+
+		readonly List<AppQuery> queries = new List<AppQuery> ();
 
 		public AutoTestSession ()
 		{
@@ -67,9 +69,44 @@ namespace MonoDevelop.Components.AutoTest
 			return null;
 		}
 
+		~AutoTestSession()
+		{
+			Dispose (false);
+		}
+
+		public void Dispose()
+		{
+			GC.SuppressFinalize (this);
+			Dispose (true);
+		}
+
+		public void DisconnectQueries()
+		{
+			lock (queries) {
+				foreach (var query in queries) {
+					query.Dispose ();
+				}
+				queries.Clear ();
+			}
+		}
+
+		bool disposed;
+		protected virtual void Dispose(bool disposing)
+		{
+			if (disposed)
+				return;
+
+			disposed = true;
+			RemotingServices.Disconnect (this);
+
+			DisconnectQueries ();
+		}
+
 		[Serializable]
 		public struct MemoryStats {
 			public long PrivateMemory;
+			public long VirtualMemory;
+			public long WorkingSet;
 			public long PeakVirtualMemory;
 			public long PagedSystemMemory;
 			public long PagedMemory;
@@ -82,6 +119,8 @@ namespace MonoDevelop.Components.AutoTest
 			using (Process proc = Process.GetCurrentProcess ()) {
 				stats = new MemoryStats {
 					PrivateMemory = proc.PrivateMemorySize64,
+					VirtualMemory = proc.VirtualMemorySize64,
+					WorkingSet = proc.WorkingSet64,
 					PeakVirtualMemory = proc.PeakVirtualMemorySize64,
 					PagedSystemMemory = proc.PagedSystemMemorySize64,
 					PagedMemory = proc.PagedMemorySize64,
@@ -98,7 +137,7 @@ namespace MonoDevelop.Components.AutoTest
 
 		public void ExecuteCommand (object cmd, object dataItem = null, CommandSource source = CommandSource.Unknown)
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				AutoTestService.CommandManager.DispatchCommand (cmd, dataItem, null, source);
 			});
 		}
@@ -113,8 +152,8 @@ namespace MonoDevelop.Components.AutoTest
 				return safe ? SafeObject (res) : res;
 			}
 
-			syncEvent.Reset ();
-			Gtk.Application.Invoke (delegate {
+			var syncEvent = new ManualResetEvent (false);
+			Gtk.Application.Invoke ((o, args) => {
 				try {
 					res = del ();
 				} catch (Exception ex) {
@@ -123,7 +162,7 @@ namespace MonoDevelop.Components.AutoTest
 					syncEvent.Set ();
 				}
 			});
-			if (!syncEvent.WaitOne (20000))
+			if (!syncEvent.WaitOne (30000))
 				throw new TimeoutException ("Timeout while executing synchronized call");
 			if (error != null)
 				throw error;
@@ -147,11 +186,10 @@ namespace MonoDevelop.Components.AutoTest
 		public void ExitApp ()
 		{
 			Sync (delegate {
-				try {
-					IdeApp.Exit ();
-				} catch (Exception e) {
-					Console.WriteLine (e);
-				}
+				IdeApp.Exit ().ContinueWith ((arg) => {
+					if (arg.IsFaulted)
+						Console.WriteLine (arg.Exception);
+				});
 				return true;
 			});
 		}
@@ -239,12 +277,12 @@ namespace MonoDevelop.Components.AutoTest
 		// FIXME: This shouldn't be here.
 		public int ErrorCount (TaskSeverity severity)
 		{
-			return TaskService.Errors.Count (x => x.Severity == severity);
+			return IdeServices.TaskService.Errors.Count (x => x.Severity == severity);
 		}
 
 		public List<TaskListEntryDTO> GetErrors (TaskSeverity severity)
 		{
-			return TaskService.Errors.Where (x => x.Severity == severity).Select (x => new TaskListEntryDTO () {
+			return IdeServices.TaskService.Errors.Where (x => x.Severity == severity).Select (x => new TaskListEntryDTO () {
 				Line = x.Line,
 				Description = x.Description,
 				File = x.FileName.FileName,
@@ -263,12 +301,12 @@ namespace MonoDevelop.Components.AutoTest
 				return ob;
 			return null;
 		}
-		
+
+		const BindingFlags searchFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
 		object Invoke (object target, Type type, string methodName, object[] args)
 		{
-			BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
-			flags |= BindingFlags.InvokeMethod;
-			return type.InvokeMember (methodName, flags, null, target, args);
+			const BindingFlags invokeFlags = searchFlags | BindingFlags.InvokeMethod;
+			return type.InvokeMember (methodName, invokeFlags, null, target, args);
 		}
 		
 		object GetValue (object target, Type type, string name)
@@ -279,9 +317,8 @@ namespace MonoDevelop.Components.AutoTest
 				remaining = name.Substring (i+1);
 				name = name.Substring (0, i);
 			}
-			BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
-			flags |= BindingFlags.GetField | BindingFlags.GetProperty;
-			object res = type.InvokeMember (name, flags, null, target, null);
+			const BindingFlags getValueFlags = searchFlags | BindingFlags.GetField | BindingFlags.GetProperty;
+			object res = type.InvokeMember (name, getValueFlags, null, target, null);
 			
 			if (remaining == null)
 				return res;
@@ -293,9 +330,8 @@ namespace MonoDevelop.Components.AutoTest
 		
 		void SetValue (object target, Type type, string name, object value)
 		{
-			BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
-			flags |= BindingFlags.SetField | BindingFlags.SetProperty;
-			type.InvokeMember (name, flags, null, target, new object[] { value });
+			const BindingFlags setValueFlags = searchFlags | BindingFlags.SetField | BindingFlags.SetProperty;
+			type.InvokeMember (name, setValueFlags, null, target, new object[] { value });
 		}
 			
 		object GetGlobalObject (string name)
@@ -331,6 +367,8 @@ namespace MonoDevelop.Components.AutoTest
 			AppQuery query = new AppQuery ();
 			query.SessionDebug = SessionDebug;
 
+			lock (queries)
+				queries.Add (query);
 			return query;
 		}
 
@@ -350,7 +388,7 @@ namespace MonoDevelop.Components.AutoTest
 				return;
 			}
 				
-			syncEvent.Reset ();
+			var syncEvent = new ManualResetEvent (false);
 			GLib.Idle.Add (() => {
 				idleFunc ();
 				syncEvent.Set ();
@@ -382,7 +420,7 @@ namespace MonoDevelop.Components.AutoTest
 			try {
 				ExecuteOnIdle (() => {
 					resultSet = ExecuteQueryNoWait (query);
-				});
+				}, timeout: timeout);
 			} catch (TimeoutException e) {
 				throw new TimeoutException (string.Format ("Timeout while executing ExecuteQuery: {0}", query), e);
 			}
@@ -392,7 +430,7 @@ namespace MonoDevelop.Components.AutoTest
 		public AppResult[] WaitForElement (AppQuery query, int timeout)
 		{
 			const int pollTime = 200;
-			syncEvent.Reset ();
+			var syncEvent = new ManualResetEvent (false);
 			AppResult[] resultSet = null;
 
 			GLib.Timeout.Add ((uint)pollTime, () => {
@@ -417,7 +455,7 @@ namespace MonoDevelop.Components.AutoTest
 		public void WaitForNoElement (AppQuery query, int timeout)
 		{
 			const int pollTime = 100;
-			syncEvent.Reset ();
+			var syncEvent = new ManualResetEvent (false);
 			AppResult[] resultSet = null;
 
 			GLib.Timeout.Add ((uint)pollTime, () => {
@@ -440,12 +478,30 @@ namespace MonoDevelop.Components.AutoTest
 		public struct TimerCounterContext {
 			public string CounterName;
 			public TimeSpan TotalTime;
+			public int Count;
 		};
 
-		Counter GetCounterByIDOrName (string idOrName)
+		[Serializable]
+		public struct CounterContext {
+			public string CounterName;
+			public int InitialCount;
+		}
+
+		internal Counter GetCounterByIDOrName (string idOrName)
 		{
 			Counter c = InstrumentationService.GetCounterByID (idOrName);
 			return c ?? InstrumentationService.GetCounter (idOrName);
+		}
+
+		internal T GetCounterMetadataValue<T> (string counterName, string propertyName)
+		{
+			var counter = GetCounterByIDOrName (counterName);
+			var metadata = counter.LastValue.Metadata;
+			if (metadata != null && metadata.TryGetValue (propertyName, out var property)) {
+				return (T)Convert.ChangeType (property, typeof (T));
+			}
+
+			return default (T);
 		}
 
 		public TimerCounterContext CreateNewTimerContext (string counterName)
@@ -457,7 +513,8 @@ namespace MonoDevelop.Components.AutoTest
 
 			TimerCounterContext context = new TimerCounterContext {
 				CounterName = counterName,
-				TotalTime = tc.TotalTime
+				TotalTime = tc.TotalTime,
+				Count = tc.CountWithDuration,
 			};
 
 			return context;
@@ -482,6 +539,71 @@ namespace MonoDevelop.Components.AutoTest
 			throw new TimeoutException ("Timed out waiting for event");
 		}
 
+		public CounterContext CreateNewCounterContext (string counterName)
+		{
+			var counter = GetCounterByIDOrName (counterName);
+			if (counter == null) {
+				throw new Exception ($"Unknown counter {counterName}");
+			}
+
+			var context = new CounterContext {
+				CounterName = counterName,
+				InitialCount = counter.Count
+			};
+
+			return context;
+		}
+
+		public void WaitForCounterToChange (CounterContext context, int timeout = 20000, int pollStep = 200)
+			=> WaitForCounterToChange (context, current => current != context.InitialCount, timeout, pollStep);
+
+		public int WaitForCounterToExceed (CounterContext context, int count, int timeout = 20000, int pollStep = 500)
+			=> WaitForCounterToChange (context, current => current >= count, timeout, pollStep);
+
+		public int WaitForCounterToStabilize (CounterContext context, int timeout = 20000, int pollStep = 500)
+		{
+			int lastValue = context.InitialCount;
+
+			Func<int, bool> isDone = current => {
+				// Check if the UI thread is stuck
+				// Some counters require UI thread synchronization, so we might not be getting events
+				try {
+					ExecuteOnIdle (() => { }, timeout: 5000);
+				} catch (TimeoutException) {
+					return false;
+				}
+
+				// We're still getting value updates.
+				if (current != lastValue) {
+					lastValue = current;
+					return false;
+				}
+
+				return true;
+			};
+
+			return WaitForCounterToChange (context, isDone, timeout, pollStep);
+		}
+
+		int WaitForCounterToChange (CounterContext context, Func<int, bool> isDone, int timeout = 20000, int pollStep = 200)
+		{
+			var counter = GetCounterByIDOrName (context.CounterName);
+			if (counter == null) {
+				throw new Exception ($"Unknown counter {context.CounterName}");
+			}
+
+			do {
+				if (isDone (counter.Count)) {
+					return counter.Count;
+				}
+
+				timeout -= pollStep;
+				Thread.Sleep (pollStep);
+			} while (timeout > 0);
+
+			throw new TimeoutException ($"Timed out waiting for counter {context.CounterName}");
+		}
+
 		public bool Select (AppResult result)
 		{
 			bool success = false;
@@ -489,7 +611,7 @@ namespace MonoDevelop.Components.AutoTest
 			try {
 				ExecuteOnIdle (() => {
 					success = result.Select ();
-				});
+				}, wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("Select", result.SourceQuery, result, e);
 			}
@@ -530,7 +652,7 @@ namespace MonoDevelop.Components.AutoTest
 		public bool EnterText (AppResult result, string text)
 		{
 			try {
-				ExecuteOnIdle (() => result.EnterText (text));
+				ExecuteOnIdle (() => result.EnterText (text), wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("EnterText", result.SourceQuery, result, e);
 			}
@@ -541,7 +663,7 @@ namespace MonoDevelop.Components.AutoTest
 		public bool TypeKey (AppResult result, char key, string modifiers)
 		{
 			try {
-				ExecuteOnIdle (() => result.TypeKey (key, modifiers));
+				ExecuteOnIdle (() => result.TypeKey (key, modifiers), wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("TypeKey", result.SourceQuery, result, e);
 			}
@@ -552,7 +674,7 @@ namespace MonoDevelop.Components.AutoTest
 		public bool TypeKey (AppResult result, string keyString, string modifiers)
 		{
 			try {
-				ExecuteOnIdle (() => result.TypeKey (keyString, modifiers));
+				ExecuteOnIdle (() => result.TypeKey (keyString, modifiers), wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("TypeKey", result.SourceQuery, result, e);
 			}
@@ -567,7 +689,7 @@ namespace MonoDevelop.Components.AutoTest
 			try {
 				ExecuteOnIdle (() => {
 					success = result.Toggle (active);
-				});
+				}, wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("Toggle", result.SourceQuery, result, e);
 			}
@@ -587,7 +709,7 @@ namespace MonoDevelop.Components.AutoTest
 		public void SetProperty (AppResult result, string name, object o)
 		{
 			try {
-				ExecuteOnIdle (() => result.SetProperty (name, o));
+				ExecuteOnIdle (() => result.SetProperty (name, o), wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("SetProperty", result.SourceQuery, result, e);
 			}
@@ -600,7 +722,7 @@ namespace MonoDevelop.Components.AutoTest
 			try {
 				ExecuteOnIdle (() => {
 					success = result.SetActiveConfiguration (configuration);
-				});
+				}, wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("SetActiveConfiguration", result.SourceQuery, result, e);
 			}
@@ -615,7 +737,7 @@ namespace MonoDevelop.Components.AutoTest
 			try {
 				ExecuteOnIdle (() => {
 					success = result.SetActiveRuntime (runtime);
-				});
+				}, wait: true);
 			} catch (TimeoutException e) {
 				ThrowOperationTimeoutException ("SetActiveRuntime", result.SourceQuery, result, e);
 			}

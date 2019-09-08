@@ -1,21 +1,23 @@
 ﻿namespace MonoDevelopTests
-open System.Text.RegularExpressions
-open System.Threading
 open NUnit.Framework
 open FsUnit
 open MonoDevelop.FSharp.MonoDevelop
-open MonoDevelop.FSharp
-open ExtCore
-open ExtCore.Control
-open ExtCore.Control.Collections
+open MonoDevelop.FSharp.Shared
+open System.Threading.Tasks
+open System.Runtime.CompilerServices
+
 [<TestFixture>]
 type HighlightUsagesTests() =
+
+    [<SetUp;AsyncStateMachine(typeof<Task>)>]
+    let ``run before test``() =
+        FixtureSetup.initialiseMonoDevelopAsync()
+
     let assertUsages (source:string, expectedCount) =
         let offset = source.IndexOf "|"
         let source = source.Replace("|", "")
         let doc = TestHelpers.createDoc source ""
         let line, col, lineStr = doc.Editor.GetLineInfoFromOffset offset
-        //doc.Ast
 
         match Parsing.findIdents col lineStr SymbolLookupKind.ByLongIdent with
         | None -> Assert.Fail "Could not find ident"

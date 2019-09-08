@@ -23,13 +23,17 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+
 using System;
-using MonoDevelop.Core;
-using System.Collections.Generic;
 using System.IO;
-using System.Security.Cryptography;
 using System.Linq;
+using System.Collections.Generic;
+
+using Mono.Debugging.Client;
+
 using MonoDevelop.Ide;
+using MonoDevelop.Core;
+using MonoDevelop.Projects;
 
 namespace MonoDevelop.Debugger
 {
@@ -37,6 +41,7 @@ namespace MonoDevelop.Debugger
 	{
 		readonly static List<Tuple<FilePath,FilePath>> possiblePaths = new List<Tuple<FilePath, FilePath>> ();
 		readonly static Dictionary<FilePath,FilePath> directMapping = new Dictionary<FilePath, FilePath> ();
+		const string DebugSourceFoldersKey = "Debugger.DebugSourceFolders";
 
 		/// <summary>
 		/// Finds the source file.
@@ -54,7 +59,7 @@ namespace MonoDevelop.Debugger
 				//relativePath = System/Net/Http/HttpClient.cs
 				var newFile = folder.Item2.Combine (relativePath);
 				//newPossiblePath = C:\GIT\mono_source\System\Net\Http\HttpClient.cs
-				if (CheckFileMd5 (newFile, hash)) {
+				if (CheckFileHash (newFile, hash)) {
 					directMapping.Add (originalFile, newFile);
 					return newFile;
 				}
@@ -62,7 +67,7 @@ namespace MonoDevelop.Debugger
 			foreach (var document in IdeApp.Workbench.Documents.Where((d) => d.FileName.FileName == originalFile.FileName)) {
 				//Check if it's already added to avoid MD5 checking
 				if (!directMapping.ContainsKey (originalFile)) {
-					if (CheckFileMd5 (document.FileName, hash)) {
+					if (CheckFileHash (document.FileName, hash)) {
 						AddLoadedFile (document.FileName, originalFile);
 						return document.FileName;
 					}
@@ -71,27 +76,55 @@ namespace MonoDevelop.Debugger
 			foreach (var bp in DebuggingService.Breakpoints.GetBreakpoints().Where((bp) => Path.GetFileName(bp.FileName) == originalFile.FileName)) {
 				//Check if it's already added to avoid MD5 checking
 				if (!directMapping.ContainsKey (originalFile)) {
-					if (CheckFileMd5 (bp.FileName, hash)) {
+					if (CheckFileHash (bp.FileName, hash)) {
 						AddLoadedFile (bp.FileName, originalFile);
 						return bp.FileName;
+					}
+				}
+			}
+			var debugSourceFolders = IdeApp.Workspace.GetAllSolutions ().SelectMany (s => s.UserProperties.GetValue (DebugSourceFoldersKey, Array.Empty<string> ()));
+			if (debugSourceFolders.Any ()) {
+				var result = TryDebugSourceFolders (originalFile, hash, debugSourceFolders);
+				if (result.IsNotNull)
+					return result;
+			}
+			//Attempt to find source code inside solution, this is mostly useful for Docker which moves code to container and compiles there 
+			//so when user debug application we want to make connection to code opened inside IDE automaticlly
+			debugSourceFolders = IdeApp.Workspace.GetAllSolutions ().Select (s => s.BaseDirectory.ToString ());
+			if (debugSourceFolders.Any ()) {
+				var result = TryDebugSourceFolders (originalFile, hash, debugSourceFolders);
+				if (result.IsNotNull)
+					return result;
+			}
+			return FilePath.Null;
+		}
+
+		public static FilePath TryDebugSourceFolders (FilePath originalFile, byte[] hash, IEnumerable<string> debugSourceFolders)
+		{
+			var folders = ((string)originalFile).Split ('/', '\\');
+			//originalFile=/tmp/ci_build/mono/System/Net/Http/HttpClient.cs
+			for (int i = 0; i < folders.Length; i++) {
+				var partiallyCombined = Path.Combine (folders.Skip (i).ToArray ());
+				//i=0 partiallyCombined=tmp/ci_build/mono/System/Net/Http/HttpClient.cs
+				//i=1 partiallyCombined=ci_build/mono/System/Net/Http/HttpClient.cs
+				//i=2 partiallyCombined=mono/System/Net/Http/HttpClient.cs
+				//i=3 partiallyCombined=System/Net/Http/HttpClient.cs
+				//...
+				//Idea here is... Try with combining longest possbile path 1st
+				foreach (var debugSourceFolder in debugSourceFolders) {
+					var potentialPath = Path.Combine (debugSourceFolder, partiallyCombined);
+					if (CheckFileHash (potentialPath, hash)) {
+						AddLoadedFile (potentialPath, originalFile);
+						return potentialPath;
 					}
 				}
 			}
 			return FilePath.Null;
 		}
 
-		public static bool CheckFileMd5 (FilePath file, byte[] hash)
+		public static bool CheckFileHash (FilePath path, byte[] checksum)
 		{
-			if (File.Exists (file)) {
-				using (var fs = File.OpenRead (file)) {
-					using (var md5 = MD5.Create ()) {
-						if (md5.ComputeHash (fs).SequenceEqual (hash)) {
-							return true;
-						}
-					}
-				}
-			}
-			return false;
+			return SourceLocation.CheckFileHash (path, checksum);
 		}
 
 		/// <summary>
@@ -113,6 +146,7 @@ namespace MonoDevelop.Debugger
 			if (fileParent == originalParent) {
 				//This can happen if file was renamed
 				possiblePaths.Add (new Tuple<FilePath, FilePath> (originalParent, fileParent));
+				AddPathToDebugSourceFolders (fileParent);
 			} else {
 				while (fileParent.FileName == originalParent.FileName) {
 					fileParent = fileParent.ParentDirectory;
@@ -121,8 +155,32 @@ namespace MonoDevelop.Debugger
 				//fileParent = C:\GIT\mono_source\
 				//originalParent = /tmp/ci_build/mono/
 				possiblePaths.Add (new Tuple<FilePath, FilePath> (originalParent, fileParent));
+				AddPathToDebugSourceFolders (fileParent);
 			}
+		}
+
+		static void AddPathToDebugSourceFolders (string path)
+		{
+			foreach (var sol in IdeApp.Workspace.GetAllSolutions ()) {
+				var debugSourceFolders = sol.UserProperties.GetValue (DebugSourceFoldersKey, Array.Empty<string> ());
+				if (debugSourceFolders.Contains (path))
+					continue;
+				sol.UserProperties.SetValue (DebugSourceFoldersKey, debugSourceFolders.Union (new [] { path }).ToArray ());
+				sol.SaveUserProperties ().Ignore ();
+			}
+		}
+
+		public static string [] GetDebugSourceFolders (Solution solution)
+		{
+			return solution.UserProperties.GetValue (DebugSourceFoldersKey, Array.Empty<string> ());
+		}
+
+		public static void SetDebugSourceFolders (Solution solution, string [] folders)
+		{
+			// Invalidate existing mappings so new DebugSourceFolders are used.
+			directMapping.Clear ();
+			possiblePaths.Clear ();
+			solution.UserProperties.SetValue (DebugSourceFoldersKey, folders);
 		}
 	}
 }
-

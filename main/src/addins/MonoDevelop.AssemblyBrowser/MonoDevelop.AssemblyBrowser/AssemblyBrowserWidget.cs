@@ -1,4 +1,4 @@
-//
+﻿//
 // AssemblyBrowserWidget.cs
 //
 // Author:
@@ -33,7 +33,6 @@ using System.Text;
 using System.Xml;
 using Gtk;
 
-using Mono.Cecil;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Core;
 using MonoDevelop.Ide;
@@ -41,10 +40,11 @@ using MonoDevelop.Ide.Commands;
 using MonoDevelop.Ide.Gui.Components;
 using System.Linq;
 using MonoDevelop.Ide.TypeSystem;
-using ICSharpCode.NRefactory.Documentation;
-using ICSharpCode.NRefactory.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.Documentation;
 using MonoDevelop.Projects;
-using ICSharpCode.NRefactory.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using XmlDocIdLib;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Components;
@@ -54,6 +54,8 @@ using MonoDevelop.Ide.Editor;
 using MonoDevelop.Ide.Navigation;
 using MonoDevelop.Ide.Gui.Content;
 using System.IO;
+using System.Collections.Immutable;
+using MonoDevelop.Ide.Gui.Documents;
 
 namespace MonoDevelop.AssemblyBrowser
 {
@@ -87,77 +89,24 @@ namespace MonoDevelop.AssemblyBrowser
 		DocumentationPanel documentationPanel = new DocumentationPanel ();
 		readonly TextEditor inspectEditor;
 
-		public class AssemblyBrowserTreeView : ExtensibleTreeView
-		{
-			bool publicApiOnly = true;
-
-			public bool PublicApiOnly {
-				get {
-					return publicApiOnly;
-				}
-				set {
-					if (publicApiOnly == value)
-						return;
-					publicApiOnly = value;
-					var root = GetRootNode ();
-					if (root != null) {
-						do {
-							RefreshNode (root);
-						} while (root.MoveNext ());
-					}
-				}
-			}
-
-			public AssemblyBrowserTreeView (NodeBuilder[] builders, TreePadOption[] options) : base (builders, options)
-			{
-			}
-		}
-
 		static string GetLink (ReferenceSegment referencedSegment, out bool? isNotPublic)
 		{
 			isNotPublic = null;
 			if (referencedSegment == null)
 				return null;
-
-			var td = referencedSegment.Reference as TypeDefinition;
-			if (td != null) {
-				isNotPublic = !td.IsPublic;
-				return new XmlDocIdGenerator ().GetXmlDocPath ((TypeDefinition)referencedSegment.Reference);
-			}
-			var md = referencedSegment.Reference as MethodDefinition;
-			if (md != null) {
-				isNotPublic = !md.IsPublic;
-				return new XmlDocIdGenerator ().GetXmlDocPath ((MethodDefinition)referencedSegment.Reference);
+			if (referencedSegment?.Reference is IEntity entity) {
+				isNotPublic = !entity.IsPublic ();
+				return entity.GetIdString ();
 			}
 
-			var pd = referencedSegment.Reference as PropertyDefinition;
-			if (pd != null) {
-				isNotPublic = (pd.GetMethod == null || !pd.GetMethod.IsPublic) &&  
-					(pd.SetMethod == null || !pd.SetMethod.IsPublic);
-				return new XmlDocIdGenerator ().GetXmlDocPath ((PropertyDefinition)referencedSegment.Reference);
-			}
-
-			var fd = referencedSegment.Reference as FieldDefinition;
-			if (fd != null) {
-				isNotPublic = !fd.IsPublic;
-				return new XmlDocIdGenerator ().GetXmlDocPath ((FieldDefinition)referencedSegment.Reference);
-			}
-
-			var ed = referencedSegment.Reference as EventDefinition;
-			if (ed != null) {
-				return new XmlDocIdGenerator ().GetXmlDocPath ((EventDefinition)referencedSegment.Reference);
-			}
-
-			var tref = referencedSegment.Reference as MemberReference;
-			if (tref != null) {
-				return new XmlDocIdGenerator ().GetXmlDocPath (tref);
-			}
-
-			return referencedSegment.Reference.ToString ();
+			return null;
 		}
 
 
-
+		static readonly CustomEditorOptions assemblyBrowserEditorOptions = new CustomEditorOptions(DefaultSourceEditorOptions.PlainEditor) {
+			TabsToSpaces = false
+		};
+			
 		public AssemblyBrowserWidget ()
 		{
 			this.Build ();
@@ -169,7 +118,7 @@ namespace MonoDevelop.AssemblyBrowser
 			comboboxVisibilty.Changed += delegate {
 				TreeView.PublicApiOnly = comboboxVisibilty.Active == 0;
 				PropertyService.Set ("AssemblyBrowser.MemberSelection", comboboxVisibilty.Active);
-				FillInspectLabel (); 
+				GenerateOutput (); 
 			};
 
 			searchentry1 = new MonoDevelop.Components.SearchEntry ();
@@ -231,19 +180,23 @@ namespace MonoDevelop.AssemblyBrowser
 				new ErrorNodeBuilder (),
 				new ProjectNodeBuilder (this),
 				new AssemblyNodeBuilder (this),
-				new ModuleReferenceNodeBuilder (),
 				new AssemblyReferenceNodeBuilder (this),
 				//new AssemblyReferenceFolderNodeBuilder (this),
 				new AssemblyResourceFolderNodeBuilder (),
 				new ResourceNodeBuilder (),
 				new NamespaceBuilder (this),
-				new DomTypeNodeBuilder (this),
-				new DomMethodNodeBuilder (this),
-				new DomFieldNodeBuilder (this),
-				new DomEventNodeBuilder (this),
-				new DomPropertyNodeBuilder (this),
+				new TypeDefinitionNodeBuilder (this),
+				new MethodDefinitionNodeBuilder (this),
+				new FieldDefinitionNodeBuilder (this),
+				new EventDefinitionNodeBuilder (this),
+				new PropertyDefinitionNodeBuilder (this),
 				new BaseTypeFolderNodeBuilder (this),
-				new BaseTypeNodeBuilder (this)
+				new BaseTypeNodeBuilder (this),
+				new RoslynTypeNodeBuilder (this),
+				new RoslynEventNodeBuilder (),
+				new RoslynFieldNodeBuilder (),
+				new RoslynMethodNodeBuilder (),
+				new RoslynPropertyNodeBuilder (),
 				}, new TreePadOption [0]);
 			TreeView.PublicApiOnly = comboboxVisibilty.Active == 0;
 			TreeView.AllowsMultipleSelection = false;
@@ -259,7 +212,7 @@ namespace MonoDevelop.AssemblyBrowser
 
 			inspectEditor = TextEditorFactory.CreateNewEditor ();
 			inspectEditor.ContextMenuPath = "/MonoDevelop/AssemblyBrowser/EditorContextMenu";
-			inspectEditor.Options = DefaultSourceEditorOptions.PlainEditor;
+			inspectEditor.Options = assemblyBrowserEditorOptions;
 
 			//inspectEditor.ButtonPressEvent += HandleInspectEditorButtonPressEvent;
 			
@@ -269,7 +222,7 @@ namespace MonoDevelop.AssemblyBrowser
 
 			documentationScrolledWindow.PackStart (inspectEditor, true, true, 0);
 
-			this.hpaned1.ExposeEvent += HPaneExpose;
+			this.ExposeEvent += HPaneExpose;
 			hpaned1 = hpaned1.ReplaceWithWidget (new HPanedThin (), true);
 			hpaned1.Position = 271;
 
@@ -278,19 +231,8 @@ namespace MonoDevelop.AssemblyBrowser
 			notebook1.Page = 0;
 			//this.searchWidget.Visible = false;
 				
-			typeListStore = new Gtk.ListStore (typeof(Xwt.Drawing.Image), // type image
-			                                   typeof(string), // name
-			                                   typeof(string), // namespace
-			                                   typeof(string), // assembly
-				                               typeof(IMember)
-			                                  );
-			
-			memberListStore = new Gtk.ListStore (typeof(Xwt.Drawing.Image), // member image
-			                                   typeof(string), // name
-			                                   typeof(string), // Declaring type full name
-			                                   typeof(string), // assembly
-				                               typeof(IMember)
-			                                  );
+			resultListStore = new Gtk.ListStore (typeof(IMember));
+
 			CreateColumns ();
 //			this.searchEntry.Changed += SearchEntryhandleChanged;
 			this.searchTreeview.RowActivated += SearchTreeviewhandleRowActivated;
@@ -313,7 +255,6 @@ namespace MonoDevelop.AssemblyBrowser
 			default:
 				throw new ArgumentOutOfRangeException ();
 			}
-
 		}
 
 		internal void SetToolbar (DocumentToolbar toolbar)
@@ -362,11 +303,13 @@ namespace MonoDevelop.AssemblyBrowser
 		{
 			TreeIter selectedIter;
 			if (searchTreeview.Selection.GetSelected (out selectedIter)) {
-				var member = (IUnresolvedEntity)(searchMode == SearchMode.Member ? memberListStore.GetValue (selectedIter, 4) : typeListStore.GetValue (selectedIter, 4));
-
+				var member = resultListStore.GetValue (selectedIter, 0) as IEntity;
+				if (member == null)
+					return;
 				var nav = SearchMember (member);
 				if (nav != null) {
 					notebook1.Page = 0;
+					searchentry1.Entry.Text = "";
 				}
 			}
 		}
@@ -380,7 +323,7 @@ namespace MonoDevelop.AssemblyBrowser
 		{
 			this.notebook1.Page = 0;
 			PropertyService.Set ("AssemblyBrowser.Language", this.languageCombobox.Active);
-			FillInspectLabel ();
+			GenerateOutput ();
 		}
 
 
@@ -395,9 +338,9 @@ namespace MonoDevelop.AssemblyBrowser
 			TreeView.GrabFocus ();
 		}
 		
-		ITreeNavigator SearchMember (IUnresolvedEntity member, bool expandNode = true)
+		ITreeNavigator SearchMember (IEntity entity, bool expandNode = true)
 		{
-			return SearchMember (GetIdString (member), expandNode);
+			return SearchMember (entity.GetIdString (), expandNode);
 		}
 			
 		ITreeNavigator SearchMember (string helpUrl, bool expandNode = true)
@@ -406,192 +349,23 @@ namespace MonoDevelop.AssemblyBrowser
 			if (nav != null)
 				return nav;
 			// Constructor may be a generated default without implementation.
-			var ctorIdx = helpUrl.IndexOf (".#ctor", StringComparison.Ordinal);
-			if (helpUrl.StartsWith ("M:", StringComparison.Ordinal) && ctorIdx > 0) {
-				return SearchMember ("T" + helpUrl.Substring (1, ctorIdx - 1), expandNode);
-			}
+			//var ctorIdx = helpUrl.IndexOf (".#ctor", StringComparison.Ordinal);
+			//if (helpUrl.StartsWith ("M:", StringComparison.Ordinal) && ctorIdx > 0) {
+			//	return SearchMember ("T" + helpUrl.Substring (1, ctorIdx - 1), expandNode);
+			//}
 			return null;
 		}
-		
-		static void AppendTypeReference (StringBuilder result, ITypeReference type)
-		{
-			if (type is ByReferenceTypeReference) {
-				var brtr = (ByReferenceTypeReference)type;
-				AppendTypeReference (result, brtr.ElementType);
-				return;
-			}
-
-			if (type is ArrayTypeReference) {
-				var array = (ArrayTypeReference)type;
-				AppendTypeReference (result, array.ElementType);
-				result.Append ("[");
-				result.Append (new string (',', array.Dimensions - 1));
-				result.Append ("]");
-				return;
-			}
-
-			if (type is PointerTypeReference) {
-				var ptr = (PointerTypeReference)type;
-				AppendTypeReference (result, ptr.ElementType);
-				result.Append ("*");
-				return;
-			}
-
-			if (type is GetClassTypeReference) {
-				var r = (GetClassTypeReference)type;
-				var n = r.FullTypeName.TopLevelTypeName;
-				result.Append (n.Namespace + "." + n.Name);
-				return;
-			}
-
-			if (type is IUnresolvedTypeDefinition) {
-				result.Append (((IUnresolvedTypeDefinition)type).FullName);
-			}
-
-			if (type is TypeParameterReference) {
-				result.Append ("`" +((TypeParameterReference)type).Index);
-			}
-		}
-		
-		static void AppendHelpParameterList (StringBuilder result, IList<IUnresolvedParameter> parameters)
-		{
-			if (parameters == null || parameters.Count == 0)
-				return;
-			result.Append ('(');
-			if (parameters != null) {
-				for (int i = 0; i < parameters.Count; i++) {
-					if (i > 0)
-						result.Append (',');
-					var p = parameters [i];
-					if (p == null)
-						continue;
-					AppendTypeReference (result, p.Type);
-					if (p.IsRef || p.IsOut) {
-						result.Append ("@");
-					}
-				}
-			}
-			result.Append (')');
-		}
-		
-		internal static string GetIdString (IUnresolvedEntity member)
-		{
-			StringBuilder sb;
-			
-			switch (member.SymbolKind) {
-			case ICSharpCode.NRefactory.TypeSystem.SymbolKind.TypeDefinition:
-				var type = member as IUnresolvedTypeDefinition;
-				sb = new StringBuilder ();
-				sb.Append ("T:");
-				sb.Append (type.FullName);
-				if (type.TypeParameters.Count != 0) {
-					sb.Append ('`');
-					sb.Append (type.TypeParameters.Count);
-				}
-				return sb.ToString ();
-			case SymbolKind.Method:
-				var method = (IUnresolvedMethod)member;
-				sb = new StringBuilder ();
-				sb.Append ("M:");
-				sb.Append (method.DeclaringTypeDefinition.ReflectionName);
-				sb.Append (".");
-				sb.Append (method.Name);
-				if (method.TypeParameters.Count > 0) {
-					sb.Append ("`");
-					sb.Append (method.TypeParameters.Count);
-				}
-				AppendHelpParameterList (sb, method.Parameters);
-				return sb.ToString ();
-			case SymbolKind.Constructor:
-				var constructor = (IUnresolvedMethod)member;
-				sb = new StringBuilder ();
-				sb.Append ("M:");
-				sb.Append (constructor.DeclaringTypeDefinition.FullName);
-				sb.Append (".#ctor");
-				AppendHelpParameterList (sb, constructor.Parameters);
-				return sb.ToString ();
-			case SymbolKind.Destructor: // todo
-				return "todo";
-			case SymbolKind.Property:
-				sb = new StringBuilder ();
-				sb.Append ("P:");
-				sb.Append (member.DeclaringTypeDefinition.ReflectionName);
-				sb.Append (".");
-				sb.Append (member.Name);
-				return sb.ToString ();
-			case SymbolKind.Indexer:
-				var indexer = (IUnresolvedProperty)member;
-				sb = new StringBuilder ();
-				sb.Append ("P:");
-				sb.Append (indexer.DeclaringTypeDefinition.ReflectionName);
-				sb.Append (".Item");
-				AppendHelpParameterList (sb, indexer.Parameters);
-				return sb.ToString ();
-			case SymbolKind.Field:
-				sb = new StringBuilder ();
-				sb.Append ("F:");
-				sb.Append (member.DeclaringTypeDefinition.ReflectionName);
-				sb.Append (".");
-				sb.Append (member.Name);
-				return sb.ToString ();
-			case SymbolKind.Event:
-				sb = new StringBuilder ();
-				sb.Append ("E:");
-				sb.Append (member.DeclaringTypeDefinition.ReflectionName);
-				sb.Append (".");
-				sb.Append (member.Name);
-				return sb.ToString ();
-			case SymbolKind.Operator: // todo
-				return "todo";
-			}
-			return "unknown entity: " + member;
-		}
-
-		static string GetIdString (MethodDefinition methodDefinition)
-		{
-			var sb = new StringBuilder ();
-			sb.Append ("M:");
-			sb.Append (methodDefinition.FullName);
-			if (methodDefinition.HasGenericParameters) {
-				sb.Append ("`");
-				sb.Append (methodDefinition.GenericParameters.Count);
-			}
-//			AppendHelpParameterList (sb, method.Parameters);
-			return sb.ToString ();
-		}
-
-		static string GetIdString (TypeDefinition typeDefinition)
-		{
-			var sb = new StringBuilder ();
-			sb.Append ("T:");
-			sb.Append (typeDefinition.FullName);
-			if (typeDefinition.HasGenericParameters) {
-				sb.Append ('`');
-				sb.Append (typeDefinition.GenericParameters.Count);
-			}
-			return sb.ToString ();
-		}		
 
 		bool IsMatch (ITreeNavigator nav, string helpUrl, bool searchType)
 		{
-			var member = nav.DataItem as IUnresolvedEntity;
-			if (member == null)
-				return false;
-			
-			if (searchType) {
-				if (member is IUnresolvedTypeDefinition)
-					return GetIdString (member) == helpUrl;
-			} else {
-				if (member is IUnresolvedMember) {
-					return GetIdString (member) == helpUrl;
-				}
-			}
+			if (nav.DataItem is IEntity entity)
+				return entity.GetIdString () == helpUrl;
 			return false;
 		}
 			
 		static bool SkipChildren (ITreeNavigator nav, string helpUrl, bool searchType)
 		{
-			if (nav.DataItem is IUnresolvedMember)
+			if (nav.DataItem is IMember && !(nav.DataItem is ITypeDefinition))
 				return true;
 			if (nav.DataItem is BaseTypeFolder)
 				return true;
@@ -609,15 +383,16 @@ namespace MonoDevelop.AssemblyBrowser
 			int idx = helpUrl.IndexOf ('~', startIndex);
 			if (idx > 0)
 				endIndex = idx;
-			var type = nav.DataItem as IUnresolvedTypeDefinition;
+			var type = nav.DataItem as ITypeDefinition;
 			if (type != null && helpUrl.IndexOf (type.FullName, startIndex, Math.Min (endIndex - startIndex, type.FullName.Length), StringComparison.Ordinal) == -1)
 				return true;
-			var @namespace = nav.DataItem as Namespace;
+			var @namespace = nav.DataItem as NamespaceData;
 			if (@namespace != null && helpUrl.IndexOf (@namespace.Name, startIndex, Math.Min (endIndex - startIndex, @namespace.Name.Length), StringComparison.Ordinal) == -1)
 				return true;
 			return false;
 		}
-		
+
+		bool expandedMember = true;
 		ITreeNavigator SearchMember (ITreeNavigator nav, string helpUrl, bool expandNode = true)
 		{
 			if (nav == null)
@@ -627,13 +402,11 @@ namespace MonoDevelop.AssemblyBrowser
 				if (IsMatch (nav, helpUrl, searchType)) {
 					inspectEditor.ClearSelection ();
 					nav.ExpandToNode ();
-					if (expandNode) {
-						nav.Selected = nav.Expanded = true;
-						nav.ScrollToNode ();
-					} else {
-						nav.Selected = true;
-						nav.ScrollToNode ();
-					}
+					if (expandNode)
+						nav.Expanded = true;
+					nav.Selected = true;
+					nav.ScrollToNode ();
+					expandedMember = true;
 					return nav;
 				}
 				if (!SkipChildren (nav, helpUrl, searchType) && nav.HasChildren ()) {
@@ -654,14 +427,11 @@ namespace MonoDevelop.AssemblyBrowser
 		{
 			Type   = 0,
 			Member = 1,
-			Disassembler = 2,
-			Decompiler = 3,
-			TypeAndMembers = 4
+			TypeAndMembers = 2
 		}
 		
 		SearchMode searchMode = SearchMode.Type;
-		Gtk.ListStore memberListStore;
-		Gtk.ListStore typeListStore;
+		Gtk.ListStore resultListStore;
 		
 		void CreateColumns ()
 		{
@@ -672,26 +442,26 @@ namespace MonoDevelop.AssemblyBrowser
 			Gtk.CellRenderer crp, crt;
 			switch (searchMode) {
 			case SearchMode.Member:
-			case SearchMode.Disassembler:
-			case SearchMode.Decompiler:
 				col = new TreeViewColumn ();
 				col.Title = GettextCatalog.GetString ("Member");
+				col.FixedWidth = 400;
+				col.Sizing = TreeViewColumnSizing.Fixed;
 				crp = new CellRendererImage ();
 				crt = new Gtk.CellRendererText ();
 				col.PackStart (crp, false);
 				col.PackStart (crt, true);
-				col.AddAttribute (crp, "image", 0);
-				col.AddAttribute (crt, "text", 1);
+				col.SetCellDataFunc (crp, RenderImage);
+				col.SetCellDataFunc (crt, RenderText);
 				col.SortColumnId = 1;
 				searchTreeview.AppendColumn (col);
 				col.Resizable = true;
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Declaring Type"), new Gtk.CellRendererText (), "text", 2);
+				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Declaring Type"), crt = new Gtk.CellRendererText ());
+				col.FixedWidth = 300;
+				col.Sizing = TreeViewColumnSizing.Fixed;
+				col.SetCellDataFunc (crt, RenderDeclaringTypeOrNamespace);
 				col.SortColumnId = 2;
 				col.Resizable = true;
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Assembly"), new Gtk.CellRendererText (), "text", 3);
-				col.SortColumnId = 3;
-				col.Resizable = true;
-				searchTreeview.Model = memberListStore;
+				searchTreeview.Model = resultListStore;
 				break;
 			case SearchMode.TypeAndMembers:
 				col = new TreeViewColumn ();
@@ -700,21 +470,22 @@ namespace MonoDevelop.AssemblyBrowser
 				crt = new Gtk.CellRendererText ();
 				col.PackStart (crp, false);
 				col.PackStart (crt, true);
-				col.AddAttribute (crp, "image", 0);
-				col.AddAttribute (crt, "text", 1);
+				col.SetCellDataFunc (crp, RenderImage);
+				col.SetCellDataFunc (crt, RenderText);
 				col.SortColumnId = 1;
 
 				searchTreeview.AppendColumn (col);
+				col.FixedWidth = 400;
+				col.Sizing = TreeViewColumnSizing.Fixed;
 				col.Resizable = true;
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Parent"), new Gtk.CellRendererText (), "text", 2);
+				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Parent"), crt = new Gtk.CellRendererText ());
+				col.SetCellDataFunc (crt, RenderDeclaringTypeOrNamespace);
 				col.SortColumnId = 2;
 
+				col.FixedWidth = 300;
+				col.Sizing = TreeViewColumnSizing.Fixed;
 				col.Resizable = true;
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Assembly"), new Gtk.CellRendererText (), "text", 3);
-				col.SortColumnId = 3;
-
-				col.Resizable = true;
-				searchTreeview.Model = typeListStore;
+				searchTreeview.Model = resultListStore;
 				break;
 			case SearchMode.Type:
 				col = new TreeViewColumn ();
@@ -723,33 +494,92 @@ namespace MonoDevelop.AssemblyBrowser
 				crt = new Gtk.CellRendererText ();
 				col.PackStart (crp, false);
 				col.PackStart (crt, true);
-				col.AddAttribute (crp, "image", 0);
-				col.AddAttribute (crt, "text", 1);
+				col.SetCellDataFunc (crp, RenderImage);
+				col.SetCellDataFunc (crt, RenderText);
 				col.SortColumnId = 1;
 				searchTreeview.AppendColumn (col);
+				col.FixedWidth = 400;
+				col.Sizing = TreeViewColumnSizing.Fixed;
 				col.Resizable = true;
 
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Namespace"), new Gtk.CellRendererText (), "text", 2);
+				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Namespace"), crt = new Gtk.CellRendererText ());
+				col.SetCellDataFunc (crt, RenderDeclaringTypeOrNamespace);
 				col.SortColumnId = 2;
+				col.FixedWidth = 300;
+				col.Sizing = TreeViewColumnSizing.Fixed;
 				col.Resizable = true;
-
-				col = searchTreeview.AppendColumn (GettextCatalog.GetString ("Assembly"), new Gtk.CellRendererText (), "text", 3);
-				col.SortColumnId = 3;
-				col.Resizable = true;
-				searchTreeview.Model = typeListStore;
+				searchTreeview.Model = resultListStore;
 				break;
 			}
 		}
-		System.ComponentModel.BackgroundWorker searchBackgoundWorker = null;
+
+		void RenderDeclaringTypeOrNamespace (TreeViewColumn tree_column, CellRenderer cell, TreeModel tree_model, TreeIter iter)
+		{
+			var ct = (Gtk.CellRendererText)cell;
+			var entity = tree_model.GetValue (iter, 0) as IEntity;
+			if (entity != null) {
+				if (entity.DeclaringType != null) {
+					ct.Text = entity.DeclaringType.FullName;
+					return;
+				}
+				if (entity is ITypeDefinition type) {
+					ct.Text = type.Namespace;
+				} else {
+					ct.Text = entity.DeclaringType.Namespace;
+				}
+			}
+		}
+
+		void RenderText (TreeViewColumn tree_column, CellRenderer cell, TreeModel tree_model, TreeIter iter)
+		{
+			var ct = (Gtk.CellRendererText)cell;
+			var entity = tree_model.GetValue (iter, 0) as INamedElement;
+			if (entity != null)
+				ct.Text = entity.Name;
+		}
+
+		void RenderImage (TreeViewColumn tree_column, CellRenderer cell, TreeModel tree_model, TreeIter iter)
+		{
+			var ct = (CellRendererImage)cell;
+			var entity = tree_model.GetValue (iter, 0) as IEntity;
+			if (entity is IEvent evt) {
+				ct.Image = ImageService.GetIcon (EventDefinitionNodeBuilder.GetStockIcon (evt), Gtk.IconSize.Menu);
+				return;
+			}
+
+			if (entity is IField field) {
+				ct.Image = ImageService.GetIcon (FieldDefinitionNodeBuilder.GetStockIcon (field), Gtk.IconSize.Menu);
+				return;
+			}
+
+			if (entity is IMethod method) {
+				ct.Image = ImageService.GetIcon (MethodDefinitionNodeBuilder.GetStockIcon (method), Gtk.IconSize.Menu);
+				return;
+			}
+
+			if (entity is IProperty property) {
+				ct.Image = ImageService.GetIcon (PropertyDefinitionNodeBuilder.GetStockIcon (property), Gtk.IconSize.Menu);
+				return;
+			}
+				
+			if (entity is ITypeDefinition type) {
+				ct.Image = ImageService.GetIcon (TypeDefinitionNodeBuilder.GetStockIcon (type), Gtk.IconSize.Menu);
+				return;
+			}
+		}
+
+		CancellationTokenSource searchTokenSource = new CancellationTokenSource ();
 
 		public void StartSearch ()
 		{
 			string query = searchentry1.Query;
-			if (searchBackgoundWorker != null && searchBackgoundWorker.IsBusy)
-				searchBackgoundWorker.CancelAsync ();
-			
+			searchTokenSource.Cancel ();
+			searchTokenSource = new CancellationTokenSource ();
+
 			if (string.IsNullOrEmpty (query)) {
 				notebook1.Page = 0;
+				IdeApp.Workbench.StatusBar.EndProgress ();
+				IdeApp.Workbench.StatusBar.ShowReady ();
 				return;
 			}
 			
@@ -759,228 +589,19 @@ namespace MonoDevelop.AssemblyBrowser
 			case SearchMode.Member:
 				IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching member..."));
 				break;
-			case SearchMode.Disassembler:
-				IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching string in disassembled code..."));
-				break;
-			case SearchMode.Decompiler:
-				IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching string in decompiled code..."));
-				break;
 			case SearchMode.Type:
 				IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching type..."));
 				break;
-				case SearchMode.TypeAndMembers:
+			case SearchMode.TypeAndMembers:
 		       	IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching types and members..."));
 				break;
 			}
-			memberListStore.Clear ();
-			typeListStore.Clear ();
-			
-			searchBackgoundWorker = new BackgroundWorker ();
-			searchBackgoundWorker.WorkerSupportsCancellation = true;
-			searchBackgoundWorker.WorkerReportsProgress = false;
-			searchBackgoundWorker.DoWork += SearchDoWork;
-			searchBackgoundWorker.RunWorkerCompleted += delegate {
-				searchBackgoundWorker = null;
-			};
-			
-			searchBackgoundWorker.RunWorkerAsync (query);
+			resultListStore.Clear ();
+			var token = searchTokenSource.Token;
+			var updater = new SearchIdleRunner (this, query, token);
+			updater.Update ();
 		}
-	
-		void SearchDoWork (object sender, DoWorkEventArgs e)
-		{
-			var publicOnly = PublicApiOnly;
-			BackgroundWorker worker = sender as BackgroundWorker;
-			try {
-				string pattern = e.Argument.ToString ().ToUpper ();
-				int types = 0, curType = 0;
-				foreach (var unit in this.definitions) {
-					types += unit.UnresolvedAssembly.TopLevelTypeDefinitions.Count ();
-				}
-				var memberDict = new Dictionary<AssemblyLoader, List<IUnresolvedMember>> ();
-				switch (searchMode) {
-				case SearchMode.Member:
-					foreach (var unit in this.definitions) {
-						var members = new List<IUnresolvedMember> ();
-						foreach (var type in unit.UnresolvedAssembly.TopLevelTypeDefinitions) {
-							if (worker.CancellationPending)
-								return;
-							if (!type.IsPublic && publicOnly)
-								continue;
-							curType++;
-							foreach (var member in type.Members) {
-								if (worker.CancellationPending)
-									return;
-								if (!member.IsPublic && publicOnly)
-									continue;
-								if (member.Name.ToUpper ().Contains (pattern)) {
-									members.Add (member);
-								}
-							}
-						}
-						memberDict [unit] = members;
-					}
-					Gtk.Application.Invoke (delegate {
-						IdeApp.Workbench.StatusBar.SetProgressFraction ((double)curType / types);
-						foreach (var kv in memberDict) {
-							foreach (var member in kv.Value) {
-								if (worker.CancellationPending)
-									return;
-								memberListStore.AppendValues (ImageService.GetIcon (member.GetStockIcon (), Gtk.IconSize.Menu),
-								                              member.Name,
-								                              member.DeclaringTypeDefinition.FullName,
-								                              kv.Key.Assembly.FullName,
-								                              member);
-							}
-						}
-					}
-					);
-					break;
-				case SearchMode.Disassembler:
-					Gtk.Application.Invoke (delegate {
-						IdeApp.Workbench.StatusBar.BeginProgress (GettextCatalog.GetString ("Searching string in disassembled code..."));
-					}
-					);
-					foreach (var unit in this.definitions) {
-						foreach (var type in unit.UnresolvedAssembly.TopLevelTypeDefinitions) {
-							if (worker.CancellationPending)
-								return;
-							curType++;
-							foreach (var method in type.Methods) {
-								if (worker.CancellationPending)
-									return;
-//								if (DomMethodNodeBuilder.Disassemble (rd => rd.DisassembleMethod (method)).ToUpper ().Contains (pattern)) {
-//									members.Add (method);
-//								}
-							}
-						}
-					}
-					Gtk.Application.Invoke (delegate {
-						IdeApp.Workbench.StatusBar.SetProgressFraction ((double)curType / types);
-						foreach (var kv in memberDict) {
-							foreach (var member in kv.Value) {
-								if (worker.CancellationPending)
-									return;
-								memberListStore.AppendValues ("", //iImageService.GetIcon (member.StockIcon, Gtk.IconSize.Menu),
-								                              member.Name,
-								                              member.DeclaringTypeDefinition.FullName,
-								                              kv.Key.Assembly.FullName,
-								                              member);
-							}
-						}
-					}
-					);
-					break;
-				case SearchMode.Decompiler:
-					foreach (var unit in this.definitions) {
-						foreach (var type in unit.UnresolvedAssembly.TopLevelTypeDefinitions) {
-							if (worker.CancellationPending)
-								return;
-							curType++;
-							foreach (var method in type.Methods) {
-								if (worker.CancellationPending)
-									return;
-/*								if (DomMethodNodeBuilder.Decompile (domMethod, false).ToUpper ().Contains (pattern)) {
-									members.Add (method);*/
-							}
-						}
-					}
-					Gtk.Application.Invoke (delegate {
-						IdeApp.Workbench.StatusBar.SetProgressFraction ((double)curType / types);
-						foreach (var kv in memberDict) {
-							foreach (var member in kv.Value) {
-								if (worker.CancellationPending)
-									return;
-								memberListStore.AppendValues ("", //ImageService.GetIcon (member.StockIcon, Gtk.IconSize.Menu),
-								                              member.Name,
-								                              member.DeclaringTypeDefinition.FullName,
-								                              kv.Key.Assembly.FullName,
-								                              member);
-							}
-						}
-					}
-					);
-					break;
-				case SearchMode.Type:
-					var typeDict = new Dictionary<AssemblyLoader, List<IUnresolvedTypeDefinition>> ();
-					foreach (var unit in this.definitions) {
-						var typeList = new List<IUnresolvedTypeDefinition> ();
-						foreach (var type in unit.UnresolvedAssembly.TopLevelTypeDefinitions) {
-							if (worker.CancellationPending)
-								return;
-							if (!type.IsPublic && publicOnly)
-								continue;
-							if (type.FullName.ToUpper ().IndexOf (pattern, StringComparison.Ordinal) >= 0)
-								typeList.Add (type);
-						}
-						typeDict [unit] = typeList;
-					}
-					Gtk.Application.Invoke (delegate {
-						foreach (var kv in typeDict) {
-							foreach (var type in kv.Value) {
-								if (worker.CancellationPending)
-									return;
-								typeListStore.AppendValues (ImageService.GetIcon (type.GetStockIcon (), Gtk.IconSize.Menu),
-								                            type.Name,
-								                            type.Namespace,
-								                            kv.Key.Assembly.FullName,
-								                            type);
-							}
-						}
-					});
-					
-					break;
-				case SearchMode.TypeAndMembers:
-					var typeDict2 = new Dictionary<AssemblyLoader, List<Tuple<IUnresolvedEntity, string>>> ();
-					foreach (var unit in this.definitions) {
-						var typeList = new List<Tuple<IUnresolvedEntity, string>> ();
-						foreach (var type in unit.UnresolvedAssembly.TopLevelTypeDefinitions) {
-							if (worker.CancellationPending)
-								return;
-							if (!type.IsPublic && publicOnly)
-								continue;
-							var parent = type.FullName;
-							if (parent.ToUpper ().IndexOf (pattern, StringComparison.Ordinal) >= 0)
-								typeList.Add (Tuple.Create ((IUnresolvedEntity)type, type.Namespace));
-							
-							foreach (var member in type.Members) {
-								if (worker.CancellationPending)
-									return;
-								if (!member.IsPublic && publicOnly)
-									continue;
-								if (member.Name.ToUpper ().Contains (pattern)) {
-									typeList.Add (Tuple.Create ((IUnresolvedEntity)member, parent));
-								}
-							}
 
-						}
-						typeDict2 [unit] = typeList;
-					}
-
-					Gtk.Application.Invoke (delegate {
-						foreach (var kv in typeDict2) {
-							foreach (var tuple in kv.Value) {
-								if (worker.CancellationPending)
-									return;
-								var type = tuple.Item1;
-								typeListStore.AppendValues (ImageService.GetIcon (type.GetStockIcon (), Gtk.IconSize.Menu),
-								                        type.Name,
-								                        tuple.Item2,
-														kv.Key.Assembly.FullName,
-								                        type);
-							}
-						}
-					});
-
-					break;
-				}
-			} finally {
-				Gtk.Application.Invoke (delegate {
-					IdeApp.Workbench.StatusBar.EndProgress ();
-					IdeApp.Workbench.StatusBar.ShowReady ();
-				});
-			}
-		}
-		
 		static bool preformat = false;
 		internal static string FormatText (string text)
 		{
@@ -1080,7 +701,7 @@ namespace MonoDevelop.AssemblyBrowser
 						case "number":
 							int i = 1;
 							foreach (XmlNode child in node.ChildNodes) {
-								sb.Append ("    <b>" + i++ +"</b> ");
+								sb.Append ("    <b>").Append (i++).Append ("</b> ");
 								OutputNode (sb, child);
 							}
 							break;
@@ -1138,7 +759,7 @@ namespace MonoDevelop.AssemblyBrowser
 				result.Append ("<big><b>Parameters</b></big>");
 				foreach (XmlNode paraNode in nodes) {
 					result.AppendLine ();
-					result.AppendLine ("  <i>" + paraNode.Attributes["name"].InnerText +  "</i>");
+					result.Append ("  <i>").Append (paraNode.Attributes["name"].InnerText).AppendLine ("</i>");
 					result.Append ("    ");
 					OutputChilds (result, paraNode);
 				}
@@ -1196,7 +817,7 @@ namespace MonoDevelop.AssemblyBrowser
 		internal void SetReferencedSegments (List<ReferenceSegment> refs)
 		{
 			ReferencedSegments = refs;
-			if (ReferencedSegments == null)
+			if (ReferencedSegments == null || IsDestroyed)
 				return;
 			foreach (var _seg in refs) {
 				var seg = _seg;
@@ -1208,31 +829,35 @@ namespace MonoDevelop.AssemblyBrowser
 				if (text != null && text.Length == 1 && !(char.IsLetter (text [0]) || text [0] == '…'))
 					continue;
 				var marker = TextMarkerFactory.CreateLinkMarker (inspectEditor, seg.Offset, seg.Length, delegate (LinkRequest request) {
-					bool? isNotPublic;
-					var link = GetLink (seg, out isNotPublic);
-					if (link == null)
-						return;
-					if (isNotPublic.HasValue) {
-						if (isNotPublic.Value) {
-							PublicApiOnly = false;
+					try {
+						bool? isNotPublic;
+						var link = GetLink (seg, out isNotPublic);
+						if (link == null)
+							return;
+						if (isNotPublic.HasValue) {
+							if (isNotPublic.Value) {
+								PublicApiOnly = false;
+							}
+						} else {
+							// unable to determine if the member is public or not (in case of member references) -> try to search
+							var nav = SearchMember (link, false);
+							if (nav == null)
+								PublicApiOnly = false;
 						}
-					} else {
-						// unable to determine if the member is public or not (in case of member references) -> try to search
-						var nav = SearchMember (link, false);
-						if (nav == null)
-							PublicApiOnly = false;
-					}
-					var loader = (AssemblyLoader)this.TreeView.GetSelectedNode ().GetParentDataItem (typeof(AssemblyLoader), true);
-					// args.Button == 2 || (args.Button == 1 && (args.ModifierState & Gdk.ModifierType.ShiftMask) == Gdk.ModifierType.ShiftMask)
-					if (request == LinkRequest.RequestNewView) {
-						AssemblyBrowserViewContent assemblyBrowserView = new AssemblyBrowserViewContent ();
-						foreach (var cu in definitions) {
-							assemblyBrowserView.Load (cu.UnresolvedAssembly.AssemblyName);
+						var loader = (AssemblyLoader)this.TreeView.GetSelectedNode ()?.GetParentDataItem (typeof (AssemblyLoader), true);
+						// args.Button == 2 || (args.Button == 1 && (args.ModifierState & Gdk.ModifierType.ShiftMask) == Gdk.ModifierType.ShiftMask)
+						if (request == LinkRequest.RequestNewView) {
+							var assemblyBrowserView = new AssemblyBrowserViewContent ();
+							foreach (var cu in definitions) {
+								assemblyBrowserView.Load (cu.FileName);
+							}
+							IdeApp.Workbench.OpenDocument (assemblyBrowserView, true);
+							assemblyBrowserView.Open (link);
+						} else {
+							this.Open (link, loader);
 						}
-						IdeApp.Workbench.OpenDocument (assemblyBrowserView, true);
-						((AssemblyBrowserWidget)assemblyBrowserView.Control).Open (link);
-					} else {
-						this.Open (link, loader);
+					} catch (Exception e) {
+						LoggingService.LogInternalError ("Error while processing link request.", e);
 					}
 				});
 				marker.OnlyShowLinkOnHover = true;
@@ -1241,7 +866,7 @@ namespace MonoDevelop.AssemblyBrowser
 			}
 		}
 
-		void FillInspectLabel ()
+		void GenerateOutput ()
 		{
 			ITreeNavigator nav = TreeView.GetSelectedNode ();
 			if (nav == null)
@@ -1256,70 +881,30 @@ namespace MonoDevelop.AssemblyBrowser
 			inspectEditor.SetFoldings (Enumerable.Empty<IFoldSegment> ());
 			switch (this.languageCombobox.Active) {
 			case 0:
-				inspectEditor.Options = DefaultSourceEditorOptions.PlainEditor;
+				inspectEditor.Options = assemblyBrowserEditorOptions;
 				this.inspectEditor.MimeType = "text/x-csharp";
-				SetReferencedSegments (builder.GetSummary (inspectEditor, nav, PublicApiOnly));
+				builder.DecompileAsync (inspectEditor, nav, new DecompileFlags { PublicOnly = PublicApiOnly, MethodBodies = false })
+					.ContinueWith (l => SetReferencedSegments (l.Result), Runtime.MainTaskScheduler).Ignore ();
 				break;
 			case 1:
-				inspectEditor.Options = DefaultSourceEditorOptions.PlainEditor;
+				inspectEditor.Options = assemblyBrowserEditorOptions;
 				this.inspectEditor.MimeType = "text/x-ilasm";
-				SetReferencedSegments (builder.Disassemble (inspectEditor, nav));
+				builder.DisassembleAsync (inspectEditor, nav)
+					.ContinueWith (l => SetReferencedSegments (l.Result), Runtime.MainTaskScheduler).Ignore ();
 				break;
 			case 2:
-				inspectEditor.Options = DefaultSourceEditorOptions.PlainEditor;
+				inspectEditor.Options = assemblyBrowserEditorOptions;
 				this.inspectEditor.MimeType = "text/x-csharp";
-				SetReferencedSegments (builder.Decompile (inspectEditor, nav, PublicApiOnly));
+				builder.DecompileAsync (inspectEditor, nav, new DecompileFlags { PublicOnly = PublicApiOnly, MethodBodies = true })
+					.ContinueWith (l => SetReferencedSegments (l.Result), Runtime.MainTaskScheduler).Ignore ();
 				break;
 			default:
-				inspectEditor.Options = DefaultSourceEditorOptions.PlainEditor;
+				inspectEditor.Options = assemblyBrowserEditorOptions;
 				this.inspectEditor.Text = "Invalid combobox value: " + this.languageCombobox.Active;
 				break;
 			}
 		}
-			
-		void CreateOutput ()
-		{
-			ITreeNavigator nav = TreeView.GetSelectedNode ();
-			
-			if (nav != null) {
-				IMember member = nav.DataItem as IMember;
-				string documentation = GettextCatalog.GetString ("No documentation available.");
-				if (member != null) {
-					try {
-						XmlNode node = member.GetMonodocDocumentation ();
-						if (node != null) {
-							documentation = TransformDocumentation (node) ?? documentation;
-							/*
-							StringWriter writer = new StringWriter ();
-							XmlTextWriter w = new XmlTextWriter (writer);
-							node.WriteTo (w);
-							System.Console.WriteLine ("---------------------------");
-							System.Console.WriteLine (writer);*/
-							
-						}
-					} catch (Exception) {
-					}
-				}
-//				this.documentationLabel.Markup = documentation;
-/*				IAssemblyBrowserNodeBuilder builder = nav.TypeNodeBuilder as IAssemblyBrowserNodeBuilder;
-				if (builder != null) {
-					this.descriptionLabel.Markup  = builder.GetDescription (nav);
-				} else {
-					this.descriptionLabel.Markup = "";
-				}*/
-				
-			}
-			FillInspectLabel ();
-		}
-			
-		/*int oldSize = -1;
-		void VPaneExpose (object sender, Gtk.ExposeEventArgs args)
-		{
-			int size = this.vpaned1.Allocation.Height - 96;
-			if (size == oldSize)
-				return;
-			this.vpaned1.Position = oldSize = size;
-		}*/
+
 		int oldSize2 = -1;
 		void HPaneExpose (object sender, Gtk.ExposeEventArgs args)
 		{
@@ -1332,11 +917,19 @@ namespace MonoDevelop.AssemblyBrowser
 		
 		internal void Open (string url, AssemblyLoader currentAssembly = null, bool expandNode = true)
 		{
-			Task.WhenAll (this.definitions.Select (d => d.LoadingTask).ToArray ()).ContinueWith (d => {
-				Application.Invoke (delegate {
+			try {
+				Task.WhenAll (this.definitions.Select (d => d.LoadingTask)).ContinueWith (d => {
+					// At least one of them failed.
+					if (d.IsFaulted) {
+						LoggingService.LogError ("Failed to load assemblies", d.Exception);
+
+						// It's possible the assembly in which the type we're looking for exists
+						// so try probing for it regardless.
+					}
+
 					suspendNavigation = false;
 					ITreeNavigator nav = SearchMember (url, expandNode);
-					if (definitions == null) // we've been disposed
+					if (definitions.Count == 0) // we've been disposed
 						return;
 					if (nav != null)
 						return;
@@ -1349,58 +942,61 @@ namespace MonoDevelop.AssemblyBrowser
 					} catch (Exception e) {
 						LoggingService.LogError ("Error while opening the assembly browser with id:" + url, e);
 					}
-				});
-			});
+				}, Runtime.MainTaskScheduler).Ignore ();
+			} catch (Exception e) {
+				LoggingService.LogError ("Error while opening assembly :" + url);
+				MessageService.ShowError (GettextCatalog.GetString ("Error while opening assembly {0}.", url), e);
+			}
 		}
 
 		void OpenFromAssembly (string url, AssemblyLoader currentAssembly, bool expandNode = true)
 		{
-			var cecilObject = currentAssembly.CecilLoader.GetCecilObject (currentAssembly.UnresolvedAssembly);
+			var cecilObject = currentAssembly.Assembly;
 			if (cecilObject == null)
 				return;
 
 			int i = 0;
 			System.Action loadNext = null;
-			var references = cecilObject.MainModule.AssemblyReferences;
+			var references = cecilObject.AssemblyReferences;
 			loadNext = () => {
 				var reference = references [i];
 				string fileName = currentAssembly.LookupAssembly (reference.FullName);
 				if (string.IsNullOrEmpty (fileName)) {
 					LoggingService.LogWarning ("Assembly browser: Can't find assembly: " + reference.FullName + ".");
-					if (++i == references.Count)
+					if (++i == references.Length)
 						LoggingService.LogError ("Assembly browser: Can't find: " + url + ".");
 					else
 						loadNext ();
 					return;
 				}
-				var result = AddReferenceByFileName (fileName);
+				var result = AddReferenceByFileName (fileName, expandNode);
+				if (result == null)
+					return;
 				result.LoadingTask.ContinueWith (t2 => {
-					if (definitions == null) // disposed
+					if (definitions.Count == 0) // disposed
 						return;
-					Application.Invoke (delegate {
-						var nav = SearchMember (url, expandNode);
-						if (nav == null) {
-							if (++i == references.Count)
-								LoggingService.LogError ("Assembly browser: Can't find: " + url + ".");
-							else
-								loadNext ();
-						}
-					});
-				}, TaskScheduler.Current);
+					var nav = SearchMember (url, expandNode);
+					if (nav == null) {
+						if (++i == references.Length)
+							LoggingService.LogError ("Assembly browser: Can't find: " + url + ".");
+						else
+							loadNext ();
+					}
+				}, Runtime.MainTaskScheduler).Ignore ();
 			};
 		}
 
 		void OpenFromAssemblyNames (string url)
 		{
 			var tasks = new List<Task> ();
-			foreach (var definition in definitions.ToArray ()) {
-				var cecilObject = definition.CecilLoader.GetCecilObject (definition.UnresolvedAssembly);
+			foreach (var definition in definitions) {
+				var cecilObject = definition.Assembly;
 				if (cecilObject == null) {
-					LoggingService.LogWarning ("Assembly browser: Can't find assembly: " + definition.UnresolvedAssembly.FullAssemblyName + ".");
+					LoggingService.LogWarning ("Assembly browser: Can't find assembly: " + definition.Assembly.FullName + ".");
 					continue;
 				}
-				foreach (var assemblyNameReference in cecilObject.MainModule.AssemblyReferences) {
-					var result = AddReferenceByAssemblyName (assemblyNameReference);
+				foreach (var assemblyNameReference in cecilObject.AssemblyReferences) {
+					var result = AddReferenceByAssemblyName (assemblyNameReference.FullName);
 					if (result == null) {
 						LoggingService.LogWarning ("Assembly browser: Can't find assembly: " + assemblyNameReference.FullName + ".");
 					} else {
@@ -1414,98 +1010,102 @@ namespace MonoDevelop.AssemblyBrowser
 					LoggingService.LogError ("Assembly browser: Can't find: " + url + ".");
 				}
 				return;
-			};
-			Task.Factory.ContinueWhenAll (tasks.ToArray (), tarr => {
-				var exceptions = tarr.Where (t => t.IsFaulted).Select (t => t.Exception).ToArray ();
-				if (exceptions != null) {
-					var ex = new AggregateException (exceptions).Flatten ();
-					if (ex.InnerExceptions.Count > 0) {
-						foreach (var inner in ex.InnerExceptions) {
-							LoggingService.LogError ("Error while loading assembly in the browser.", inner);
-						}
-						throw ex;
+			}
+
+			Task.WhenAll (tasks.ToArray ())
+				.ContinueWith (t => {
+					if (t.IsFaulted) {
+						LoggingService.LogError ("Error while loading assemblies in the browser", t.Exception);
+						return;
 					}
-				}
-				if (definitions == null) // disposed
-					return;
-				Application.Invoke (delegate {
+
+					if (definitions.Count == 0) // disposed
+						return;
+
 					var nav = SearchMember (url);
 					if (nav == null) {
 						LoggingService.LogError ("Assembly browser: Can't find: " + url + ".");
 					}
-				});
-			}, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Current);
+				}, Runtime.MainTaskScheduler).Ignore ();
 		}
 		
-		public void SelectAssembly (string fileName)
+		internal void SelectAssembly (PEFile cu)
 		{
-			AssemblyDefinition cu = null;
-			foreach (var unit in definitions) {
-				if (unit.UnresolvedAssembly.AssemblyName == fileName || unit.UnresolvedAssembly.Location == fileName) {
-					cu = unit.CecilLoader.GetCecilObject (unit.UnresolvedAssembly);
-					unit.LoadingTask.ContinueWith (t => {
-						Application.Invoke (delegate {
-							ITreeNavigator nav = TreeView.GetRootNode ();
-							if (nav == null)
-								return;
+			ITreeNavigator nav = TreeView.GetRootNode ();
+			if (nav == null)
+				return;
 
-							do {
-								if (nav.DataItem == cu || (nav.DataItem as AssemblyLoader)?.Assembly == cu) {
-									nav.ExpandToNode ();
-									nav.Selected = true;
-									nav.ScrollToNode ();
-									return;
-								}
-							} while (nav.MoveNext ());
-						});
-					});
+			if (expandedMember) {
+				expandedMember = false;
+				return;
+			}
+
+			do {
+				if (nav.DataItem == cu || (nav.DataItem as AssemblyLoader)?.Assembly == cu) {
+					nav.ExpandToNode ();
+					nav.Selected = true;
+					nav.ScrollToNode ();
 					return;
 				}
-			}
+			} while (nav.MoveNext ());
 		}
 		
-		void Dispose (ITreeNavigator nav)
+		void Dispose<T> (ITreeNavigator nav) where T:class, IDisposable
 		{
 			if (nav == null)
 				return;
-			IDisposable d = nav.DataItem as IDisposable;
+			T d = nav.DataItem as T;
 			if (d != null) 
 				d.Dispose ();
 			if (nav.HasChildren ()) {
 				nav.MoveToFirstChild ();
 				do {
-					Dispose (nav);
+					Dispose<T> (nav);
 				} while (nav.MoveNext ());
 				nav.MoveToParent ();
 			}
 		}
-		
+
+		void DisposeAssemblyDefinitions (ITreeNavigator nav)
+		{
+			// Dispose top level nodes
+			if (nav == null || !nav.HasChildren ())
+				return;
+			
+			nav.MoveToFirstChild ();
+			do {
+				if (nav.DataItem is PEFile d)
+					d.Dispose ();
+			} while (nav.MoveNext ());
+			nav.MoveToParent ();
+		}
+
+		public bool IsDestroyed { get; private set; }
+
 		protected override void OnDestroyed ()
 		{
+			IsDestroyed = true;
 			ClearReferenceSegment ();
-			if (searchBackgoundWorker != null && searchBackgoundWorker.IsBusy) {
-				searchBackgoundWorker.CancelAsync ();
-				searchBackgoundWorker.Dispose ();
-				searchBackgoundWorker = null;
-			}
-			
+			searchTokenSource.Cancel ();
+
 			if (this.TreeView != null) {
-				//	Dispose (TreeView.GetRootNode ());
+				//	Dispose<IDisposable> (TreeView.GetRootNode ());
+				DisposeAssemblyDefinitions (TreeView.GetRootNode ());
 				TreeView.SelectionChanged -= HandleCursorChanged;
 				this.TreeView.Clear ();
 				this.TreeView = null;
 			}
 			
-			if (definitions != null) {
+			if (definitions.Count > 0) {
 				foreach (var def in definitions)
 					def.Dispose ();
-				definitions.Clear ();
-				definitions = null;
+				definitions = definitions.Clear ();
 			}
+
+			projects.Clear ();
 			
 			ActiveMember = null;
-			memberListStore = null;
-			typeListStore = null;
+			resultListStore = null;
 
 			if (documentationPanel != null) {
 				documentationPanel.Destroy ();
@@ -1529,26 +1129,17 @@ namespace MonoDevelop.AssemblyBrowser
 			hpaned1.ExposeEvent -= HPaneExpose;
 			base.OnDestroyed ();
 		}
-		
-		static AssemblyDefinition ReadAssembly (string fileName)
-		{
-			ReaderParameters parameters = new ReaderParameters ();
-//			parameters.AssemblyResolver = new SimpleAssemblyResolver (Path.GetDirectoryName (fileName));
-			using (var stream = new System.IO.MemoryStream (System.IO.File.ReadAllBytes (fileName))) {
-				return AssemblyDefinition.ReadAssembly (stream, parameters);
-			}
-		}
-		
 
-		List<AssemblyLoader> definitions = new List<AssemblyLoader> ();
-		List<Project> projects = new List<Project> ();
+
+		ImmutableList<AssemblyLoader> definitions = ImmutableList<AssemblyLoader>.Empty;
+		HashSet<Project> projects = new HashSet<Project> ();
 		
-		internal AssemblyLoader AddReferenceByAssemblyName (AssemblyNameReference reference)
+		internal AssemblyLoader AddReferenceByAssemblyName (PEFile reference, bool expand = false)
 		{
-			return AddReferenceByAssemblyName (reference.Name);
+			return AddReferenceByAssemblyName (reference.FullName, expand, querySearch: false);
 		}
 		
-		internal AssemblyLoader AddReferenceByAssemblyName (string assemblyFullName)
+		internal AssemblyLoader AddReferenceByAssemblyName (string assemblyFullName, bool expand = false, bool querySearch = true)
 		{
 			string assemblyFile = Runtime.SystemAssemblyService.DefaultAssemblyContext.GetAssemblyLocation (assemblyFullName, null);
 			if (assemblyFile == null || !System.IO.File.Exists (assemblyFile)) {
@@ -1561,50 +1152,50 @@ namespace MonoDevelop.AssemblyBrowser
 			if (assemblyFile == null || !System.IO.File.Exists (assemblyFile))
 				return null;
 			
-			return AddReferenceByFileName (assemblyFile);
+			return AddReferenceByFileName (assemblyFile, expand, querySearch);
 		}
-		
-		internal AssemblyLoader AddReferenceByFileName (string fileName)
-		{
-			var result = definitions.FirstOrDefault (d => d.FileName == fileName);
-			if (result != null) {
-//				// Select the result.
-//				if (selectReference) {
-//					ITreeNavigator navigator = TreeView.GetNodeAtObject (result);
-//					if (navigator != null) {
-//						navigator.Selected = true;
-//					} else {
-//						LoggingService.LogWarning (result + " could not be found.");
-//					}
-//				}
 
-				return result;
+		internal AssemblyLoader AddReferenceByFileName (string fileName, bool expand = false, bool querySearch = true)
+		{
+			foreach (var def in definitions) {
+				if (FilePath.PathComparer.Equals (fileName, def.FileName))
+					return def;
 			}
 			if (!File.Exists (fileName))
 				return null;
-			result = new AssemblyLoader (this, fileName);
-			
-			definitions.Add (result);
+			var result = new AssemblyLoader (this, fileName);
+			definitions = definitions.Add (result);
 			result.LoadingTask = result.LoadingTask.ContinueWith (task => {
-				Application.Invoke (delegate {
-					if (definitions == null)
-						return;
-					try {
-						ITreeBuilder builder;
-						if (definitions.Count + projects.Count == 1) {
-							builder = TreeView.LoadTree (result);
-						} else {
-							builder = TreeView.AddChild (result);
-						}
-						if (TreeView.GetSelectedNode () == null)
-							builder.Selected = builder.Expanded = true;
-					} catch (Exception e) {
-						LoggingService.LogError ("Error while adding assembly to the assembly list", e);
+				if (TreeView == null || definitions.Count == 0)
+					return task.Result;
+				var fullName = result.Assembly.FullName;
+
+				// filter duplicate assemblies, can happen on opening the same assembly at different locations.
+				foreach (var d in definitions) {
+					if (!d.IsLoaded || d == result)
+						continue;
+					if (d.Assembly.FullName == fullName) {
+						definitions = definitions.Remove (result);
+						LoggingService.LogInfo ("AssemblyBrowser: Loaded duplicate assembly : " + fullName); // Write a log info in case that happens, shouldn't happen often.
+						return task.Result;
 					}
-				});
+				}
+
+				try {
+					ITreeBuilder builder;
+					if (definitions.Count + projects.Count == 1) {
+						builder = TreeView.LoadTree (result);
+					} else {
+						builder = TreeView.AddChild (result, expand);
+					}
+					if (TreeView.GetSelectedNode () == null)
+						builder.Selected = builder.Expanded = expand;
+				} catch (Exception e) {
+					LoggingService.LogError ("Error while adding assembly to the assembly list", e);
+				}
 				return task.Result;
-			}
-			                                                     );
+			}, Runtime.MainTaskScheduler);
+		
 			return result;
 		}
 		
@@ -1613,7 +1204,7 @@ namespace MonoDevelop.AssemblyBrowser
 			if (project == null)
 				throw new ArgumentNullException ("project");
 
-			if (projects.Contains (project)) {
+			if (!projects.Add (project)) {
 				// Select the project.
 				if (selectReference) {
 					ITreeNavigator navigator = TreeView.GetNodeAtObject (project);
@@ -1624,14 +1215,16 @@ namespace MonoDevelop.AssemblyBrowser
 
 				return;
 			}
-			projects.Add (project);
+
 			ITreeBuilder builder;
 			if (definitions.Count + projects.Count == 1) {
 				builder = TreeView.LoadTree (project);
 			} else {
-				builder = TreeView.AddChild (project);
+				builder = TreeView.AddChild (project, false);
 			}
-			builder.Selected = builder.Expanded = selectReference;
+
+			if (TreeView.GetSelectedNode () == null || selectReference)
+				builder.Selected = builder.Expanded = selectReference;
 		}
 
 		//MonoDevelop.Components.RoundedFrame popupWidgetFrame;
@@ -1641,22 +1234,23 @@ namespace MonoDevelop.AssemblyBrowser
 		void HandleCursorChanged (object sender, EventArgs e)
 		{
 			if (!suspendNavigation) {
-				var selectedEntity = TreeView.GetSelectedNode ()?.DataItem as IUnresolvedEntity;
+				var selectedEntity = TreeView.GetSelectedNode ()?.DataItem as IEntity;
 				if (selectedEntity != null)
-					NavigationHistoryService.LogActiveDocument ();
+					IdeServices.NavigationHistoryService.LogActiveDocument ();
 			}
 			notebook1.Page = 0;
-			CreateOutput ();
+			GenerateOutput ();
 		}
 
 		public NavigationPoint BuildNavigationPoint ()
 		{
 			var node = TreeView.GetSelectedNode ();
-			var selectedEntity = node?.DataItem as IUnresolvedEntity;
+			var selectedEntity = node?.DataItem as INamedElement;
 			AssemblyLoader loader = null;
 			if (selectedEntity != null) {
 				loader = (AssemblyLoader)this.TreeView.GetSelectedNode ().GetParentDataItem (typeof (AssemblyLoader), true);
-				return new AssemblyBrowserNavigationPoint (definitions, loader, GetIdString (selectedEntity));
+				// TODO: fix this
+				return new AssemblyBrowserNavigationPoint (definitions, loader, selectedEntity.ReflectionName);
 			}
 			loader = node?.DataItem as AssemblyLoader;
 			if (loader != null)
@@ -1665,22 +1259,28 @@ namespace MonoDevelop.AssemblyBrowser
 		}
 		#endregion
 
-		internal void EnsureDefinitionsLoaded (List<AssemblyLoader> definitions)
+		internal void EnsureDefinitionsLoaded (ImmutableList<AssemblyLoader> ensuredDefinitions)
 		{
-			if (definitions == null)
-				throw new ArgumentNullException (nameof (definitions));
-			foreach (var def in definitions) {
-				if (!this.definitions.Contains (def)) {
-					this.definitions.Add (def);
-					Application.Invoke (delegate {
-						if (definitions.Count + projects.Count == 1) {
-							TreeView.LoadTree (def.LoadingTask.Result);
-						} else {
-							TreeView.AddChild (def.LoadingTask.Result);
+			if (ensuredDefinitions == null)
+				throw new ArgumentNullException (nameof (ensuredDefinitions));
+
+			Runtime.RunInMainThread (() => {
+				foreach (var def in ensuredDefinitions) {
+					try {
+						if (!definitions.Contains (def)) {
+							definitions = definitions.Add (def);
+							var peFile = def.Assembly;
+							if (ensuredDefinitions.Count + projects.Count == 1) {
+								TreeView.LoadTree (peFile);
+							} else {
+								TreeView.AddChild (peFile);
+							}
 						}
-					});
+					} catch (Exception e) {
+						LoggingService.LogInternalError ($"Can't load definition {def}. File name: {def?.FileName}", e);
+					}
 				}
-			}
+			});
 		}
 	}
 }

@@ -1,4 +1,4 @@
-﻿//
+//
 // MruCache.cs
 //
 // Author:
@@ -28,7 +28,11 @@ using System.Collections.Generic;
 
 namespace MonoDevelop.Ide.CodeCompletion
 {
-	class MruCache
+	/// <summary>
+	/// A cache that keeps a list of the most recently used completion items
+	/// </summary>
+	[Obsolete("This should not have been public")]
+	public class MruCache
 	{
 		const int MaxItems = 42;
 

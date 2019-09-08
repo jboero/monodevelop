@@ -1,4 +1,3 @@
-ALL_CSPROJ=$(wildcard *.csproj)
 MAIN_SLN=$(top_builddir)/Main.sln
 
 if ENABLE_MACPLATFORM
@@ -25,33 +24,21 @@ PROFILE_NAME=DebugWin32
 endif
 endif
 
-XBUILD=xbuild
+XBUILD=msbuild
 XBUILD_VERBOSITY ?= normal
-XBUILD_ARGS=/verbosity:$(XBUILD_VERBOSITY) /nologo /property:CodePage=65001
+XBUILD_ARGS=/verbosity:$(XBUILD_VERBOSITY) /nologo /property:CodePage=65001 /property:RestorePackages=false /property:DownloadPaket=false /property:ReportAnalyzer=true
 XBUILD_PROFILE=/property:Configuration=$(PROFILE_NAME)
 
 # Figure out how far we are from top_builddir
 DEPTH=$(shell echo "$(top_builddir)" | tr '/' '\n' | grep -c '..')
 
-all: csproj_build
+all:
 
-clean: csproj_clean
-
-csproj_build:
-	@if test x$(SKIP) != xy -a $(DEPTH) -gt $(MAKELEVEL); then \
-	echo Building $(ALL_CSPROJ); \
-	for p in $(ALL_CSPROJ); do $(XBUILD) $(XBUILD_ARGS) $$p; done \
-	fi
-
-csproj_clean:
-	@if test x$(SKIP) != xy -a $(DEPTH) -gt $(MAKELEVEL); then \
-	echo Cleaning $(ALL_CSPROJ); \
-	for p in $(ALL_CSPROJ); do $(XBUILD) $(XBUILD_ARGS) $$p /t:Clean; done \
-	fi
+clean:
 
 sln_build:
 	@echo Building $(MAIN_SLN)
-	$(XBUILD) $(XBUILD_ARGS) $(MAIN_SLN) $(XBUILD_PROFILE)
+	ok=:; $(XBUILD) $(XBUILD_ARGS) /bl:MonoDevelop.binlog $(MAIN_SLN) $(XBUILD_PROFILE) || ok=false; echo @MonkeyWrench: AddFile: $$(pwd)/MonoDevelop.binlog; $$ok
 
 sln_clean:
 	@echo Cleaning $(MAIN_SLN)
@@ -60,7 +47,7 @@ sln_clean:
 print_extradist:
 	@echo $(WILDCARDED_FILES)
 
-EXTS:=*.bmp *.cs *.csproj *.html *.png *.snk *.config *.stetic *.glade *.xml *.xsd *.exe.addins *.template *.tt *.txt *.targets *.props *.sh
+EXTS:=*.bmp *.cs *.csproj *.shproj *.projitems *.mdproj *.html *.png *.snk *.config *.stetic *.glade *.xml *.xsd *.exe.addins *.template *.tt *.txt *.targets *.props *.sh
 
 ALL_FILES:=	$(EXTS) \
 		$(addprefix */,$(EXTS))		\
@@ -69,12 +56,12 @@ ALL_FILES:=	$(EXTS) \
 		$(addprefix */*/*/*/,$(EXTS))	\
 		$(addprefix */*/*/*/*/,$(EXTS))	\
 		$(wildcard icons/*)		\
+		$(wildcard themes/*)		\
 		$(wildcard templates/*)
 
 WILDCARDED_FILES:=$(wildcard $(ALL_FILES))
 
 EXTRA_DIST = \
 	$(wildcard $(ALL_FILES))
-
 
 .PHONY: all clean csproj_build csproj_clean sln_build sln_clean

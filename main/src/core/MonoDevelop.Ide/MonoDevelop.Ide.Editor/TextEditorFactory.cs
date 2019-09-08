@@ -1,4 +1,4 @@
-﻿//
+//
 // DocumentFactory.cs
 //
 // Author:
@@ -27,16 +27,19 @@
 using MonoDevelop.Core.Text;
 using Mono.Addins;
 using MonoDevelop.Core;
+using System;
+using MonoDevelop.Ide.Gui.Documents;
 
 namespace MonoDevelop.Ide.Editor
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
 	public static class TextEditorFactory
 	{
 		static ITextEditorFactory currentFactory;
 
 		static TextEditorFactory ()
 		{
-			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/SourceEditor2/EditorFactory", delegate(object sender, ExtensionNodeEventArgs args) {
+			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/Ide/Editor/EditorFactory", delegate(object sender, ExtensionNodeEventArgs args) {
 				switch (args.Change) {
 				case ExtensionChange.Add:
 					if (currentFactory == null)
@@ -49,6 +52,13 @@ namespace MonoDevelop.Ide.Editor
 		public static ITextDocument CreateNewDocument ()
 		{
 			return currentFactory.CreateNewDocument ();
+		}
+
+		public static ITextDocument CreateNewDocument(string fileName, string mimeType = null)
+		{
+			if (fileName == null)
+				throw new System.ArgumentNullException(nameof(fileName));
+			return currentFactory.CreateNewDocument(fileName, mimeType);
 		}
 
 		public static ITextDocument CreateNewDocument (ITextSource textSource, string fileName, string mimeType = null)
@@ -72,29 +82,50 @@ namespace MonoDevelop.Ide.Editor
 			return currentFactory.CreateNewDocument (textSource, fileName, mimeType); 
 		}
 
-		static ConfigurationProperty<double> zoomLevel = ConfigurationProperty.Create ("Editor.ZoomLevel", 1.0d);
+		public static ConfigurationProperty<double> ZoomLevel = ConfigurationProperty.Create ("Editor.ZoomLevel", 1.0d);
 
-		public static TextEditor CreateNewEditor (TextEditorType textEditorType = TextEditorType.Default)
+		public static TextEditor CreateNewEditor(string fileName, string mimeType, TextEditorType textEditorType = TextEditorType.Default)
 		{
-			var result = new TextEditor (currentFactory.CreateNewEditor (), textEditorType) {
-				ZoomLevel = zoomLevel
-			};
-			result.ZoomLevelChanged += delegate {
-				zoomLevel.Value = result.ZoomLevel;
-			};
+			var result = new TextEditor(currentFactory.CreateNewEditor(fileName, mimeType), textEditorType);
+			InitializeTextEditor(result);
 			return result;
+		}
+
+		public static TextEditor CreateNewEditor (TextBufferFileModel textBufferFileModel, TextEditorType textEditorType = TextEditorType.Default)
+		{
+			var result = new TextEditor (currentFactory.CreateNewEditor (textBufferFileModel), textEditorType);
+			InitializeTextEditor (result);
+			return result;
+		}
+
+		public static TextEditor CreateNewEditor(TextEditorType textEditorType = TextEditorType.Default)
+		{
+			var result = new TextEditor(currentFactory.CreateNewEditor(), textEditorType);
+			InitializeTextEditor(result);
+			return result;
+		}
+
+		private static void InitializeTextEditor(TextEditor textEditor)
+		{
+			textEditor.ZoomLevel = ZoomLevel;
+
+			textEditor.ZoomLevelChanged += OnZoomChanged;
+		}
+
+		static void OnZoomChanged (object sender, EventArgs args)
+		{
+			var editor = (TextEditor)sender;
+			ZoomLevel.Value = editor.ZoomLevel;
 		}
 
 		public static TextEditor CreateNewEditor (IReadonlyTextDocument document, TextEditorType textEditorType = TextEditorType.Default)
 		{
 			if (document == null)
 				throw new System.ArgumentNullException ("document");
-			var result = new TextEditor (currentFactory.CreateNewEditor (document), textEditorType) {
-				ZoomLevel = zoomLevel
+			var result = new TextEditor (currentFactory.CreateNewEditor (document, textEditorType), textEditorType) {
+				ZoomLevel = ZoomLevel
 			};
-			result.ZoomLevelChanged += delegate {
-				zoomLevel.Value = result.ZoomLevel;
-			};
+			result.ZoomLevelChanged += OnZoomChanged;
 			return result;
 		}
 
@@ -110,15 +141,6 @@ namespace MonoDevelop.Ide.Editor
 			var result = CreateNewEditor (document, textEditorType);
 			result.InitializeExtensionChain (ctx);
 			return result;
-		}
-
-		public static string[] GetSyntaxProperties (string mimeType, string name)
-		{
-			if (mimeType == null)
-				throw new System.ArgumentNullException ("mimeType");
-			if (name == null)
-				throw new System.ArgumentNullException ("name");
-			return currentFactory.GetSyntaxProperties (mimeType, name);
 		}
 	}
 }

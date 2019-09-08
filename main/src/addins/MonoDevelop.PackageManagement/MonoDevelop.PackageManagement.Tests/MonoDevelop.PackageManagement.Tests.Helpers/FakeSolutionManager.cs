@@ -26,6 +26,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using MonoDevelop.Projects;
 using NuGet.Configuration;
 using NuGet.PackageManagement;
 using NuGet.ProjectManagement;
@@ -56,10 +59,9 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 			}
 		}
 
-		public bool IsSolutionAvailable {
-			get {
-				throw new NotImplementedException ();
-			}
+		public Task<bool> IsSolutionAvailableAsync ()
+		{
+			throw new NotImplementedException ();
 		}
 
 		public bool IsSolutionOpen {
@@ -84,6 +86,8 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 			get { return FakeSettings; }
 		}
 
+		public Solution Solution { get; set; }
+		public ConfigurationSelector Configuration { get; set; } = ConfigurationSelector.Default;
 		public string SolutionDirectory { get; set; }
 
 		#pragma warning disable 67
@@ -92,6 +96,8 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 		public event EventHandler<NuGetProjectEventArgs> NuGetProjectRemoved;
 		public event EventHandler<NuGetProjectEventArgs> NuGetProjectRenamed;
 		public event EventHandler<NuGetProjectEventArgs> AfterNuGetProjectRenamed;
+		public event EventHandler<NuGetProjectEventArgs> NuGetProjectUpdated;
+		public event EventHandler<NuGetEventArgs<string>> AfterNuGetCacheUpdated;
 		public event EventHandler SolutionClosed;
 		public event EventHandler SolutionClosing;
 		public event EventHandler SolutionOpened;
@@ -105,28 +111,34 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 			return SourceRepositoryProvider;
 		}
 
-		public NuGetProject GetNuGetProject (string nuGetProjectSafeName)
+		public Task<NuGetProject> GetNuGetProjectAsync (string nuGetProjectSafeName)
 		{
 			throw new NotImplementedException ();
 		}
 
-		public Dictionary<IDotNetProject, FakeNuGetProject> NuGetProjects = new Dictionary<IDotNetProject, FakeNuGetProject> ();
+		public Dictionary<IDotNetProject, NuGetProject> NuGetProjects = new Dictionary<IDotNetProject, NuGetProject> ();
+		public Dictionary<DotNetProject, NuGetProject> NuGetProjectsUsingDotNetProjects = new Dictionary<DotNetProject, NuGetProject> ();
 
 		public NuGetProject GetNuGetProject (IDotNetProject project)
 		{
-			FakeNuGetProject nugetProject = null;
+			NuGetProject nugetProject = null;
 			if (NuGetProjects.TryGetValue (project, out nugetProject))
 				return nugetProject;
+
+			if (project.DotNetProject != null) {
+				if (NuGetProjectsUsingDotNetProjects.TryGetValue (project.DotNetProject, out nugetProject))
+					return nugetProject;
+			}
 
 			return new FakeNuGetProject (project);
 		}
 
-		public IEnumerable<NuGetProject> GetNuGetProjects ()
+		public Task<IEnumerable<NuGetProject>> GetNuGetProjectsAsync ()
 		{
-			throw new NotImplementedException ();
+			return Task.FromResult (NuGetProjects.Values.AsEnumerable ());
 		}
 
-		public string GetNuGetProjectSafeName (NuGetProject nuGetProject)
+		public Task<string> GetNuGetProjectSafeNameAsync (NuGetProject nuGetProject)
 		{
 			throw new NotImplementedException ();
 		}
@@ -143,6 +155,19 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 
 		public void SaveProject (NuGetProject nugetProject)
 		{
+		}
+
+		public void EnsureSolutionIsLoaded ()
+		{
+		}
+
+		public void ClearProjectCache ()
+		{
+		}
+
+		public Task<bool> DoesNuGetSupportsAnyProjectAsync ()
+		{
+			throw new NotImplementedException ();
 		}
 	}
 }

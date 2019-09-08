@@ -1,21 +1,21 @@
-// 
-// DesktopService.cs
-//  
+//
+// IdeApp.DesktopService.cs
+//
 // Author:
 //       Lluis Sanchez Gual <lluis@novell.com>
-// 
+//
 // Copyright (c) 2009 Novell, Inc (http://www.novell.com)
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,23 +26,26 @@
 
 using System;
 using System.Collections.Generic;
-using Mono.Addins;
-using MonoDevelop.Ide.Desktop;
-using MonoDevelop.Core;
 using System.IO;
+using System.Threading.Tasks;
+using Microsoft.VisualStudio.Utilities;
+using Mono.Addins;
 using MonoDevelop.Components;
 using MonoDevelop.Components.MainToolbar;
-using MonoDevelop.Ide.Fonts;
 using System.Threading.Tasks;
+using MonoDevelop.Core;
+using MonoDevelop.Ide.Desktop;
+using MonoDevelop.Ide.Fonts;
 
 namespace MonoDevelop.Ide
 {
-	public static class DesktopService
+	[DefaultServiceImplementation]
+	public class DesktopService : Service
 	{
-		static PlatformService platformService;
-		static Xwt.Toolkit nativeToolkit;
+		PlatformService platformService;
+		Xwt.Toolkit nativeToolkit;
 
-		static PlatformService PlatformService {
+		PlatformService PlatformService {
 			get {
 				if (platformService == null)
 					throw new InvalidOperationException ("Not initialized");
@@ -50,21 +53,20 @@ namespace MonoDevelop.Ide
 			}
 		}
 
-		public static void Initialize ()
+		protected override Task OnInitialize (ServiceProvider serviceProvider)
 		{
-			if (platformService != null)
-				return;
-			object[] platforms = AddinManager.GetExtensionObjects ("/MonoDevelop/Core/PlatformService");
+			object [] platforms = AddinManager.GetExtensionObjects ("/MonoDevelop/Core/PlatformService");
 			if (platforms.Length > 0)
-				platformService = (PlatformService) platforms [0];
+				platformService = (PlatformService)platforms [0];
 			else {
 				platformService = new DefaultPlatformService ();
 				LoggingService.LogFatalError ("A platform service implementation has not been found.");
 			}
 			PlatformService.Initialize ();
+
 			if (PlatformService.CanOpenTerminal)
 				Runtime.ProcessService.SetExternalConsoleHandler (PlatformService.StartConsoleProcess);
-			
+
 			FileService.FileRemoved += NotifyFileRemoved;
 			FileService.FileRenamed += NotifyFileRenamed;
 
@@ -72,14 +74,44 @@ namespace MonoDevelop.Ide
 			// so that we can safely access this property later in other threads
 			GC.KeepAlive (NativeToolkit);
 
-			FontService.Initialize ();
+			MemoryMonitor = platformService.CreateMemoryMonitor ();
+			MemoryMonitor.StatusChanged += OnMemoryStatusChanged;
+
+			ThermalMonitor = platformService.CreateThermalMonitor ();
+			ThermalMonitor.StatusChanged += OnThermalStatusChanged;
+
+			return Task.CompletedTask;
 		}
-		
+
+		protected override Task OnDispose ()
+		{
+			if (PlatformService.CanOpenTerminal)
+				Runtime.ProcessService.SetExternalConsoleHandler (null);
+
+			FileService.FileRemoved -= NotifyFileRemoved;
+			FileService.FileRenamed -= NotifyFileRenamed;
+
+			MemoryMonitor.StatusChanged -= OnMemoryStatusChanged;
+			ThermalMonitor.StatusChanged -= OnThermalStatusChanged;
+
+			return Task.CompletedTask;
+		}
+
+		static void OnMemoryStatusChanged (object sender, PlatformMemoryStatusEventArgs args)
+		{
+			Counters.MemoryPressure.Inc (args.CounterMetadata);
+		}
+
+		static void OnThermalStatusChanged (object sender, PlatformThermalStatusEventArgs args)
+		{
+			Counters.ThermalNotification.Inc (args.CounterMetadata);
+		}
+
 		/// <summary>
 		/// Returns the XWT toolkit for the native toolkit (Cocoa on Mac, WPF on Windows)
 		/// </summary>
 		/// <returns>The native toolkit.</returns>
-		public static Xwt.Toolkit NativeToolkit {
+		public Xwt.Toolkit NativeToolkit {
 			get {
 				if (nativeToolkit == null)
 					nativeToolkit = platformService.LoadNativeToolkit ();
@@ -87,89 +119,98 @@ namespace MonoDevelop.Ide
 			}
 		}
 
-		public static void SetGlobalProgress (double progress)
+		public void SetGlobalProgress (double progress)
 		{
 			platformService.SetGlobalProgressBar (progress);
 		}
 
-		public static void ShowGlobalProgressIndeterminate ()
+		public void ShowGlobalProgressIndeterminate ()
 		{
 			platformService.ShowGlobalProgressBarIndeterminate ();
 		}
 
-		public static void ShowGlobalProgressError ()
+		public void ShowGlobalProgressError ()
 		{
 			platformService.ShowGlobalProgressBarError ();
 		}
 
-		public static IEnumerable<DesktopApplication> GetApplications (string filename)
+		public IEnumerable<DesktopApplication> GetApplications (string filename)
 		{
 			return PlatformService.GetApplications (filename);
 		}
 
-		[Obsolete ("Use FontService")]
-		public static string DefaultMonospaceFont {
+		internal string DefaultMonospaceFont {
 			get { return PlatformService.DefaultMonospaceFont; }
 		}
-		
-		public static string PlatformName {
+
+		public string PlatformName {
 			get { return PlatformService.Name; }
 		}
 
-		[Obsolete]
-		public static string DefaultControlLeftRightBehavior {
-			get {
-				return PlatformService.DefaultControlLeftRightBehavior;
-			}
-		}
-		
-		public static void ShowUrl (string url)
+		public void ShowUrl (string url)
 		{
 			PlatformService.ShowUrl (url);
 		}
-		
-		public static void OpenFile (string filename)
+
+		public void OpenFile (string filename)
 		{
 			PlatformService.OpenFile (filename);
 		}
 
-		public static void OpenFolder (FilePath folderPath, params FilePath[] selectFiles)
+		public void OpenFolder (FilePath folderPath, params FilePath [] selectFiles)
 		{
 			PlatformService.OpenFolder (folderPath, selectFiles);
 		}
 
-		public static string GetMimeTypeForUri (string uri)
+		public string GetMimeTypeForRoslynLanguage (string roslynLanguage)
+			=> MimeTypeCatalog.Instance.GetMimeTypeForRoslynLanguage (roslynLanguage);
+
+		public IEnumerable<string> GetMimeTypeInheritanceChainForRoslynLanguage (string roslynLanguage)
+			=> MimeTypeCatalog.Instance.GetMimeTypeInheritanceChainForRoslynLanguage (roslynLanguage);
+
+		public string GetRoslynLanguageForMimeType (string mimeType)
+			=> MimeTypeCatalog.Instance.GetRoslynLanguageForMimeType (mimeType);
+
+		public string GetMimeTypeForContentType (IContentType contentType)
+			=> MimeTypeCatalog.Instance.GetMimeTypeForContentType (contentType);
+
+		public IEnumerable<string> GetMimeTypeInheritanceChainForContentType (IContentType contentType)
+			=> MimeTypeCatalog.Instance.GetMimeTypeInheritanceChainForContentType (contentType);
+
+		public IContentType GetContentTypeForMimeType (string mimeType)
+			=> MimeTypeCatalog.Instance.GetContentTypeForMimeType (mimeType);
+
+		public string GetMimeTypeForUri (string uri)
 		{
 			return PlatformService.GetMimeTypeForUri (uri);
 		}
-		
-		public static string GetMimeTypeDescription (string mimeType)
+
+		public string GetMimeTypeDescription (string mimeType)
 		{
 			return PlatformService.GetMimeTypeDescription (mimeType);
 		}
-		
-		public static bool GetMimeTypeIsText (string mimeType)
+
+		public bool GetMimeTypeIsText (string mimeType)
 		{
-			return PlatformService.GetMimeTypeIsText (mimeType);
+			return MimeTypeCatalog.Instance.GetMimeTypeIsText (mimeType);
 		}
 
-		public static bool GetFileIsText (string file, string mimeType = null)
+		public bool GetFileIsText (string file, string mimeType = null)
 		{
 			if (mimeType == null) {
 				mimeType = GetMimeTypeForUri (file);
 			}
-
-			if (mimeType != "application/octet-stream") {
+			if (mimeType != "application/octet-stream" && mimeType != "application/x-msdownload") {
 				return GetMimeTypeIsText (mimeType);
 			}
 
 			if (!File.Exists (file))
 				return false;
 
-			return !MonoDevelop.Core.Text.TextFileUtility.IsBinary (file); 
+			return !MonoDevelop.Core.Text.TextFileUtility.IsBinary (file);
 		}
 
-		public async static Task<bool> GetFileIsTextAsync (string file, string mimeType = null)
+		public async Task<bool> GetFileIsTextAsync (string file, string mimeType = null)
 		{
 			if (mimeType == null) {
 				mimeType = GetMimeTypeForUri (file);
@@ -184,7 +225,7 @@ namespace MonoDevelop.Ide
 					return false;
 
 				using (var f = File.OpenRead (file)) {
-					var buf = new byte[8192];
+					var buf = new byte [8192];
 					var read = f.Read (buf, 0, buf.Length);
 					for (int i = 0; i < read; i++)
 						if (buf [i] == 0)
@@ -194,65 +235,65 @@ namespace MonoDevelop.Ide
 			});
 		}
 
-		public static bool GetMimeTypeIsSubtype (string subMimeType, string baseMimeType)
+		public bool GetMimeTypeIsSubtype (string subMimeType, string baseMimeType)
 		{
-			return PlatformService.GetMimeTypeIsSubtype (subMimeType, baseMimeType);
-		}
-		
-		public static IEnumerable<string> GetMimeTypeInheritanceChain (string mimeType)
-		{
-			return PlatformService.GetMimeTypeInheritanceChain (mimeType);
+			return MimeTypeCatalog.Instance.GetMimeTypeIsSubtype (subMimeType, baseMimeType);
 		}
 
-		public static IEnumerable<string> GetMimeTypeInheritanceChainForFile (string filename)
+		public IEnumerable<string> GetMimeTypeInheritanceChain (string mimeType)
+		{
+			return MimeTypeCatalog.Instance.GetMimeTypeInheritanceChain (mimeType);
+		}
+
+		public IEnumerable<string> GetMimeTypeInheritanceChainForFile (string filename)
 		{
 			return GetMimeTypeInheritanceChain (GetMimeTypeForUri (filename));
 		}
-		
-		public static Xwt.Drawing.Image GetIconForFile (string filename)
+
+		public Xwt.Drawing.Image GetIconForFile (string filename)
 		{
 			return PlatformService.GetIconForFile (filename);
 		}
 
-		public static Xwt.Drawing.Image GetIconForFile (string filename, Gtk.IconSize size)
+		public Xwt.Drawing.Image GetIconForFile (string filename, Gtk.IconSize size)
 		{
 			return PlatformService.GetIconForFile (filename).WithSize (size);
 		}
-		
-		public static Xwt.Drawing.Image GetIconForType (string mimeType)
+
+		public Xwt.Drawing.Image GetIconForType (string mimeType)
 		{
 			return PlatformService.GetIconForType (mimeType);
 		}
 
-		public static Xwt.Drawing.Image GetIconForType (string mimeType, Gtk.IconSize size)
+		public Xwt.Drawing.Image GetIconForType (string mimeType, Gtk.IconSize size)
 		{
 			return PlatformService.GetIconForType (mimeType).WithSize (size);
 		}
 
-		internal static bool SetGlobalMenu (MonoDevelop.Components.Commands.CommandManager commandManager,
+		internal bool SetGlobalMenu (MonoDevelop.Components.Commands.CommandManager commandManager,
 			string commandMenuAddinPath, string appMenuAddinPath)
 		{
 			return PlatformService.SetGlobalMenu (commandManager, commandMenuAddinPath, appMenuAddinPath);
 		}
-		
+
 		// Used for preserve the file attributes when monodevelop opens & writes a file.
 		// This should work on unix & mac platform.
-		public static object GetFileAttributes (string fileName)
+		public object GetFileAttributes (string fileName)
 		{
 			return PlatformService.GetFileAttributes (fileName);
 		}
-		
-		public static void SetFileAttributes (string fileName, object attributes)
+
+		public void SetFileAttributes (string fileName, object attributes)
 		{
 			PlatformService.SetFileAttributes (fileName, attributes);
 		}
 
-		public static Xwt.Rectangle GetUsableMonitorGeometry (int screenNumber, int monitorNumber)
+		public Xwt.Rectangle GetUsableMonitorGeometry (int screenNumber, int monitorNumber)
 		{
 			return PlatformService.GetUsableMonitorGeometry (screenNumber, monitorNumber);
 		}
-		
-		public static bool CanOpenTerminal {
+
+		public bool CanOpenTerminal {
 			get {
 				return PlatformService.CanOpenTerminal;
 			}
@@ -264,21 +305,22 @@ namespace MonoDevelop.Ide
 		/// <param name="workingDirectory">Working directory.</param>
 		/// <param name="environmentVariables">Environment variables.</param>
 		/// <param name="windowTitle">Window title.</param>
-		public static void OpenTerminal (
+		public void OpenTerminal (
 			FilePath workingDirectory,
 			IDictionary<string, string> environmentVariables = null,
 			string windowTitle = null)
 		{
 			PlatformService.OpenTerminal (workingDirectory, environmentVariables, windowTitle);
 		}
-		
-		public static RecentFiles RecentFiles {
+
+		public RecentFiles RecentFiles {
 			get {
+				PlatformService.RecentFiles.DesktopService = this;
 				return PlatformService.RecentFiles;
 			}
 		}
-		
-		static void NotifyFileRemoved (object sender, FileEventArgs args)
+
+		void NotifyFileRemoved (object sender, FileEventArgs args)
 		{
 			foreach (FileEventInfo e in args) {
 				if (!e.IsDirectory) {
@@ -286,87 +328,106 @@ namespace MonoDevelop.Ide
 				}
 			}
 		}
-		
-		static void NotifyFileRenamed (object sender, FileCopyEventArgs args)
+
+		void NotifyFileRenamed (object sender, FileCopyEventArgs args)
 		{
-			foreach (FileCopyEventInfo e in args) {
+			if (args.IsExternal)
+				return;
+
+			foreach (FileEventInfo e in args) {
 				if (!e.IsDirectory) {
 					PlatformService.RecentFiles.NotifyFileRenamed (e.SourceFile, e.TargetFile);
 				}
 			}
 		}
-		
-		internal static string GetUpdaterUrl ()
+
+		internal string GetUpdaterUrl ()
 		{
 			return PlatformService.GetUpdaterUrl ();
 		}
-		
-		internal static IEnumerable<string> GetUpdaterEnvironmentFlags ()
+
+		internal IEnumerable<string> GetUpdaterEnvironmentFlags ()
 		{
 			return PlatformService.GetUpdaterEnviromentFlags ();
 		}
-		
-		internal static void StartUpdatesInstaller (FilePath installerDataFile, FilePath updatedInstallerPath)
+
+		internal void StartUpdatesInstaller (FilePath installerDataFile, FilePath updatedInstallerPath)
 		{
 			PlatformService.StartUpdatesInstaller (installerDataFile, updatedInstallerPath);
 		}
-		
+
 		/// <summary>
 		/// Grab the desktop focus for the window.
 		/// </summary>
-		internal static void GrabDesktopFocus (Gtk.Window window)
+		internal void GrabDesktopFocus (Gtk.Window window)
 		{
 			PlatformService.GrabDesktopFocus (window);
 		}
 
-		public static void RemoveWindowShadow (Window window)
+		public Window GetParentForModalWindow ()
+		{
+			return PlatformService.GetParentForModalWindow ();
+		}
+
+		public Window GetFocusedTopLevelWindow ()
+		{
+			return PlatformService.GetFocusedTopLevelWindow ();
+		}
+
+		public void FocusWindow (Window window)
+		{
+			if (window != null)
+				PlatformService.FocusWindow (window);
+		}
+
+		public void RemoveWindowShadow (Window window)
 		{
 			PlatformService.RemoveWindowShadow (window);
 		}
 
 
-		public static void SetMainWindowDecorations (Window window)
+		public void SetMainWindowDecorations (Window window)
 		{
 			PlatformService.SetMainWindowDecorations (window);
 		}
 
-		internal static MainToolbarController CreateMainToolbar (Gtk.Window window)
+		internal MainToolbarController CreateMainToolbar (Gtk.Window window)
 		{
 			return new MainToolbarController (PlatformService.CreateMainToolbar (window));
 		}
 
-		internal static void AttachMainToolbar (Gtk.VBox parent, MainToolbarController toolbar)
+		internal void AttachMainToolbar (Gtk.VBox parent, MainToolbarController toolbar)
 		{
 			PlatformService.AttachMainToolbar (parent, toolbar.ToolbarView);
 			toolbar.Initialize ();
 		}
 
-		public static bool GetIsFullscreen (Window window)
+		public bool GetIsFullscreen (Window window)
 		{
 			return PlatformService.GetIsFullscreen (window);
 		}
 
-		public static void SetIsFullscreen (Window window, bool isFullscreen)
+		public void SetIsFullscreen (Window window, bool isFullscreen)
 		{
 			PlatformService.SetIsFullscreen (window, isFullscreen);
 		}
 
-		public static bool IsModalDialogRunning ()
+		public bool IsModalDialogRunning ()
 		{
 			return PlatformService.IsModalDialogRunning ();
 		}
 
-		internal static void AddChildWindow (Gtk.Window parent, Gtk.Window child)
+		internal void AddChildWindow (Gtk.Window parent, Gtk.Window child)
 		{
 			PlatformService.AddChildWindow (parent, child);
 		}
 
-		internal static void RemoveChildWindow (Gtk.Window parent, Gtk.Window child)
+		internal void RemoveChildWindow (Gtk.Window parent, Gtk.Window child)
 		{
 			PlatformService.RemoveChildWindow (parent, child);
 		}
 
-		internal static void PlaceWindow (Gtk.Window window, int x, int y, int width, int height)
+		internal void PlaceWindow (Gtk.Window window, int x, int y, int width, int height)
 		{
 			PlatformService.PlaceWindow (window, x, y, width, height);
 		}
@@ -376,9 +437,36 @@ namespace MonoDevelop.Ide
 		/// </summary>
 		/// <returns> false if the user cancels exiting. </returns>
 		/// <param name="reopenWorkspace"> true to reopen current workspace. </param>
-		internal static void RestartIde (bool reopenWorkspace)
+		internal void RestartIde (bool reopenWorkspace)
 		{
 			PlatformService.RestartIde (reopenWorkspace);
+		}
+
+		public bool AccessibilityInUse {
+			get {
+				return PlatformService.AccessibilityInUse;
+			}
+		}
+
+		public bool AccessibilityKeyboardFocusInUse {
+			get {
+				return PlatformService.AccessibilityKeyboardFocusInUse;
+			}
+		}
+
+		internal string GetNativeRuntimeDescription () => PlatformService.GetNativeRuntimeDescription ();
+
+		public ThermalMonitor ThermalMonitor { get; private set; }
+		public MemoryMonitor MemoryMonitor { get; private set; }
+
+		IPlatformTelemetryDetails platformTelemetryDetails;
+
+		public IPlatformTelemetryDetails PlatformTelemetry {
+			get {
+				if (platformTelemetryDetails == null)
+					platformTelemetryDetails = PlatformService.CreatePlatformTelemetryDetails ();
+				return platformTelemetryDetails;
+			}
 		}
 	}
 }

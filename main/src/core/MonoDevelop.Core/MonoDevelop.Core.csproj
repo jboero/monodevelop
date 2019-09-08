@@ -1,18 +1,24 @@
-<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <Import Project="..\..\..\MonoDevelop.props" />
+  <Import Project="$(ReferencesGtk)" />
+  <PropertyGroup>
+    <ReferencesVSEditorCopyToOutput>true</ReferencesVSEditorCopyToOutput>
+  </PropertyGroup>
+  <Import Project="$(ReferencesVSEditor)" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProductVersion>8.0.30703</ProductVersion>
-    <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>{7525BB88-6142-4A26-93B9-A30C6983390A}</ProjectGuid>
     <OutputType>Library</OutputType>
-    <AssemblyName>MonoDevelop.Core</AssemblyName>
-    <RootNamespace>MonoDevelop.Core</RootNamespace>
     <BuildInfo>..\..\..\build\bin\buildinfo</BuildInfo>
     <VcRevision>..\..\..\vcrevision</VcRevision>
+    <ConfigureScript>$(MSBuildProjectDirectory)\..\..\..\..\scripts\configure.cs</ConfigureScript>
+    <ConfigureScriptExe>$(MSBuildProjectDirectory)\..\..\..\..\scripts\configure.exe</ConfigureScriptExe>
+    <FullBuildInfo>fullbuildinfo</FullBuildInfo>
     <MonoLauncher Condition=" '$(VisualStudioVersion)' == '' ">mono </MonoLauncher>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>$(MDFrameworkVersion)</TargetFrameworkVersion>
+    <OutputPath>..\..\..\build\bin\</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <Choose>
     <When Condition=" Exists('c:\Program Files\Git\bin\git.exe') ">
@@ -41,124 +47,150 @@
       </PropertyGroup>
     </Otherwise>
   </Choose>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>True</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>False</Optimize>
-    <OutputPath>..\..\..\build\bin\</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <Execution>
-      <Execution clr-version="Net_2_0" />
-    </Execution>
-    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-    <DefineConstants>DEBUG</DefineConstants>
-    <NoWarn>1591;1573</NoWarn>
-    <DocumentationFile>..\..\..\build\bin\MonoDevelop.Core.xml</DocumentationFile>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>True</Optimize>
-    <OutputPath>..\..\..\build\bin\</OutputPath>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <Execution>
-      <Execution clr-version="Net_2_0" />
-    </Execution>
-    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-    <DebugSymbols>true</DebugSymbols>
-    <NoWarn>1591;1573</NoWarn>
-    <DocumentationFile>..\..\..\build\bin\MonoDevelop.Core.xml</DocumentationFile>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'DebugWin32|AnyCPU' ">
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>..\..\..\build\bin\</OutputPath>
-    <DefineConstants>DEBUG;WINDOWS</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-    <DocumentationFile>..\..\..\build\bin\MonoDevelop.Core.xml</DocumentationFile>
-    <Execution>
-      <Execution clr-version="Net_2_0" />
-    </Execution>
-    <NoWarn>1591;1573</NoWarn>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' " />
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'DebugWin32|AnyCPU' " />
   <ItemGroup>
-    <Reference Include="System" />
-    <Reference Include="Mono.Posix" />
     <Reference Include="System.Xml" />
-    <Reference Include="System.Runtime.Remoting" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
-    <Reference Include="monodoc, Version=1.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756">
-    </Reference>
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.InteropServices.RuntimeInformation" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Web" />
     <Reference Include="System.ServiceModel" />
     <Reference Include="Microsoft.CSharp" />
-    <Reference Include="Microsoft.Build.Engine" />
-    <Reference Include="Microsoft.Build" />
-    <Reference Include="Microsoft.Build.Utilities.v12.0, Version=12.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a" />
-    <Reference Include="System.Reflection.Metadata">
-      <HintPath>..\..\..\external\roslyn\Binaries\Release\System.Reflection.Metadata.dll</HintPath>
+    <Reference Include="Microsoft.Build">
+      <Private>False</Private>
+      <HintPath>$(MSBuildToolsPath)\Microsoft.Build.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Build.Framework">
+      <Private>False</Private>
+      <HintPath>$(MSBuildToolsPath)\Microsoft.Build.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Build.Utilities.Core">
+      <Private>False</Private>
+      <HintPath>$(MSBuildToolsPath)\Microsoft.Build.Utilities.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Build.Tasks.Core">
+      <HintPath>$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ICSharpCode.SharpZipLib">
-      <HintPath>..\..\..\packages\SharpZipLib.0.86.0\lib\20\ICSharpCode.SharpZipLib.dll</HintPath>
+    <Reference Include="monodoc, Version=1.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756" />
+    <Reference Include="System" />
+    <Reference Include="System.IO.FileSystem" />
+    <Reference Include="System.IO.FileSystem.Primitives" />
+    <Reference Include="System.Runtime.Remoting" />
+    <Reference Include="System.Runtime.Serialization" />
+    <!-- disable this for now, it's absurdly noisy
+    <PackageReference Include="ClrHeapAllocationAnalyzer" Version="1.0.0.9" />
+    -->
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.1.2" PrivateAssets="runtime" />
+    <PackageReference Include="Microsoft.CodeAnalysis.EditorFeatures" Version="$(NuGetVersionRoslyn)" PrivateAssets="runtime" />
+    <PackageReference Include="Microsoft.VisualStudio.CodingConventions" Version="1.1.20180503.2" PrivateAssets="runtime" />
+    <PackageReference Include="Microsoft.VisualStudio.Composition" Version="$(NuGetVersionVSComposition)" ExcludeAssets="all" />
+    <!-- Need the net45 version, see https://github.com/mono/mono/issues/12461 -->
+    <Reference Include="$(NuGetPackageRoot)microsoft.visualstudio.composition/$(NuGetVersionVSComposition)/lib/net45/Microsoft.VisualStudio.Composition.dll">
+      <NuGetPackageId>Microsoft.VisualStudio.Composition</NuGetPackageId>
+      <Private>true</Private>
     </Reference>
-    <Reference Include="System.Collections.Immutable">
-      <HintPath>..\..\..\packages\System.Collections.Immutable.1.1.37\lib\portable-net45+win8+wp8+wpa81\System.Collections.Immutable.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Composition.AttributedModel">
-      <HintPath>..\..\..\packages\Microsoft.Composition.1.0.27\lib\portable-net45+win8+wp8+wpa81\System.Composition.AttributedModel.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Composition.Convention">
-      <HintPath>..\..\..\packages\Microsoft.Composition.1.0.27\lib\portable-net45+win8+wp8+wpa81\System.Composition.Convention.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Composition.Hosting">
-      <HintPath>..\..\..\packages\Microsoft.Composition.1.0.27\lib\portable-net45+win8+wp8+wpa81\System.Composition.Hosting.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Composition.Runtime">
-      <HintPath>..\..\..\packages\Microsoft.Composition.1.0.27\lib\portable-net45+win8+wp8+wpa81\System.Composition.Runtime.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Composition.TypedParts">
-      <HintPath>..\..\..\packages\Microsoft.Composition.1.0.27\lib\portable-net45+win8+wp8+wpa81\System.Composition.TypedParts.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Reflection.Metadata">
-      <HintPath>..\..\..\packages\System.Reflection.Metadata.1.2.0\lib\portable-net45+win8\System.Reflection.Metadata.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.Common.1.3.2\lib\net45\Microsoft.CodeAnalysis.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.CSharp">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.CSharp.1.3.2\lib\net45\Microsoft.CodeAnalysis.CSharp.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.VisualBasic">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.VisualBasic.1.3.2\lib\net45\Microsoft.CodeAnalysis.VisualBasic.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.Workspaces.Desktop">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.Workspaces.Common.1.3.2\lib\net45\Microsoft.CodeAnalysis.Workspaces.Desktop.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.Workspaces">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.Workspaces.Common.1.3.2\lib\net45\Microsoft.CodeAnalysis.Workspaces.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.CSharp.Workspaces.1.3.2\lib\net45\Microsoft.CodeAnalysis.CSharp.Workspaces.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.VisualBasic.Workspaces.1.3.2\lib\net45\Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.Features">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.Features.1.3.2\lib\net45\Microsoft.CodeAnalysis.Features.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.CodeAnalysis.CSharp.Features">
-      <HintPath>..\..\..\packages\Microsoft.CodeAnalysis.CSharp.Features.1.3.2\lib\net45\Microsoft.CodeAnalysis.CSharp.Features.dll</HintPath>
-    </Reference>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>..\..\..\packages\Newtonsoft.Json.8.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
-    </Reference>
+    <PackageReference Include="Mono.Cecil" Version="$(NuGetVersionCecil)" PrivateAssets="runtime" />
+    <PackageReference Include="MonoDevelopDev.Analyzers" Version="$(NuGetVersionMonoDevelopAnalyzers)" />
+    <PackageReference Include="Newtonsoft.Json" Version="$(NuGetVersionNewtonsoftJson)" PrivateAssets="runtime" />
+    <PackageReference Include="SharpZipLib" Version="1.1.0" PrivateAssets="runtime" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="1.1.12" PrivateAssets="runtime,build" />
+    <PackageReference Include="StreamJsonRpc" Version="1.5.43" PrivateAssets="runtime" />
+    <PackageReference Include="System.ValueTuple" Version="4.5.0" PrivateAssets="runtime" />
+    <!-- remove this as it conflicts with the one in mscorlib. mono bug? -->
+    <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" ExcludeAssets="all" />
+    <!-- update this to a version that doesn't crash -->
+    <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="16.0.96-beta" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="3.0.0-preview4.19216.2" PrivateAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <IncludeCopyLocal Include="Humanizer.dll" />
+    <IncludeCopyLocal Include="ICSharpCode.Decompiler.dll" />
+    <IncludeCopyLocal Include="ICSharpCode.SharpZipLib.dll" />
+    <IncludeCopyLocal Include="Microsoft.Build.Locator.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.CSharp.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.CSharp.EditorFeatures.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.CSharp.Features.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.CSharp.Workspaces.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.EditorFeatures.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.EditorFeatures.Text.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.EditorFeatures.Wpf.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.Elfie.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.ExternalAccess.MonoDevelop.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.Features.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.FlowAnalysis.Utilities.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.InteractiveHost.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.Scripting.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.VisualBasic.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.VisualBasic.EditorFeatures.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.VisualBasic.Features.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces.dll" />
+    <IncludeCopyLocal Include="Microsoft.CodeAnalysis.Workspaces.dll" />
+    <IncludeCopyLocal Include="Microsoft.DiaSymReader.dll" />
+    <IncludeCopyLocal Include="Microsoft.Extensions.ObjectPool.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.CodingConventions.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Composition.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Composition.NetFxAttributes.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.CoreUtility.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.ImageCatalog.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Imaging.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Imaging.Interop.14.0.DesignTime.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.InteractiveWindow.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Language.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Language.Intellisense.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Language.NavigateTo.Interfaces.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Language.StandardClassification.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.OLE.Interop.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Platform.VSEditor.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.10.0.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.11.0.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.12.0.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.14.0.DesignTime.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.8.0.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Shell.Interop.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Text.Data.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Text.Internal.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Text.Logic.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Text.UI.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.UI.Text.Cocoa.View.Implementation.dll" Condition="$(Configuration.Contains('Mac'))" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Text.UI.Wpf.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.TextManager.Interop.8.0.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.TextManager.Interop.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Threading.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Utilities.dll" />
+    <IncludeCopyLocal Include="Microsoft.VisualStudio.Validation.dll" />
+    <IncludeCopyLocal Include="Mono.Addins.dll" />
+    <IncludeCopyLocal Include="Mono.Addins.Setup.dll" />
+    <IncludeCopyLocal Include="Mono.Cecil.dll" />
+    <IncludeCopyLocal Include="Mono.Cecil.Mdb.dll" />
+    <IncludeCopyLocal Include="Mono.Cecil.Pdb.dll" />
+    <IncludeCopyLocal Include="Mono.Cecil.Rocks.dll" />
+    <IncludeCopyLocal Include="Newtonsoft.Json.dll" />
+    <IncludeCopyLocal Include="SQLitePCLRaw.batteries_e_sqlite3.dll" />
+    <IncludeCopyLocal Include="SQLitePCLRaw.batteries_v2.dll" />
+    <IncludeCopyLocal Include="SQLitePCLRaw.core.dll" />
+    <IncludeCopyLocal Include="SQLitePCLRaw.provider.e_sqlite3.dll" />
+    <IncludeCopyLocal Include="StreamJsonRpc.dll" />
+    <IncludeCopyLocal Include="System.Buffers.dll" />
+    <IncludeCopyLocal Include="System.Collections.Immutable.dll" />
+    <IncludeCopyLocal Include="System.Composition.AttributedModel.dll" />
+    <IncludeCopyLocal Include="System.Composition.Convention.dll" />
+    <IncludeCopyLocal Include="System.Composition.Hosting.dll" />
+    <IncludeCopyLocal Include="System.Composition.Runtime.dll" />
+    <IncludeCopyLocal Include="System.Composition.TypedParts.dll" />
+    <IncludeCopyLocal Include="System.Memory.dll" />
+    <IncludeCopyLocal Include="System.Numerics.Vectors.dll" />
+    <IncludeCopyLocal Include="System.Reflection.Metadata.dll" />
+    <IncludeCopyLocal Include="System.Runtime.CompilerServices.Unsafe.dll" />
+    <IncludeCopyLocal Include="System.Text.Encoding.CodePages.dll" />
+    <IncludeCopyLocal Include="System.Threading.Tasks.Dataflow.dll" />
+    <IncludeCopyLocal Include="System.Threading.Tasks.Extensions.dll" />
+    <IncludeCopyLocal Include="System.ValueTuple.dll" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="MonoDevelop.Core\StringParserService.cs" />
@@ -262,7 +294,6 @@
     <Compile Include="MonoDevelop.Core.Assemblies\MsNetTargetRuntimeFactory.cs" />
     <Compile Include="MonoDevelop.Core.Execution\MsNetExecutionHandler.cs" />
     <Compile Include="MonoDevelop.Core.Assemblies\PcFileCache.cs" />
-    <Compile Include="MonoDevelop.Core.AddIns\TargetFrameworkNode.cs" />
     <Compile Include="MonoDevelop.Core.Assemblies\TargetFrameworkBackend.cs" />
     <Compile Include="MonoDevelop.Core.Assemblies\MonoFrameworkBackend.cs" />
     <Compile Include="MonoDevelop.Core.Assemblies\MsNetFrameworkBackend.cs" />
@@ -291,6 +322,7 @@
     <Compile Include="Mono.Options.cs" />
     <Compile Include="MonoDevelop.Core.Logging\InstrumentationLogger.cs" />
     <Compile Include="MonoDevelop.Core.Instrumentation\TimerCounter.cs" />
+    <Compile Include="MonoDevelop.Projects\AppliesToAttribute.cs" />
     <Compile Include="MonoDevelop.Projects\ProjectService.cs" />
     <Compile Include="MonoDevelop.Projects\ProjectPathItemPropertyAttribute.cs" />
     <Compile Include="MonoDevelop.Projects\SolutionConfiguration.cs" />
@@ -366,6 +398,7 @@
     <Compile Include="MonoDevelop.Projects.Extensions\IAssemblyReferenceHandler.cs" />
     <Compile Include="MonoDevelop.Projects.MD1\MD1DotNetProjectHandler.cs" />
     <Compile Include="MonoDevelop.Projects.MD1\MD1FileFormat.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\ConfigFileUtilities.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildFileFormat.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\SlnFileFormat.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildProjectService.cs" />
@@ -515,6 +548,7 @@
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildEvaluationContext.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildImport.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildObject.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildSdk.cs" />
     <Compile Include="MonoDevelop.Projects\IPropertySet.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\IMSBuildPropertySet.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildPropertyGroupEvaluated.cs" />
@@ -564,7 +598,6 @@
     <Compile Include="MonoDevelop.Projects\ExportProjectItemTypeAttribute.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildProjectInstance.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildEngineV12.cs" />
-    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildEngineV4.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildEngineManager.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild.Conditions\ExpressionEvaluationException.cs" />
     <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildValueType.cs" />
@@ -619,11 +652,100 @@
     <Compile Include="MonoDevelop.Core\ErrorHelper.cs" />
     <Compile Include="MonoDevelop.Projects\DotNetProjectRunConfiguration.cs" />
     <Compile Include="MonoDevelop.Core\StructEqualityComparer.cs" />
+    <Compile Include="MonoDevelop.Projects\SimpleExpressionEvaluator.cs" />
+    <Compile Include="MonoDevelop.Projects\PackageDependency.cs" />
+    <Compile Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.MSBuild\RemoteBuildEngineMessages.cs">
+      <Link>MonoDevelop.Projects.MSBuild\RemoteBuildEngineMessages.cs</Link>
+    </Compile>
+    <Compile Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.MSBuild\MSBuildEvaluatedItem.cs">
+      <Link>MonoDevelop.Projects.MSBuild\MSBuildEvaluatedItem.cs</Link>
+    </Compile>
+    <Compile Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.MSBuild\MSBuildResult.cs">
+      <Link>MonoDevelop.Projects.MSBuild\MSBuildResult.cs</Link>
+    </Compile>
+    <Compile Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.MSBuild\MSBuildTargetResult.cs">
+      <Link>MonoDevelop.Projects.MSBuild\MSBuildTargetResult.cs</Link>
+    </Compile>
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildEvent.cs" />
+    <Compile Include="MonoDevelop.Projects\MSBuildLogger.cs" />
+    <Compile Include="MonoDevelop.Projects.Extensions\ImportSearchPathExtensionNode.cs" />
+    <Compile Include="MonoDevelop.Projects.Extensions\AppliesToCondition.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\DefaultSdkResolver.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\SdkResolution.cs" />
+    <Compile Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.MSBuildResolver\Resolver.cs">
+      <Link>MonoDevelop.Projects.MSBuild\Resolver.cs</Link>
+    </Compile>
+    <Compile Include="MonoDevelop.Projects.MSBuild\SdkVersion.cs" />
+    <Compile Include="MonoDevelop.Projects\ProjectConfigurationItem.cs" />
+    <Compile Include="MonoDevelop.Core\StringInternPool.cs" />
+    <Compile Include="MonoDevelop.Core\Hash.cs" />
+    <Compile Include="MonoDevelop.Core\StringTable.cs" />
+    <Compile Include="MonoDevelop.Core.AddIns\FalseCondition.cs" />
+    <Compile Include="MonoDevelop.Core.AddIns\TrueCondition.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildSolutionExtension.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\RemoteBuildEngine.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\RemoteBuildEngineManager.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\FileUtilities.cs" />
+    <Compile Include="MonoDevelop.Projects\ProgressEvent.cs" />
+    <Compile Include="MonoDevelop.Core.Setup\UpdateChannel.cs" />
+    <Compile Include="MonoDevelop.Core\StringBuilderCache.cs" />
+    <Compile Include="MonoDevelop.Core.Collections\LookupTable.cs" />
+    <Compile Include="MonoDevelop.Core.Assemblies\FrameworkInfo.cs" />
+    <Compile Include="MonoDevelop.Projects\FileWatcherService.cs" />
+    <Compile Include="MonoDevelop.Core\SynchronizationContextTaskScheduler.cs" />
+    <Compile Include="MonoDevelop.Core\ConfigurationProperty.cs" />
+    <Compile Include="MonoDevelop.FSW\PathTree.cs" />
+    <Compile Include="MonoDevelop.FSW\PathTreeNode.cs" />
+    <Compile Include="MemoryExtensions.cs" />
+    <Compile Include="MonoDevelop.Core.Instrumentation\BucketTimings.cs" />
+    <Compile Include="MonoDevelop.Utilities\RaceChecker.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\SdkResolverManifest.cs" />
+    <Compile Include="MonoDevelop.Core.FeatureConfiguration\FeatureSwitchService.cs" />
+    <Compile Include="MonoDevelop.Core.FeatureConfiguration\FeatureSwitchCondition.cs" />
+    <Compile Include="MonoDevelop.Core.Web\HttpMessageHandlerProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Web\HttpClientProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Web\DefaultHttpMessageHandlerProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Web\ProxyAuthenticationHandler.cs" />
+    <Compile Include="MonoDevelop.Core.Web\IProxyCredentialCache.cs" />
+    <Compile Include="MonoDevelop.Core.Web\ICredentialService.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialService.cs" />
+    <Compile Include="MonoDevelop.Core.Web\IAsyncCredentialProvider.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialResponse.cs" />
+    <Compile Include="MonoDevelop.Core.Web\CredentialStatus.cs" />
+    <Compile Include="MonoDevelop.Core.Web\HttpSourceAuthenticationHandler.cs" />
+    <Compile Include="MonoDevelop.Core.Web\AmbientAuthenticationState.cs" />
+    <Compile Include="MonoDevelop.Core.Web\HttpSourceCredentials.cs" />
+    <Compile Include="MonoDevelop.Core.Web\HttpClientSettings.cs" />
+    <Compile Include="MonoDevelop.Core.Web\IHttpCredentialsHandler.cs" />
+    <Compile Include="MonoDevelop.Core.Web\DefaultHttpClientHandler.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildProcessService.cs" />
+    <Compile Include="MonoDevelop.Core.FeatureConfiguration\IFeatureSwitchController.cs" />
+    <Compile Include="MonoDevelop.Core\Service.cs" />
+    <Compile Include="MonoDevelop.Core\ServiceProvider.cs" />
+    <Compile Include="MonoDevelop.Core\IService.cs" />
+    <Compile Include="MonoDevelop.Core\BasicServiceProvider.cs" />
+    <Compile Include="MonoDevelop.Core.AddIns\PlatformConditionAttribute.cs" />
+    <Compile Include="MonoDevelop.Core\CoreServices.cs" />
+    <Compile Include="MonoDevelop.Core.Assemblies\AssemblyUtilities.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildItemDefinitionGroup.cs" />
+    <Compile Include="MonoDevelop.Projects\SdkProjectExtension.cs" />
+    <Compile Include="MonoDevelop.Projects\SdkProjectReader.cs" />
+    <Compile Include="MonoDevelop.Projects.MSBuild\MSBuildSdkProject.cs" />
+    <Compile Include="MonoDevelop.Projects\SdkProjectShortTargetFramework.cs" />
+    <Compile Include="MonoDevelop.Utilities\SampleProfiler.cs" />
+    <Compile Include="MonoDevelop.Core\PooledListPolicy.cs" />
+    <Compile Include="CoreExtensions.IEnumerable.cs" />
+    <Compile Include="CoreExtensions.Memoize.cs" />
+    <Compile Include="CoreExtensions.EventHandlers.cs" />
+    <Compile Include="CoreExtensions.Array.cs" />
+    <Compile Include="CoreExtensions.ReaderWriterLockSlim.cs" />
+    <Compile Include="MonoDevelop.Projects\DotNetProjectFrameworkConfigurationSelector.cs" />
+    <Compile Include="MonoDevelop.Core.Execution\TargetFrameworkExecutionTarget.cs" />
+    <Compile Include="MonoDevelop.Projects\FrameworkReference.cs" />
+    <Compile Include="MonoDevelop.Core\DedicatedThreadScheduler.cs" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="Makefile.am" />
     <None Include="BuildVariables.cs.in" />
-    <None Include="packages.config" />
     <None Include="MSBuild\CodeSharing.Common.props">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -633,56 +755,12 @@
     <None Include="MSBuild\CodeSharing.CSharp.targets">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="..\..\..\packages\Microsoft.CodeAnalysis.Workspaces.Common.1.3.2\lib\net45\Microsoft.CodeAnalysis.Workspaces.Desktop.dll">
-      <Link>Microsoft.CodeAnalysis.Workspaces.Desktop.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="MonoDevelop.Core.addin.xml">
-      <LogicalName>MonoDevelop.Core.addin.xml</LogicalName>
-      <SubType>Designer</SubType>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_1_1.xml">
-      <LogicalName>framework_NET_1_1.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_2_0.xml">
-      <LogicalName>framework_NET_2_0.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_3_0.xml">
-      <LogicalName>framework_NET_3_0.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_3_5.xml">
-      <LogicalName>framework_NET_3_5.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_4_0.xml">
-      <LogicalName>framework_NET_4_0.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_4_5.xml">
-      <LogicalName>framework_NET_4_5.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_3_5_client.xml">
-      <LogicalName>framework_NET_3_5_client.xml</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="frameworks\framework_NET_4_0_client.xml">
-      <LogicalName>framework_NET_4_0_client.xml</LogicalName>
-    </EmbeddedResource>
+    <EmbeddedResource Include="MonoDevelop.Core.addin.xml" />
+    <EmbeddedResource Include="MonoDevelop.Projects.Policies\DefaultDotNetNamingPolicy.xml" />
   </ItemGroup>
-  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
-    <ProjectReference Include="..\MonoDevelop.Projects.Formats.MSBuild\MonoDevelop.Projects.Formats.MSBuild.csproj">
-      <Project>{A437F1A3-78DF-4F00-8053-D32A8B1EB679}</Project>
-      <Name>MonoDevelop.Projects.Formats.MSBuild</Name>
-      <Private>False</Private>
-    </ProjectReference>
-    <ProjectReference Include="..\..\..\external\cecil\Mono.Cecil.csproj">
-      <Project>{D68133BD-1E63-496E-9EDE-4FBDBF77B486}</Project>
-      <Name>Mono.Cecil</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\..\..\external\cecil\symbols\mdb\Mono.Cecil.Mdb.csproj">
-      <Project>{8559DD7F-A16F-46D0-A05A-9139FAEBA8FD}</Project>
-      <Name>Mono.Cecil.Mdb</Name>
-    </ProjectReference>
     <ProjectReference Include="..\..\..\external\mono-addins\Mono.Addins\Mono.Addins.csproj">
       <Project>{91DD5A2D-9FE3-4C3C-9253-876141874DAD}</Project>
       <Name>Mono.Addins</Name>
@@ -691,30 +769,29 @@
       <Project>{A85C9721-C054-4BD8-A1F3-0227615F0A36}</Project>
       <Name>Mono.Addins.Setup</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\external\ikvm\reflect\IKVM.Reflection.csproj">
-      <Project>{4CB170EF-DFE6-4A56-9E1B-A85449E827A7}</Project>
-      <Name>IKVM.Reflection</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\..\..\external\cecil\symbols\pdb\Mono.Cecil.Pdb.csproj">
-      <Project>{63E6915C-7EA4-4D76-AB28-0D7191EEA626}</Project>
-      <Name>Mono.Cecil.Pdb</Name>
-    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Content Include="MonoDevelop.Core.dll.config">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="MonoDevelop.Projects.SharedAssetsProjects\" />
-    <Folder Include="MSBuild\" />
+    <InternalsVisibleTo Include="MonoDevelop.Core.Tests" />
+    <InternalsVisibleTo Include="MonoDevelop.DotNetCore.Tests" />
+    <InternalsVisibleTo Include="MonoDevelop.Ide.Tests" />
+    <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
   </ItemGroup>
-  <Target Name="BeforeBuild" Inputs="BuildVariables.cs.in; $(MSBuildProjectDirectory)\..\..\..\..\version.config" Outputs="BuildVariables.cs">
+  <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+  <Target Name="BeforeBuild" Inputs="BuildVariables.cs.in; $(MSBuildProjectDirectory)\..\..\..\..\version.config" Outputs="BuildVariables.cs" Condition="Exists('$(MSBuildProjectDirectory)\..\..\..\..\version.config')">
+    <MakeDir Directories="$(FullBuildInfo)" />
+    <Csc Sources="$(ConfigureScript)" OutputAssembly="$(ConfigureScriptExe)" ToolExe="$(CscToolExe)" ToolPath="$(CscToolPath)" Condition="!Exists('$(ConfigureScriptExe)')" />
+    <Exec Command="$(MonoLauncher)&quot;$(ConfigureScriptExe)&quot; gen-buildinfo $(FullBuildInfo)" WorkingDirectory="$(MSBuildProjectDirectory)" />
     <Csc Sources="BuildVariables.gen.cs" OutputAssembly="BuildVariables.gen.exe" ToolExe="$(CscToolExe)" ToolPath="$(CscToolPath)" />
-    <Exec Command="$(MonoLauncher)$(MSBuildProjectDirectory)\BuildVariables.gen.exe ." WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <Exec Command="$(MonoLauncher)&quot;$(MSBuildProjectDirectory)\BuildVariables.gen.exe&quot; ." WorkingDirectory="$(MSBuildProjectDirectory)" />
     <Delete Files="BuildVariables.gen.exe" />
     <MakeDir Directories="$(OutputPath)" />
     <Exec Command="&quot;$(Git)&quot; rev-parse HEAD &gt; $(BuildInfo)" WorkingDirectory="$(MSBuildProjectDirectory)" IgnoreExitCode="True" />
     <Exec Command="&quot;$(Git)&quot; rev-parse HEAD &gt; $(VcRevision)" WorkingDirectory="$(MSBuildProjectDirectory)" IgnoreExitCode="True" />
+    <RemoveDir Directories="$(FullBuildInfo)" />
   </Target>
 </Project>

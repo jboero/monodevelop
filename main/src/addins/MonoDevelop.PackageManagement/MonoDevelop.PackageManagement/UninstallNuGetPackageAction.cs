@@ -32,6 +32,7 @@ using System.Threading.Tasks;
 using MonoDevelop.Core;
 using NuGet.PackageManagement;
 using NuGet.ProjectManagement;
+using NuGet.Protocol.Core.Types;
 
 namespace MonoDevelop.PackageManagement
 {
@@ -50,7 +51,7 @@ namespace MonoDevelop.PackageManagement
 			: this (
 				solutionManager,
 				dotNetProject,
-				new NuGetProjectContext (),
+				new NuGetProjectContext (solutionManager.Settings),
 				new MonoDevelopNuGetPackageManager (solutionManager),
 				PackageManagementServices.PackageManagementEvents)
 		{
@@ -77,6 +78,14 @@ namespace MonoDevelop.PackageManagement
 		public bool ForceRemove { get; set; }
 		public bool RemoveDependencies { get; set; }
 		public bool IsErrorWhenPackageNotInstalled { get; set; }
+
+		public PackageActionType ActionType {
+			get { return PackageActionType.Uninstall; }
+		}
+
+		internal IDotNetProject Project {
+			get { return dotNetProject; }
+		}
 
 		public void Execute ()
 		{
@@ -113,6 +122,7 @@ namespace MonoDevelop.PackageManagement
 				project,
 				actions,
 				context,
+				NullSourceCacheContext.Instance,
 				cancellationToken);
 
 			project.OnAfterExecuteActions (actions);

@@ -32,7 +32,7 @@ using MonoDevelop.Ide.Editor;
 
 namespace MonoDevelop.Ide.CodeCompletion
 {
-	interface ICompletionWidget
+	public interface ICompletionWidget
 	{
 		CodeCompletionContext CurrentCodeCompletionContext
 		{
@@ -58,5 +58,11 @@ namespace MonoDevelop.Ide.CodeCompletion
 		void SetCompletionText (CodeCompletionContext ctx, string partial_word, string complete_word, int completeWordOffset);
 
 		event EventHandler CompletionContextChanged;
+	}
+
+	// TODO: Join with ICompletionWidget on next public API break.
+	interface ICompletionWidget2 : ICompletionWidget
+	{
+		void NotifyCompletionWindowClosed ();
 	}
 }

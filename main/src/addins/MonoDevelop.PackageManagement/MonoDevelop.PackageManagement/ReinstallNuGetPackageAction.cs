@@ -46,7 +46,7 @@ namespace MonoDevelop.PackageManagement
 			: this (
 				project,
 				solutionManager,
-				new NuGetProjectContext (),
+				new NuGetProjectContext (solutionManager.Settings),
 				PackageManagementServices.PackageManagementEvents)
 		{
 		}
@@ -68,6 +68,10 @@ namespace MonoDevelop.PackageManagement
 
 		public string PackageId { get; set; }
 		public NuGetVersion Version { get; set; }
+
+		public PackageActionType ActionType {
+			get { return PackageActionType.Install; }
+		}
 
 		public void Execute ()
 		{

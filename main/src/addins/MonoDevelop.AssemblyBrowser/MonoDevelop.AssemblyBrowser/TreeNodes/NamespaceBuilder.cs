@@ -1,4 +1,4 @@
-//
+﻿//
 // NamespaceBuilder.cs
 //
 // Author:
@@ -34,13 +34,14 @@ using MonoDevelop.Ide.Gui.Components;
 using System.Collections.Generic;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Editor;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.AssemblyBrowser
 {
 	class NamespaceBuilder : AssemblyBrowserTypeNodeBuilder, IAssemblyBrowserNodeBuilder
 	{
 		public override Type NodeDataType {
-			get { return typeof(Namespace); }
+			get { return typeof(NamespaceData); }
 		}
 		
 		public NamespaceBuilder (AssemblyBrowserWidget widget) : base (widget)
@@ -53,17 +54,17 @@ namespace MonoDevelop.AssemblyBrowser
 			try {
 				if (thisNode == null || otherNode == null)
 					return -1;
-				var e1 = thisNode.DataItem as Namespace;
-				var e2 = otherNode.DataItem as Namespace;
+				var e1 = thisNode.DataItem as NamespaceData;
+				var e2 = otherNode.DataItem as NamespaceData;
 				
 				if (e1 == null && e2 == null)
 					return 0;
 				if (e1 == null)
-					return -1;
-				if (e2 == null)
 					return 1;
+				if (e2 == null)
+					return -1;
 				
-				return e1.Name.CompareTo (e2.Name);
+				return string.Compare (e1.Name, e2.Name, StringComparison.Ordinal);
 			} catch (Exception e) {
 				LoggingService.LogError ("Exception in assembly browser sort function.", e);
 				return -1;
@@ -72,23 +73,26 @@ namespace MonoDevelop.AssemblyBrowser
 		
 		public override string GetNodeName (ITreeNavigator thisNode, object dataObject)
 		{
-			Namespace ns = (Namespace)dataObject;
+			NamespaceData ns = (NamespaceData)dataObject;
 			return ns.Name;
 		}
 		
 		public override void BuildNode (ITreeBuilder treeBuilder, object dataObject, NodeInfo nodeInfo)
 		{
-			Namespace ns = (Namespace)dataObject;
+			NamespaceData ns = (NamespaceData)dataObject;
 			nodeInfo.Label = GLib.Markup.EscapeText (ns.Name);
 			nodeInfo.Icon = Context.GetIcon (MonoDevelop.Ide.Gui.Stock.NameSpace);
 		}
 		
 		public override void BuildChildNodes (ITreeBuilder ctx, object dataObject)
 		{
-			Namespace ns = (Namespace)dataObject;
-			bool publicOnly = Widget.PublicApiOnly;
-			if (ns.Types != null) 
-				ctx.AddChildren (publicOnly ? ns.Types.Where (t => t.IsPublic) : ns.Types);
+			NamespaceData ns = (NamespaceData)dataObject;
+
+			IEnumerable<object> result = ns.Types;
+			if (Widget.PublicApiOnly)
+				result = result.Where (x => NamespaceData.IsPublic (x));
+
+			ctx.AddChildren (result);
 		}
 		
 		public override bool HasChildNodes (ITreeBuilder builder, object dataObject)
@@ -98,28 +102,18 @@ namespace MonoDevelop.AssemblyBrowser
 		
 		#region IAssemblyBrowserNodeBuilder
 
-		public List<ReferenceSegment> Disassemble (TextEditor data, ITreeNavigator navigator)
+		public Task<List<ReferenceSegment>> DisassembleAsync (TextEditor data, ITreeNavigator navigator)
 		{
 		//	bool publicOnly = Widget.PublicApiOnly;
-			Namespace ns = (Namespace)navigator.DataItem;
+			NamespaceData ns = (NamespaceData)navigator.DataItem;
 			
 			data.Text = "// " + ns.Name;
-			return null;
+			return EmptyReferenceSegmentTask;
 		}
 		
-		public List<ReferenceSegment> Decompile (TextEditor data, ITreeNavigator navigator, bool publicOnly)
+		public Task<List<ReferenceSegment>> DecompileAsync (TextEditor data, ITreeNavigator navigator, DecompileFlags flags)
 		{
-			return Disassemble (data, navigator);
-		}
-
-		List<ReferenceSegment> IAssemblyBrowserNodeBuilder.GetSummary (TextEditor data, ITreeNavigator navigator, bool publicOnly)
-		{
-			return Disassemble (data, navigator);
-		}
-
-		string IAssemblyBrowserNodeBuilder.GetDocumentationMarkup (ITreeNavigator navigator)
-		{
-			return null;
+			return DisassembleAsync (data, navigator);
 		}
 		#endregion
 	}

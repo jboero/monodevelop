@@ -1,4 +1,4 @@
-// 
+﻿// 
 // FindReferencesHandler.cs
 //  
 // Author:
@@ -25,90 +25,178 @@
 // THE SOFTWARE.
 
 using System;
-using System.Linq;
-using System.Threading;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Core;
-using MonoDevelop.Ide;
-using MonoDevelop.Refactoring;
-using Microsoft.CodeAnalysis.FindSymbols;
-using Microsoft.CodeAnalysis;
-using MonoDevelop.Ide.TypeSystem;
-using MonoDevelop.Ide.FindInFiles;
-using MonoDevelop.Ide.Tasks;
-using System.Threading.Tasks;
-using System.Collections.Generic;
-using ICSharpCode.NRefactory6.CSharp;
-using Microsoft.CodeAnalysis.CSharp;
+using MonoDevelop.Core.Instrumentation;
 using MonoDevelop.CSharp.Highlighting;
+using MonoDevelop.Ide;
+using MonoDevelop.Ide.FindInFiles;
+using MonoDevelop.Ide.TypeSystem;
+using MonoDevelop.Refactoring;
+using Roslyn.Utilities;
+using System.Threading;
 
 namespace MonoDevelop.CSharp.Refactoring
 {
 	class FindReferencesHandler
 	{
-		internal static void FindRefs (ISymbol symbol)
+		class StreamingFindReferencesProgress : IStreamingFindReferencesProgress
 		{
-			var monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
-			var workspace = TypeSystemService.Workspace as MonoDevelopWorkspace;
+			ConcurrentSet<SearchResult> antiDuplicatesSet = new ConcurrentSet<SearchResult> (new SearchResultComparer ());
+			private SearchProgressMonitor monitor;
+			private MonoDevelopWorkspace workspace;
+
+			object reportingLock = new object ();
+
+			public StreamingFindReferencesProgress (SearchProgressMonitor monitor, MonoDevelopWorkspace workspace)
+			{
+				this.monitor = monitor;
+				this.workspace = workspace;
+			}
+
+			public Task OnCompletedAsync ()
+			{
+				if (!monitor.CancellationToken.IsCancellationRequested)
+					monitor.ReportResults (antiDuplicatesSet);
+				return Task.CompletedTask;
+			}
+
+			public Task OnDefinitionFoundAsync (SymbolAndProjectId symbolAndProjectId)
+			{
+				foreach (var loc in symbolAndProjectId.Symbol.Locations) {
+					if (!loc.IsInSource)
+						continue;
+					var fileName = loc.SourceTree.FilePath;
+					var offset = loc.SourceSpan.Start;
+					string projectedName;
+					int projectedOffset;
+					if (workspace.TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
+						fileName = projectedName;
+						offset = projectedOffset;
+					}
+					var sr = new MemberReference (symbolAndProjectId.Symbol, fileName, offset, loc.SourceSpan.Length);
+					sr.ReferenceUsageType = ReferenceUsageType.Declaration;
+					antiDuplicatesSet.Add (sr);
+				}
+				return Task.CompletedTask;
+			}
+
+			public Task OnFindInDocumentCompletedAsync (Document document)
+			{
+				return Task.CompletedTask;
+			}
+
+			public Task OnFindInDocumentStartedAsync (Document document)
+			{
+				return Task.CompletedTask;
+			}
+
+			public Task OnReferenceFoundAsync (SymbolAndProjectId symbolAndProjectId, ReferenceLocation loc)
+			{
+				var fileName = loc.Document.FilePath;
+				var offset = loc.Location.SourceSpan.Start;
+				string projectedName;
+				int projectedOffset;
+				if (workspace.TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
+					fileName = projectedName;
+					offset = projectedOffset;
+				}
+				var sr = new MemberReference (symbolAndProjectId.Symbol, fileName, offset, loc.Location.SourceSpan.Length);
+				if (antiDuplicatesSet.Add (sr)) {
+					var root = loc.Location.SourceTree.GetRoot ();
+					var node = root.FindNode (loc.Location.SourceSpan);
+					var trivia = root.FindTrivia (loc.Location.SourceSpan.Start);
+					sr.ReferenceUsageType = HighlightUsagesExtension.GetUsage (node);
+				}
+				return Task.CompletedTask;
+			}
+
+			public Task OnStartedAsync ()
+			{
+				return Task.CompletedTask;
+			}
+
+			internal double Progress;
+			internal Action ProgressUpdated;
+
+			public Task ReportProgressAsync (int current, int maximum)
+			{
+				Progress = (double)current / maximum;
+				ProgressUpdated?.Invoke ();
+				return Task.CompletedTask;
+			}
+		}
+
+		internal static Task FindRefs (SymbolAndProjectId[] symbolAndProjectIds, Solution solution, SearchProgressMonitor monitor = null)
+		{
+			bool owningMonitor = false;
+			if (monitor == null) {
+				monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
+				owningMonitor = true;
+			}
+			var workspace = IdeApp.TypeSystemService.Workspace as MonoDevelopWorkspace;
 			if (workspace == null)
-				return;
-			var solution = workspace.CurrentSolution;
-			Task.Run (async delegate {
+				return Task.CompletedTask;
+			return Task.Run (async delegate {
+				ITimeTracker timer = null;
+				var metadata = MonoDevelop.Refactoring.Counters.CreateFindReferencesMetadata ();
+
 				try {
-					var antiDuplicatesSet = new HashSet<SearchResult> (new SearchResultComparer ());
-					foreach (var loc in symbol.Locations) {
-						if (monitor.CancellationToken.IsCancellationRequested)
-							return;
+					timer = MonoDevelop.Refactoring.Counters.FindReferences.BeginTiming (metadata);
+					monitor.BeginTask (GettextCatalog.GetString ("Searching..."), 100);
 
-						if (!loc.IsInSource)
-							continue;
-						var fileName = loc.SourceTree.FilePath;
-						var offset = loc.SourceSpan.Start;
-						string projectedName;
-						int projectedOffset;
-						if (workspace.TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
-							fileName = projectedName;
-							offset = projectedOffset;
-						}
-						var sr = new MemberReference (symbol, fileName, offset, loc.SourceSpan.Length);
-						sr.ReferenceUsageType = ReferenceUsageType.Declariton;
-						antiDuplicatesSet.Add (sr);
-						monitor.ReportResult (sr);
-					}
-
-					foreach (var mref in await SymbolFinder.FindReferencesAsync (symbol, solution, monitor.CancellationToken).ConfigureAwait (false)) {
-						foreach (var loc in mref.Locations) {
-							if (monitor.CancellationToken.IsCancellationRequested)
-								return;
-							var fileName = loc.Document.FilePath;
-							var offset = loc.Location.SourceSpan.Start;
-							string projectedName;
-							int projectedOffset;
-							if (workspace.TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
-								fileName = projectedName;
-								offset = projectedOffset;
+					var streamingProgresses = new StreamingFindReferencesProgress [symbolAndProjectIds.Length];
+					var tasks = new Task [symbolAndProjectIds.Length];
+					int reportedProgress = 0;
+					for (int i = 0; i < symbolAndProjectIds.Length; i++) {
+						var reportingProgress = new StreamingFindReferencesProgress (monitor, workspace);
+						reportingProgress.ProgressUpdated = delegate {
+							double sumOfProgress = 0;
+							for (int j = 0; j < streamingProgresses.Length; j++) {
+								sumOfProgress += streamingProgresses [j].Progress;
 							}
-							var sr = new MemberReference (symbol, fileName, offset, loc.Location.SourceSpan.Length);
-							if (antiDuplicatesSet.Add (sr)) {
-
-								var root = loc.Location.SourceTree.GetRoot ();
-								var node = root.FindNode (loc.Location.SourceSpan);
-								var trivia = root.FindTrivia (loc.Location.SourceSpan.Start);
-								sr.ReferenceUsageType = HighlightUsagesExtension.GetUsage (node);
-
-								monitor.ReportResult (sr);
+							int newProgress = (int)((sumOfProgress / streamingProgresses.Length) * 100);
+							if (newProgress > reportedProgress) {
+								lock (streamingProgresses) {
+									if (newProgress > reportedProgress) {
+										monitor.Step (newProgress - reportedProgress);
+										reportedProgress = newProgress;
+									}
+								}
 							}
-						}
+						};
+						streamingProgresses [i] = reportingProgress;
 					}
+					for (int i = 0; i < tasks.Length; i++) {
+						tasks [i] = SymbolFinder.FindReferencesAsync (
+							symbolAndProjectIds [i],
+							solution,
+							streamingProgresses [i],
+							null,
+							FindReferencesSearchOptions.GetFeatureOptionsForStartingSymbol (symbolAndProjectIds [i].Symbol),
+							monitor.CancellationToken
+						);
+					}
+					await Task.WhenAll (tasks);
 				} catch (OperationCanceledException) {
 				} catch (Exception ex) {
+					metadata.SetFailure ();
 					if (monitor != null)
 						monitor.ReportError ("Error finding references", ex);
 					else
 						LoggingService.LogError ("Error finding references", ex);
 				} finally {
-					if (monitor != null)
+					if (owningMonitor)
 						monitor.Dispose ();
+					if (monitor.CancellationToken.IsCancellationRequested)
+						metadata.SetUserCancel ();
+					if (timer != null)
+						timer.Dispose ();
 				}
 			});
 		}
@@ -116,12 +204,11 @@ namespace MonoDevelop.CSharp.Refactoring
 		public void Update (CommandInfo info)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
-			if (doc == null || doc.FileName == FilePath.Null || doc.ParsedDocument == null) {
+			if (doc == null || doc.FileName == FilePath.Null || doc.Editor == null || doc.DocumentContext.ParsedDocument == null) {
 				info.Enabled = false;
 				return;
 			}
-			var pd = doc.ParsedDocument.GetAst<SemanticModel> ();
-			info.Enabled = pd != null;
+			info.Enabled = doc.DocumentContext.AnalysisDocument != null;
 		}
 
 		public void Run (object data)
@@ -130,13 +217,13 @@ namespace MonoDevelop.CSharp.Refactoring
 			if (doc == null || doc.FileName == FilePath.Null)
 				return;
 
-			var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc, doc.Editor).Result;
+			var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, doc.Editor).Result;
 			var sym = info.Symbol ?? info.DeclaredSymbol;
 			if (sym != null) {
 				if (sym.Kind == SymbolKind.Local || sym.Kind == SymbolKind.Parameter || sym.Kind == SymbolKind.TypeParameter) {
-					FindRefs (sym);
+					FindRefs (new [] { SymbolAndProjectId.Create (sym, doc.DocumentContext.AnalysisDocument.Project.Id) }, doc.DocumentContext.AnalysisDocument.Project.Solution).Ignore ();
 				} else {
-					RefactoringService.FindReferencesAsync (FilterSymbolForFindReferences (sym).GetDocumentationCommentId ());
+					RefactoringService.FindReferencesAsync (FilterSymbolForFindReferences (sym).GetDocumentationCommentId ()).Ignore ();
 				}
 			}
 		}
@@ -151,20 +238,16 @@ namespace MonoDevelop.CSharp.Refactoring
 		}
 	}
 
-	
-
 	class FindAllReferencesHandler
 	{
-
 		public void Update (CommandInfo info)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
-			if (doc == null || doc.FileName == FilePath.Null || doc.ParsedDocument == null) {
+			if (doc == null || doc.FileName == FilePath.Null || doc.DocumentContext.ParsedDocument == null) {
 				info.Enabled = false;
 				return;
 			}
-			var pd = doc.ParsedDocument.GetAst<SemanticModel> ();
-			info.Enabled = pd != null;
+			info.Enabled = doc.DocumentContext.AnalysisDocument != null;
 		}
 
 		public void Run (object data)
@@ -173,13 +256,13 @@ namespace MonoDevelop.CSharp.Refactoring
 			if (doc == null || doc.FileName == FilePath.Null)
 				return;
 			
-			var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc, doc.Editor).Result;
+			var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, doc.Editor).Result;
 			var sym = info.Symbol ?? info.DeclaredSymbol;
 			if (sym != null) {
 				if (sym.Kind == SymbolKind.Local || sym.Kind == SymbolKind.Parameter || sym.Kind == SymbolKind.TypeParameter) {
-					FindReferencesHandler.FindRefs (sym);
+					FindReferencesHandler.FindRefs (new [] { SymbolAndProjectId.Create (sym, doc.DocumentContext.AnalysisDocument.Project.Id) }, doc.DocumentContext.AnalysisDocument.Project.Solution).Ignore ();
 				} else {
-					RefactoringService.FindAllReferencesAsync (FindReferencesHandler.FilterSymbolForFindReferences (sym).GetDocumentationCommentId ());
+					RefactoringService.FindAllReferencesAsync (FindReferencesHandler.FilterSymbolForFindReferences (sym).GetDocumentationCommentId ()).Ignore ();
 				}
 			}
 		}

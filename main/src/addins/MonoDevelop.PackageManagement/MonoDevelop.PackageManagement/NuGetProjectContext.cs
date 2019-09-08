@@ -26,9 +26,13 @@
 
 using System;
 using System.Xml.Linq;
+using NuGet.Configuration;
+using NuGet.Common;
 using NuGet.PackageManagement;
 using NuGet.Packaging;
 using NuGet.ProjectManagement;
+using NuGet.Packaging.PackageExtraction;
+using NuGet.Packaging.Signing;
 
 namespace MonoDevelop.PackageManagement
 {
@@ -36,12 +40,17 @@ namespace MonoDevelop.PackageManagement
 	{
 		IPackageManagementEvents packageManagementEvents;
 		IDEExecutionContext executionContext;
+		ISettings settings;
+		PackageExtractionContext packageExtractionContext;
+		PackageManagementLogger logger;
 
-		public NuGetProjectContext ()
+		public NuGetProjectContext (ISettings settings)
 		{
+			this.settings = settings;
 			packageManagementEvents = PackageManagementServices.PackageManagementEvents;
 			var commonOperations = new MonoDevelopCommonOperations ();
 			executionContext = new IDEExecutionContext (commonOperations);
+			logger = new PackageManagementLogger (packageManagementEvents);
 		}
 
 		public ExecutionContext ExecutionContext {
@@ -50,7 +59,7 @@ namespace MonoDevelop.PackageManagement
 
 		public NuGetActionType ActionType { get; set; }
 		public XDocument OriginalPackagesConfig { get; set; }
-		public PackageExtractionContext PackageExtractionContext { get; set; }
+		public Guid OperationId { get; set; }
 
 		public ISourceControlManagerProvider SourceControlManagerProvider {
 			get { return null; }
@@ -58,17 +67,47 @@ namespace MonoDevelop.PackageManagement
 
 		public void Log (MessageLevel level, string message, params object [] args)
 		{
-			packageManagementEvents.OnPackageOperationMessageLogged ((NuGet.MessageLevel)level, message, args);
+			packageManagementEvents.OnPackageOperationMessageLogged (level, message, args);
 		}
 
 		public void ReportError (string message)
 		{
-			packageManagementEvents.OnPackageOperationMessageLogged (NuGet.MessageLevel.Error, message);
+			packageManagementEvents.OnPackageOperationMessageLogged (MessageLevel.Error, message);
 		}
+
+		public FileConflictAction? FileConflictResolution { get; set; }
 
 		public FileConflictAction ResolveFileConflict (string message)
 		{
+			if (FileConflictResolution.HasValue && FileConflictResolution != FileConflictAction.PromptUser)
+				return FileConflictResolution.Value;
+
 			return packageManagementEvents.OnResolveFileConflict (message);
+		}
+
+		public void Log (ILogMessage message)
+		{
+			logger.Log (message);
+		}
+
+		public void ReportError (ILogMessage message)
+		{
+			logger.Log (message);
+		}
+
+		public PackageExtractionContext PackageExtractionContext {
+			get {
+				if (packageExtractionContext == null) {
+					var loggerAdapter = new LoggerAdapter (this);
+					packageExtractionContext = new PackageExtractionContext (
+						PackageSaveMode.Defaultv2,
+						PackageExtractionBehavior.XmlDocFileSaveMode,
+						ClientPolicyContext.GetClientPolicy (settings, loggerAdapter),
+						loggerAdapter);
+				}
+				return packageExtractionContext;
+			}
+			set { packageExtractionContext = value; }
 		}
 	}
 }

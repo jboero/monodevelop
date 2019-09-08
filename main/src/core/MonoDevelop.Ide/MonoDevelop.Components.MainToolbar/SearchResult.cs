@@ -1,4 +1,4 @@
-// 
+﻿// 
 // NavigateToDialog.cs
 //  
 // Author:
@@ -68,7 +68,8 @@ namespace MonoDevelop.Components.MainToolbar
 
 
 		public virtual SearchResultType SearchResultType { get { return SearchResultType.Unknown; } }
-		public virtual string PlainText  { get { return null; } }
+		public virtual string PlainText { get { return null; } }
+		public virtual string AccessibilityMessage { get => PlainText; }
 
 		public int Rank { get; private set; }
 
@@ -106,7 +107,7 @@ namespace MonoDevelop.Components.MainToolbar
 		{
 			var lane = StringMatcher.GetMatcher (toMatch, true).GetMatch (text);
 			var matchHexColor = selected ? selectedResultMatchTextColor : resultMatchTextColor;
-			StringBuilder result = new StringBuilder (text.Length + matchHexColor.Length + 46);
+			var result = StringBuilderCache.Allocate ();
 			if (lane != null) {
 				int lastPos = 0;
 				for (int n=0; n < lane.Length; n++) {
@@ -125,7 +126,7 @@ namespace MonoDevelop.Components.MainToolbar
 			} else {
 				MarkupUtilities.AppendEscapedString (result, text, 0, text.Length);
 			}
-			return result.ToString ();
+			return StringBuilderCache.ReturnAndFree  (result);
 		}
 
 		public virtual bool CanActivate {
@@ -158,10 +159,11 @@ namespace MonoDevelop.Components.MainToolbar
 				return file.FilePath;
 			}
 		}
+		public override string AccessibilityMessage { get => GettextCatalog.GetString ("File {0}", PlainText ?? ""); }
 
 		public override Xwt.Drawing.Image Icon {
 			get {
-				return DesktopService.GetIconForFile (file.FilePath, IconSize.Menu);
+				return IdeServices.DesktopService.GetIconForFile (file.FilePath, IconSize.Menu);
 			}
 		}
 
@@ -267,7 +269,7 @@ namespace MonoDevelop.Components.MainToolbar
 						return false;
 					}
 					Runtime.RunInMainThread (delegate {
-						ci = IdeApp.CommandService.GetCommandInfo (command.Id, new CommandTargetRoute (MainToolbar.LastCommandTarget));
+						ci = IdeApp.CommandService.GetCommandInfo (command.Id, new CommandTargetRoute (IdeApp.CommandService.LastCommandTarget));
 					}).Wait ();
 				}
 				return ci.Enabled && ci.Visible;

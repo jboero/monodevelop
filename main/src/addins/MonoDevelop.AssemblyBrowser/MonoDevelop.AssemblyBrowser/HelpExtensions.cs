@@ -35,9 +35,10 @@ using System.Collections.Generic;
 using MonoDevelop.Projects.Extensions;
 using System.Text;
 using System.Xml;
-using ICSharpCode.NRefactory.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem;
 using MonoDevelop.Projects;
-using ICSharpCode.NRefactory.Documentation;
+using ICSharpCode.Decompiler.Documentation;
+using MonoDevelop.Ide;
 
 namespace MonoDevelop.AssemblyBrowser
 {
@@ -66,42 +67,6 @@ namespace MonoDevelop.AssemblyBrowser
 		}
 
 				
-		static void AppendHelpParameterList (StringBuilder result, IList<IParameter> parameters)
-		{
-			result.Append ('(');
-			if (parameters != null) {
-				for (int i = 0; i < parameters.Count; i++) {
-					if (i > 0)
-						result.Append (',');
-					var p = parameters [i];
-					if (p == null)
-						continue;
-					if (p.IsRef || p.IsOut)
-						result.Append ("&");
-					AppendTypeReference (result, p.Type.ToTypeReference ());
-				}
-			}
-			result.Append (')');
-		}
-
-		static void AppendHelpParameterList (StringBuilder result, IList<IUnresolvedParameter> parameters)
-		{
-			result.Append ('(');
-			if (parameters != null) {
-				for (int i = 0; i < parameters.Count; i++) {
-					if (i > 0)
-						result.Append (',');
-					var p = parameters [i];
-					if (p == null)
-						continue;
-					if (p.IsRef || p.IsOut)
-						result.Append ("&");
-					AppendTypeReference (result, p.Type);
-				}
-			}
-			result.Append (')');
-		}
-
 		static XmlNode FindMatch (IMethod method, XmlNodeList nodes)
 		{
 			foreach (XmlNode node in nodes) {
@@ -127,13 +92,13 @@ namespace MonoDevelop.AssemblyBrowser
 		public static XmlNode GetMonodocDocumentation (this IEntity member)
 		{
 			if (member.SymbolKind == SymbolKind.TypeDefinition) {
-				var helpXml = HelpService.HelpTree != null ? HelpService.HelpTree.GetHelpXml (IdStringProvider.GetIdString (member)) : null;
+				var helpXml = IdeServices.HelpService.HelpTree != null ? IdeServices.HelpService.HelpTree.GetHelpXml (IdStringProvider.GetIdString (member)) : null;
 				if (helpXml == null)
 					return null;
 				return helpXml.SelectSingleNode ("/Type/Docs");
 			}
 					
-			var declaringXml = HelpService.HelpTree != null && member.DeclaringTypeDefinition != null ? HelpService.HelpTree.GetHelpXml (member.DeclaringTypeDefinition.GetIdString ()) : null;
+			var declaringXml = IdeServices.HelpService.HelpTree != null && member.DeclaringTypeDefinition != null ? IdeServices.HelpService.HelpTree.GetHelpXml (member.DeclaringTypeDefinition.GetIdString ()) : null;
 			if (declaringXml == null)
 				return null;
 					

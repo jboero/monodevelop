@@ -1,4 +1,4 @@
-﻿//
+//
 // ISegment.cs
 //
 // Author:
@@ -54,11 +54,9 @@ namespace MonoDevelop.Core.Text
 	/// <summary>
 	/// An (Offset, Length) pair representing a text span.
 	/// </summary>
-	public struct TextSegment : IEquatable<TextSegment>, ISegment
+	public readonly struct TextSegment : IEquatable<TextSegment>, ISegment
 	{
 		public static readonly TextSegment Invalid = new TextSegment (-1, 0);
-
-		readonly int offset;
 
 		/// <summary>
 		///  Gets the start offset of the segment. 
@@ -66,13 +64,7 @@ namespace MonoDevelop.Core.Text
 		/// <value>
 		/// The offset.
 		/// </value>
-		public int Offset {
-			get {
-				return offset;
-			}
-		}
-
-		readonly int length;
+		public int Offset { get; }
 
 		/// <summary>
 		/// Gets the length of the segment. 
@@ -80,11 +72,7 @@ namespace MonoDevelop.Core.Text
 		/// <value>
 		/// The length.
 		/// </value>
-		public int Length {
-			get {
-				return length;
-			}
-		}
+		public int Length { get; }
 
 		/// <summary>
 		/// Gets the end offset of the segment. 
@@ -136,8 +124,15 @@ namespace MonoDevelop.Core.Text
 		/// </param>
 		public TextSegment (int offset, int length)
 		{
-			this.offset = offset;
-			this.length = length;
+			this.Offset = offset;
+			this.Length = length;
+		}
+
+		/// <summary>
+		/// Initializes a new instance of the <see cref="TextSegment"/> struct.
+		/// </summary>
+		public TextSegment (ISegment segment) : this(segment.Offset, segment.Length)
+		{
 		}
 
 		public static bool operator == (TextSegment left, TextSegment right)
@@ -196,7 +191,10 @@ namespace MonoDevelop.Core.Text
 		/// </returns>
 		public override bool Equals (object obj)
 		{
-			return obj is ISegment && Equals (this, (ISegment)obj);
+			var otherSegment = obj as ISegment;
+			if (otherSegment == null)
+				return false;
+			return Offset == otherSegment.Offset && Length == otherSegment.Length;
 		}
 
 		/// <summary>
@@ -312,6 +310,8 @@ namespace MonoDevelop.Core.Text
 		/// </param>
 		protected AbstractSegment (int offset, int length)
 		{
+			if (length < 0)
+				throw new System.ArgumentOutOfRangeException (nameof (length), "was " + length);
 			this.offset = offset;
 			this.length = length;
 		}
@@ -398,17 +398,17 @@ namespace MonoDevelop.Core.Text
 			return overlapStart < overlapEnd;
 		}
 
+		[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 		public static ISegment AdjustSegment (this ISegment segment, TextChangeEventArgs args)
 		{
 			if (segment == null)
 				throw new ArgumentNullException ("segment");
-			if (args.Offset < segment.Offset)
-				return new TextSegment (segment.Offset + args.InsertionLength - args.RemovalLength, segment.Length);
-			if (args.Offset <= segment.EndOffset)
-				return new TextSegment (segment.Offset, segment.Length);
-			return segment;
+			var newStartOffset = args.GetNewOffset (segment.Offset);
+			var newEndOffset = args.GetNewOffset (segment.EndOffset);
+			return new TextSegment (newStartOffset, newEndOffset - newStartOffset);
 		}
 
+		[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 		public static IEnumerable<ISegment> AdjustSegments (this IEnumerable<ISegment> segments, TextChangeEventArgs args)
 		{
 			if (segments == null)
@@ -416,6 +416,13 @@ namespace MonoDevelop.Core.Text
 			foreach (var segment in segments) {
 				yield return segment.AdjustSegment (args);
 			}
+		}
+
+		public static bool IsInvalid (this ISegment segment)
+		{
+			if (segment == null)
+				throw new ArgumentNullException (nameof (segment));
+			return segment.Offset < 0;
 		}
 	}
 }

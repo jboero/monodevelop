@@ -41,10 +41,9 @@ namespace MonoDevelop.Core
 		static FilePath localizedBrandingDir;
 		static XDocument brandingDocument;
 		static XDocument localizedBrandingDocument;
-		
-		static string applicationName;
-		static string applicationLongName;
-		static string privacyStatement;
+
+		static string applicationName = "MonoDevelop";
+		static string applicationLongName = "MonoDevelop";
 
 		public static readonly string SuiteName;
 		public static readonly string ProfileDirectoryName;
@@ -80,16 +79,10 @@ namespace MonoDevelop.Core
 				}
 			}
 		}
-
-		public static string PrivacyStatement {
-			get {
-				return privacyStatement;
-			}
-
-			set {
-				privacyStatement = value;
-			}
-		}
+		public static string DefaultKeybindingSchemeName { get; set; }
+		public static string PrivacyStatement { get; set; }
+		public static string PrivacyStatementUrl { get; set; }
+		public static string LicenseTermsUrl { get; set; }
 
 		static BrandingService ()
 		{
@@ -121,6 +114,7 @@ namespace MonoDevelop.Core
 				}
 				ApplicationName = GetString ("ApplicationName");
 				ApplicationLongName = GetString ("ApplicationLongName") ?? ApplicationName;
+				DefaultKeybindingSchemeName = GetString ("DefaultKeybindingSchemeName") ?? ApplicationName;
 				SuiteName = GetString ("SuiteName");
 				ProfileDirectoryName = GetString ("ProfileDirectoryName");
 				StatusSteadyIconId = GetString ("StatusAreaSteadyIcon");
@@ -141,7 +135,7 @@ namespace MonoDevelop.Core
 			if (string.IsNullOrEmpty (HelpAboutIconId))
 				HelpAboutIconId = "md-about";
 		}
-		
+
 		public static string GetString (params string[] keyPath)
 		{
 			var el = GetElement (keyPath);
@@ -224,6 +218,16 @@ namespace MonoDevelop.Core
 		public static string BrandApplicationName (string s)
 		{
 			return s.Replace ("MonoDevelop", ApplicationName);
+		}
+
+		public static string BrandApplicationLongName (string s)
+		{
+			return s.Replace ("MonoDevelop", ApplicationLongName);
+		}
+
+		public static string BrandEnvironmentVariable (string envVar)
+		{
+			return envVar.Replace ("MONODEVELOP", ProfileDirectoryName.ToUpper ());
 		}
 
 		public static event EventHandler ApplicationNameChanged;

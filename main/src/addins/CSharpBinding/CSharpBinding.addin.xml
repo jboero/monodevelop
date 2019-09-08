@@ -1,4 +1,4 @@
-<ExtensionModel>
+﻿<ExtensionModel>
 
 	<!-- Extension Points -->
 	<ExtensionPoint path = "/MonoDevelop/CSharp/Completion/ContextHandler">
@@ -9,7 +9,7 @@
 
 	<Extension path = "/MonoDevelop/Ide/Commands">
 		<Category _name = "Edit" id="Edit">
-			
+
 		<Command id = "MonoDevelop.CodeGeneration.CodeGenerationCommands.ShowCodeGenerationWindow"
 				_label = "Show Code _Generation"
 				shortcut = "Alt|Insert"
@@ -17,7 +17,7 @@
 		</Category>
 
 		<Category _name = "Code Navigation" id = "CodeNavigation">
-			
+
 		<Command id = "MonoDevelop.CSharp.Refactoring.FindProjectReferenceUsages"
 			defaultHandler = "MonoDevelop.CSharp.Refactoring.FindProjectReferenceUsagesHandler"
 			_label = "_Find Reference Usages"
@@ -52,38 +52,23 @@
 				_label = "Resolve"/> -->
 		<Command id = "MonoDevelop.CSharp.Refactoring.ExtractMethodCommand"
 			defaultHandler = "MonoDevelop.CSharp.Refactoring.ExtractMethodCommandHandler"
-			_label = "Extract Method" 
+			_label = "Extract Method"
 			_description = "Extracts a method"
 		/>
 		<Command id = "MonoDevelop.Refactoring.RefactoryCommands.CurrentRefactoryOperations"
 			defaultHandler = "MonoDevelop.CSharp.Refactoring.CurrentRefactoryOperationsHandler"
 			type="array"
-			_label = "Refactory Operations" /> 
-		<Command id = "MonoDevelop.CSharp.Refactoring.OrganizeImportsCommand"
-			defaultHandler = "MonoDevelop.CSharp.Refactoring.OrganizeImportsCommandHandler"
-			_label = "_Sort Usings" 
-		/>
-		<Command id = "MonoDevelop.CSharp.Refactoring.RemoveUnusedImportsCommand"
-			defaultHandler = "MonoDevelop.CSharp.Refactoring.RemoveUnusedImportsCommandHandler"
-			_label = "_Remove Unused Usings" 
-		/>
-		<Command id = "MonoDevelop.CSharp.Refactoring.SortAndRemoveImportsCommand"
-			defaultHandler = "MonoDevelop.CSharp.Refactoring.SortAndRemoveImportsCommandHandler"
-			_label = "R_emove and Sort"
+			_label = "Refactory Operations" />
+		<Command id = "MonoDevelop.CSharp.Refactoring.Commands.SortAndRemoveImports"
+			defaultHandler = "MonoDevelop.CSharp.Refactoring.RemoveAndSortUsingsHandler"
+			_label = "R_emove and Sort Usings"
 			_displayName = "Remove Unused and Sort (Usings)"
 		/>
 	</Extension>
 
-	<Extension path = "/MonoDevelop/Ide/Commands/CodeNavigation">
-		<Command id = "MonoDevelop.Refactoring.RefactoryCommands.GotoDeclaration"
-						_label = "_Go to Declaration" 
-						shortcut = "F12"
-						macShortcut = "Meta|D F12"/>
-	</Extension>
-		
-	
 	<Extension path = "/MonoDevelop/ProjectModel/MSBuildItemTypes">
 		<DotNetProjectType
+			id="MonoDevelop.CSharp.Project.CSharpProject"
 			language="C#"
 			extension="csproj"
 			guid="{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -141,7 +126,7 @@
 		                 extensions = ".cs"
 		                 singleLineCommentTag = "//"
 		                 blockCommentStartTag = "/*"
-		                 blockCommentEndTag = "*/" 
+		                 blockCommentEndTag = "*/"
 		                 codeDomType = "MonoDevelop.CSharp.CSharpEnhancedCodeProvider" />
 	</Extension>
 
@@ -181,7 +166,7 @@
 	</Extension>
 
 	<Extension path = "/MonoDevelop/Core/MimeTypes">
-		<MimeType id="text/x-csharp" _description="C# source code" icon="md-csharp-file" isText="true">
+		<MimeType id="text/x-csharp" _description="C# source code" icon="md-csharp-file" isText="true" roslynName="C#" contentType="CSharp">
 			<File pattern="*.cs" />
 		</MimeType>
 		<MimeType id="application/x-csproject" _description="C# project file" baseType="application/x-msbuild">
@@ -208,10 +193,14 @@
 	<Extension path = "/MonoDevelop/TypeSystem/CodeGenerators">
 		<Generator class="MonoDevelop.CSharp.Refactoring.CSharpCodeGenerator" mimeType = "text/x-csharp" />
 	</Extension>
-	
+
 	<Extension path = "/MonoDevelop/ProjectModel/PolicySets/Mono" >
+		<Policies resource="MonoDevelopCSharpPolicy.xml" />
+	</Extension>
+
+	<Extension path = "/MonoDevelop/ProjectModel/PolicySets/MonoDefault" >
 		<Policies resource="MonoCSharpPolicy.xml" />
-		<Policies resource="MonoNameConventionPolicy.xml" />
+		<Policies resource="MonoTextStylePolicy.xml" />
 	</Extension>
 
 	<Extension path = "/MonoDevelop/ProjectModel/PolicySets" >
@@ -219,9 +208,7 @@
 			<Policies resource="KRCSharpPolicy.xml" />
 			<Policies resource="InvariantTextStylePolicy.xml" />
 		</PolicySet>
-	</Extension>
 
-	<Extension path = "/MonoDevelop/ProjectModel/PolicySets" >
 		<PolicySet id="1TBS" _name="SharpDevelop style (1TBS)" allowDiffSerialize="false">
 			<Policies resource="KRCSharpPolicy.xml" />
 			<Policies resource="InvariantTextStylePolicy.xml" />
@@ -236,7 +223,7 @@
 		<Panel id = "CSharpFormatting" _label = "C# Format" mimeType="text/x-csharp" class = "MonoDevelop.CSharp.Formatting.CSharpFormattingPolicyPanel" />
 	</Extension>
 
-<!--	
+<!--
 	<Extension path = "/MonoDevelop/Refactoring/CodeActions">
 		<Action mimeType="text/x-csharp"
 			_title = "Move type to another file"
@@ -251,7 +238,7 @@
 	<Extension path = "/MonoDevelop/Refactoring/CodeIssues">
 		<CodeIssue mimeType="text/x-csharp" severity = "Error" class="MonoDevelop.CSharp.Refactoring.CodeIssues.MonoTODOIssue"/>
 	</Extension> -->
-	
+
 	<Extension path = "/MonoDevelop/Ide/TextEditorResolver">
 		<Resolver class = "MonoDevelop.CSharp.Resolver.TextEditorResolverProvider" mimeType="text/x-csharp" />
 	</Extension>
@@ -270,13 +257,8 @@
 	</Extension>
 
 	<Extension path = "/MonoDevelop/Refactoring/CodeGenerators">
-
 		<Class class = "MonoDevelop.CodeGeneration.CreateConstructorGenerator" />
 		<Class class = "MonoDevelop.CodeGeneration.ReadonlyPropertyGenerator" />
-		<Class class = "MonoDevelop.CodeGeneration.PropertyGenerator" />
-<!--	<Class class = "MonoDevelop.CodeGeneration.ImplementInterfaceMembersGenerator" /> -->
-		<Class class = "MonoDevelop.CodeGeneration.RequiredProtocolMemberGenerator" />
-		<Class class = "MonoDevelop.CodeGeneration.OptionalProtocolMemberGenerator" />
 		<Class class = "MonoDevelop.CodeGeneration.PartialGenerator" />
 		<Class class = "MonoDevelop.CodeGeneration.OverrideMembersGenerator" />
 		<Class class = "MonoDevelop.CodeGeneration.ToStringGenerator" />
@@ -285,70 +267,50 @@
 		<Class class = "MonoDevelop.CodeGeneration.WriteLineGenerator" />
 	</Extension>
 
-	<Extension path = "/MonoDevelop/ProjectModel/Gui/DefaultPolicyPanels/SourceCode">
-		<Section id="NameConventions" _label="Name Conventions" fill = "true" class="MonoDevelop.CSharp.Diagnostics.InconsistentNaming.NameConventionPanel" icon="md-prefs-name-conventions" />
-	</Extension>
-	<Extension path = "/MonoDevelop/ProjectModel/Gui/ItemOptionPanels/SourceCode">
-		<Section id="NameConventions" _label="Name Conventions" fill = "true" class="MonoDevelop.CSharp.Diagnostics.InconsistentNaming.NameConventionPanel" icon="md-prefs-name-conventions" />
-	</Extension>
-	<Extension path = "/MonoDevelop/Ide/GlobalOptionsDialog/SourceCode">
-		<Section id="NameConventions" _label="Name Conventions" fill = "true" class="MonoDevelop.CSharp.Diagnostics.InconsistentNaming.NameConventionPanel" icon="md-prefs-name-conventions" />
+	<Extension path = "/MonoDevelop/Ide/Editor/TooltipProviders">
+		<Provider id="CSharp" class="MonoDevelop.SourceEditor.LanguageItemTooltipProvider" mimeType="text/x-csharp" />
 	</Extension>
 
-	<Extension path = "/MonoDevelop/SourceEditor2/TooltipProviders">
-		<Class id="LanguageItem" class="MonoDevelop.SourceEditor.LanguageItemTooltipProvider" />
-	</Extension>
-	
 	<Extension path = "/MonoDevelop/Ide/CompletionCharacters">
 		<Complete language="C#" commitOnSpace="True" commitChars="{}[]().,:;+-*/%&amp;|^!~=&lt;&gt;?@#'&quot;\"/>
 	</Extension>
 
 	<Extension path = "/MonoDevelop/SourceEditor2/ContextMenu/Editor">
 		<Condition id="FileType" mimeTypes="text/x-csharp">
-			<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.QuickFix"  insertafter="MonoDevelop.SourceEditor.SourceEditorCommands.MarkerOperations" insertbefore="MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator"/>
-			<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.CurrentRefactoryOperations" insertafter="MonoDevelop.SourceEditor.SourceEditorCommands.MarkerOperations" insertbefore="MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator"/>
+			<ItemSet id = "MonoDevelop.Refactoring.RefactoryCommands.QuickFixMenu" _label = "Quick Fix" autohide = "true" insertafter="MonoDevelop.SourceEditor.SourceEditorCommands.MarkerOperations" insertbefore="MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator">
+				<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.QuickFixMenu" />
+			</ItemSet>
+			<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.CurrentRefactoryOperations" />
 
 			<ItemSet id = "Navigate" _label = "Navigate">
-				<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.FindReferences"/>
 				<CommandItem id = "MonoDevelop.Refactoring.RefactoryCommands.FindAllReferences"/>
 				<CommandItem id = "MonoDevelop.Refactoring.Navigation.FindBaseSymbols"/>
 				<CommandItem id = "MonoDevelop.Refactoring.Navigation.FindDerivedSymbols"/>
 				<SeparatorItem id = "Separator1" />
-				
+
 				<CommandItem id = "MonoDevelop.CSharp.Navigation.FindExtensionMethods"/>
 				<CommandItem id = "MonoDevelop.CSharp.Navigation.FindMemberOverloads"/>
 				<CommandItem id = "MonoDevelop.CSharp.Navigation.FindImplementingMembers"/>
 			</ItemSet>
-
-				<!--
-			<ItemSet id = "Organize Imports" _label = "Organize Usings" insertafter="MonoDevelop.Ide.Commands.TextEditorCommands.ShowCodeTemplateWindow">
-				<CommandItem id = "MonoDevelop.CSharp.Refactoring.RemoveUnusedImportsCommand"/>
-				<CommandItem id = "MonoDevelop.CSharp.Refactoring.OrganizeImportsCommand"/>
-				<CommandItem id = "MonoDevelop.CSharp.Refactoring.SortAndRemoveImportsCommand"/>
-			</ItemSet> -->
 		</Condition>
 	</Extension>
 
-	<Extension path = "/MonoDevelop/CSharp/Completion/ContextHandler">
-		<Class class="MonoDevelop.CSharp.Completion.ProtocolMemberContextHandler" />
-	</Extension>
-	
 	<Extension path = "/MonoDevelop/Ide/BraceMatcher">
-		<Class class="MonoDevelop.CSharp.CSharpBraceMatcher" />
+		<Matcher class="MonoDevelop.CSharp.CSharpBraceMatcher" mimeType="text/x-csharp"/>
 	</Extension>
-	
+
 	<Extension path = "/MonoDevelop/Ide/ContextMenu/ProjectPad">
 		<Condition id="ItemType" value="ProjectReference|Reference">
 			<CommandItem id = "MonoDevelop.CSharp.Refactoring.FindProjectReferenceUsages" />
 		</Condition>
 	</Extension>
-	
-	<Extension path="/MonoDevelop/Ide/SearchCategories">
-		<Class class="MonoDevelop.CSharp.ProjectSearchCategory" />
-	</Extension>
 
 	<Extension path = "/MonoDevelop/Refactoring/FindReferencesProvider">
 		<Class class="MonoDevelop.CSharp.Refactoring.CSharpFindReferencesProvider" />
+	</Extension>
+
+	<Extension path = "/MonoDevelop/Refactoring/FindReferenceUsagesProvider">
+		<Class class="MonoDevelop.CSharp.Refactoring.CSharpFindReferenceUsagesProvider" />
 	</Extension>
 
 	<Extension path = "/MonoDevelop/Refactoring/JumpToDeclarationHandler">
@@ -359,7 +321,23 @@
 		<Class class="MonoDevelop.CSharp.UnitTests.CSharpNUnitSourceCodeLocationFinder" />
 	</Extension>
 
-	<Extension path = "/MonoDevelop/Ide/AutoInsertBracketHandler">
-		<Class class="MonoDevelop.CSharp.Features.AutoInsertBracket.CSharpAutoInsertBracketHandler" insertbefore="Default"/>
+	<Extension path="/MonoDevelop/Ide/TypeService/MefHostServices">
+		<Assembly file="MonoDevelop.CSharpBinding.dll"/>
+	</Extension>
+
+	<Extension path="/MonoDevelop/Ide/TypeService/OptionProviders">
+		<Class class="MonoDevelop.CSharp.OptionProvider.EditorConfigDocumentOptionsProviderFactory"/>
+	</Extension>
+
+	<Extension path = "/MonoDevelop/Ide/GlobalOptionsDialog/TextEditor/Behavior">
+		<Section id="CSharpOnTheFlyFormattingPanel" insertbefore="Formatting" _label="C#" fill="true" class="MonoDevelop.SourceEditor.OptionPanels.OnTheFlyFormattingPanel" icon="md-prefs-code-formatting" />
+  </Extension>
+
+	<Extension path = "/MonoDevelop/Ide/GlobalOptionsDialog/TextEditor/Analysis/C#">
+		<Panel id="CodeStylePanel" _label="Code Style" fill="true" class="MonoDevelop.CSharp.OptionProvider.CodeStylePage" grouping="Tab" icon="md-prefs-code-rules" insertbefore="CodeActions" />
+	</Extension>
+	
+	<Extension path = "/MonoDevelop/TextEditor/CommandMapping">
+		<Map id="MonoDevelop.CSharp.Refactoring.Commands.SortAndRemoveImports" argsType="@MonoDevelop.CSharp.Refactoring.CommandArgsFactories.CreateSortAndRemoveUnnecessaryImportsCommandArgs" />
 	</Extension>
 </ExtensionModel>

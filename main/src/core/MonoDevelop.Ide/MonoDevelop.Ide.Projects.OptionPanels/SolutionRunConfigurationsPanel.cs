@@ -35,7 +35,6 @@ using MonoDevelop.Core;
 using MonoDevelop.Projects.Policies;
 using MonoDevelop.Components;
 using System.Linq;
-using RefactoringEssentials.CSharp.Diagnostics;
 using Xwt.Backends;
 using Xwt;
 
@@ -54,11 +53,11 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 
 			Solution = (Solution)dataObject;
 
-			foreach (var rc in Solution.MultiStartupRunConfigurations)
-				configs.Add (new SolutionRunConfigInfo { ProjectConfig = rc, EditedConfig = new MultiItemSolutionRunConfiguration (rc) });
-		
-			foreach (var c in configs)
+			foreach (var rc in Solution.MultiStartupRunConfigurations) {
+				var c = new SolutionRunConfigInfo { ProjectConfig = rc, EditedConfig = new MultiItemSolutionRunConfiguration (rc) };
+				configs.Add (c);
 				AddPanel (c);
+			}
 			ParentDialog.ExpandChildren (this);
 		}
 
@@ -121,7 +120,7 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 
 		internal void ShowConfiguration (MultiItemSolutionRunConfiguration editedConfig)
 		{
-			var rc = configs.First (ci => ci.EditedConfig == editedConfig);
+			var rc = configs.First (ci => ci.EditedConfig.Name == editedConfig.Name);
 			var section = sections [rc];
 			ParentDialog.ShowPage (section);
 		}
@@ -156,7 +155,7 @@ namespace MonoDevelop.Ide.Projects.OptionPanels
 		{
 			RunConfiguration = configInfo.EditedConfig;
 			Label = configInfo.EditedConfig.Name;
-			HeaderLabel = GettextCatalog.GetString ("Run Configuration: " + configInfo.EditedConfig.Name);
+			HeaderLabel = GettextCatalog.GetString ("Run Configuration: {0}", configInfo.EditedConfig.Name);
 			Icon = "md-prefs-play";
 		}
 		

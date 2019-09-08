@@ -73,89 +73,78 @@ namespace MonoDevelop.Platform
 		}
 
 		#region Toolbar implementation
-		Components.Commands.CommandManager commandManager;
-		string commandMenuAddinPath;
-		string appMenuAddinPath;
-		public override bool SetGlobalMenu (Components.Commands.CommandManager commandManager, string commandMenuAddinPath, string appMenuAddinPath)
-		{
-			// Only store this information. Release it when creating the main toolbar.
-			this.commandManager = commandManager;
-			this.commandMenuAddinPath = commandMenuAddinPath;
-			this.appMenuAddinPath = appMenuAddinPath;
+		//Components.Commands.CommandManager commandManager;
+		//string commandMenuAddinPath;
+		//string appMenuAddinPath;
+		//public override bool SetGlobalMenu (Components.Commands.CommandManager commandManager, string commandMenuAddinPath, string appMenuAddinPath)
+		//{
+		//	// Only store this information. Release it when creating the main toolbar.
+		//	this.commandManager = commandManager;
+		//	this.commandMenuAddinPath = commandMenuAddinPath;
+		//	this.appMenuAddinPath = appMenuAddinPath;
 
-			return true;
-		}
+		//	return true;
+		//}
 
-		const int WM_SYSCHAR = 0x0106;
-        internal override void AttachMainToolbar (Gtk.VBox parent, Components.MainToolbar.IMainToolbarView toolbar)
-		{
-			titleBar = new TitleBar ();
-			var topMenu = new WPFTitlebar (titleBar);
+		//const int WM_SYSCHAR = 0x0106;
+  //      internal override void AttachMainToolbar (Gtk.VBox parent, Components.MainToolbar.IMainToolbarView toolbar)
+		//{
+		//	titleBar = new TitleBar ();
+		//	var topMenu = new WPFTitlebar (titleBar);
 
-			//commandManager.IncompleteKeyPressed += (sender, e) => {
-			//	if (e.Key == Gdk.Key.Alt_L) {
-			//		Keyboard.Focus(titleBar.DockTitle.Children[0]);
-			//	}
-			//};
-			parent.PackStart (topMenu, false, true, 0);
-			SetupMenu ();
+		//	//commandManager.IncompleteKeyPressed += (sender, e) => {
+		//	//	if (e.Key == Gdk.Key.Alt_L) {
+		//	//		Keyboard.Focus(titleBar.DockTitle.Children[0]);
+		//	//	}
+		//	//};
+		//	parent.PackStart (topMenu, false, true, 0);
+		//	SetupMenu ();
 
-			parent.PackStart ((WPFToolbar)toolbar, false, true, 0);
-		}
+		//	parent.PackStart ((WPFToolbar)toolbar, false, true, 0);
+		//}
 
-		void SetupMenu ()
-		{
-			// TODO: Use this?
-			CommandEntrySet appCes = commandManager.CreateCommandEntrySet (appMenuAddinPath);
+		//void SetupMenu ()
+		//{
+		//	// TODO: Use this?
+		//	CommandEntrySet appCes = commandManager.CreateCommandEntrySet (appMenuAddinPath);
 
-			CommandEntrySet ces = commandManager.CreateCommandEntrySet (commandMenuAddinPath);
-			var mainMenu = new Menu {
-				IsMainMenu = true,
-				FocusVisualStyle = null,
-			};
-			foreach (CommandEntrySet ce in ces)
-			{
-				var item = new TitleMenuItem (commandManager, ce, menu: mainMenu);
-				mainMenu.Items.Add(item);
-			}
+		//	CommandEntrySet ces = commandManager.CreateCommandEntrySet (commandMenuAddinPath);
+		//	var mainMenu = new Menu {
+		//		IsMainMenu = true,
+		//		FocusVisualStyle = null,
+		//	};
+		//	foreach (CommandEntrySet ce in ces)
+		//	{
+		//		var item = new TitleMenuItem (commandManager, ce, menu: mainMenu);
+		//		mainMenu.Items.Add(item);
+		//	}
 
-			titleBar.DockTitle.Children.Add (mainMenu);
-			DockPanel.SetDock (mainMenu, Dock.Left);
+		//	titleBar.DockTitle.Children.Add (mainMenu);
+		//	DockPanel.SetDock (mainMenu, Dock.Left);
 
-			commandManager = null;
-			commandMenuAddinPath = appMenuAddinPath = null;
-		}
+		//	commandManager = null;
+		//	commandMenuAddinPath = appMenuAddinPath = null;
+		//}
 
-		TitleBar titleBar;
-		internal override Components.MainToolbar.IMainToolbarView CreateMainToolbar (Gtk.Window window)
-		{
-			return new WPFToolbar {
-				HeightRequest = 40,
-			};
-		}
+		//TitleBar titleBar;
+		//internal override Components.MainToolbar.IMainToolbarView CreateMainToolbar (Gtk.Window window)
+		//{
+		//	return new WPFToolbar {
+		//		HeightRequest = 40,
+		//	};
+		//}
 		#endregion
 
 		public override bool GetIsFullscreen (Components.Window window)
 		{
-			WINDOWPLACEMENT lpwndpl = new WINDOWPLACEMENT ();
-			lpwndpl.length = Marshal.SizeOf (lpwndpl);
-
-			Gtk.Window controlWindow = window;
-			IntPtr handle = GdkWin32.HgdiobjGet (controlWindow.GdkWindow);
-			Win32.GetWindowPlacement (handle, ref lpwndpl);
-			return lpwndpl.showCmd == Win32.SW_SHOWMAXIMIZED;
+			//the Fullscreen functionality is broken in GTK on Win7+
+			//TODO: implement a workaround.
+			return false;
 		}
 
 		public override void SetIsFullscreen (Components.Window window, bool isFullscreen)
 		{
-			WINDOWPLACEMENT lpwndpl = new WINDOWPLACEMENT ();
-			lpwndpl.length = Marshal.SizeOf (lpwndpl);
-
-			Gtk.Window controlWindow = window;
-			IntPtr handle = GdkWin32.HgdiobjGet (controlWindow.GdkWindow);
-			Win32.GetWindowPlacement (handle, ref lpwndpl);
-			lpwndpl.showCmd = isFullscreen ? Win32.SW_SHOWMAXIMIZED : Win32.SW_SHOWNORMAL;
-			Win32.SetWindowPlacement (handle, ref lpwndpl);
+			//no-op as we have not yet implemented this
 		}
 
 		internal static Xwt.Toolkit WPFToolkit;
@@ -366,13 +355,13 @@ namespace MonoDevelop.Platform
 			if (command != null) {
 				sb.Append ("/C \"");
 				if (title != null)
-					sb.Append ("title " + title + " && ");
-				sb.Append ("\"" + command + "\" " + arguments);
+					sb.Append ("title ").Append (title).Append (" && ");
+				sb.Append ("\"").Append (command).Append ("\" ").Append (arguments);
 				if (pauseWhenFinished)
 					sb.Append (" & pause");
 				sb.Append ("\"");
 			} else if (title != null) {
-				sb.Append ("/K \"title " + title + "\"");
+				sb.Append ("/K \"title ").Append (title).Append ("\"");
 			}
 			var psi = new ProcessStartInfo ("cmd.exe", sb.ToString ()) {
 				CreateNoWindow = false,
@@ -551,7 +540,8 @@ namespace MonoDevelop.Platform
 					SHOpenFolderAndSelectItems (dir, (uint)files.Length, files, 0);
 				} finally {
 					ILFree (dir);
-					files.ToList ().ForEach (ILFree);
+					foreach (var file in files)
+						ILFree (file);
 				}
 			}
 		}

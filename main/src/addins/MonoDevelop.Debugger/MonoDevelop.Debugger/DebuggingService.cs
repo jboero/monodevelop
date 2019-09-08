@@ -48,6 +48,10 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.Threading;
+using MonoDevelop.Core.Instrumentation;
+using MonoDevelop.Components;
+using Microsoft.VisualStudio.Text;
+using Microsoft.CodeAnalysis.Text;
 
 namespace MonoDevelop.Debugger
 {
@@ -83,6 +87,7 @@ namespace MonoDevelop.Debugger
 		static public event EventHandler CallStackChanged;
 		static public event EventHandler CurrentFrameChanged;
 		static public event EventHandler ExecutionLocationChanged;
+		static public event EventHandler VariableChanged;
 		static public event EventHandler DisassemblyRequested;
 		static public event EventHandler<DocumentEventArgs> DisableConditionalCompilation;
 
@@ -91,8 +96,8 @@ namespace MonoDevelop.Debugger
 		static DebuggingService ()
 		{
 			executionHandlerFactory = new DebugExecutionHandlerFactory ();
-			TextEditorService.LineCountChanged += OnLineCountChanged;
 			IdeApp.Initialized += delegate {
+				IdeServices.TextEditorService.LineCountChanged += OnLineCountChanged;
 				IdeApp.Workspace.StoringUserPreferences += OnStoreUserPrefs;
 				IdeApp.Workspace.LoadingUserPreferences += OnLoadUserPrefs;
 				IdeApp.Workspace.LastWorkspaceItemClosed += OnSolutionClosed;
@@ -106,7 +111,30 @@ namespace MonoDevelop.Debugger
 				// Refresh the evaluators list
 				evaluators = null;
 			});
+			IdeApp.Exiting += IdeApp_Exiting;
+			FileService.FileRenamed += FileService_FileRenamed;
+			FileService.FileMoved += FileService_FileRenamed;
 		}
+
+		private static void FileService_FileRenamed (object sender, FileCopyEventArgs e)
+		{
+			foreach (var file in e) {
+				breakpoints.FileRenamed (file.SourceFile, file.TargetFile);
+			}
+		}
+
+		static void IdeApp_Exiting (object sender, ExitEventArgs args)
+		{
+			if (!IsDebugging)
+				return;
+			if (MessageService.Confirm (GettextCatalog.GetString (
+						"The debugger is currently running and will have to be stopped. Do you want to stop debugging?"),
+						new AlertButton (GettextCatalog.GetString ("Stop Debugging")))) {
+				Stop ();
+			} else
+				args.Cancel = true;
+		}
+
 
 		public static IExecutionHandler GetExecutionHandler ()
 		{
@@ -156,17 +184,12 @@ namespace MonoDevelop.Debugger
 
 			watch.LiveUpdate = liveUpdate;
 			if (liveUpdate) {
-				var bp = new Breakpoint (watch.File, watch.Line);
-				bp.TraceExpression = "{" + watch.Expression + "}";
-				bp.HitAction = HitAction.PrintExpression;
-				bp.NonUserBreakpoint = true;
-				lock (breakpoints)
-					breakpoints.Add (bp);
+				var bp = pinnedWatches.CreateLiveUpdateBreakpoint (watch);
 				pinnedWatches.Bind (watch, bp);
+				breakpoints.Add(bp);
 			} else {
 				pinnedWatches.Bind (watch, null);
-				lock (breakpoints)
-					breakpoints.Remove (watch.BoundTracer);
+				breakpoints.Remove (watch.BoundTracer);
 			}
 		}
 
@@ -257,11 +280,11 @@ namespace MonoDevelop.Debugger
 			return GetSetConverter<T> (val) != null;
 		}
 
-		public static void ShowValueVisualizer (ObjectValue val)
+		public static bool ShowValueVisualizer (ObjectValue val)
 		{
 			using (var dlg = new ValueVisualizerDialog ()) {
 				dlg.Show (val);
-				MessageService.ShowCustomDialog (dlg);
+				return MessageService.ShowCustomDialog (dlg) == (int)Gtk.ResponseType.Ok;
 			}
 		}
 
@@ -273,7 +296,8 @@ namespace MonoDevelop.Debugger
 		public static bool ShowBreakpointProperties (ref BreakEvent bp, BreakpointType breakpointType = BreakpointType.Location)
 		{
 			using (var dlg = new BreakpointPropertiesDialog (bp, breakpointType)) {
-				Xwt.Command response = dlg.Run ();
+				Xwt.WindowFrame parentWindow = Xwt.Toolkit.CurrentEngine.WrapWindow (IdeApp.Workbench.RootWindow);
+				Xwt.Command response = dlg.Run (parentWindow);
 				if (bp == null)
 					bp = dlg.GetBreakEvent ();
 				return response == Xwt.Command.Ok;
@@ -438,8 +462,6 @@ namespace MonoDevelop.Debugger
 			session.OutputWriter = null;
 			session.LogWriter = null;
 
-			sessionManager.Dispose ();
-
 			Runtime.RunInMainThread (delegate {
 				if (cleaningCurrentSession)
 					HideExceptionCaughtDialog ();
@@ -455,8 +477,9 @@ namespace MonoDevelop.Debugger
 				NotifyCallStackChanged ();
 				NotifyCurrentFrameChanged ();
 				NotifyLocationChanged ();
+			}).ContinueWith ((t) => {
+				sessionManager.Dispose ();
 			});
-
 		}
 
 		static string oldLayout;
@@ -595,9 +618,8 @@ namespace MonoDevelop.Debugger
 		public static AsyncOperation AttachToProcess (DebuggerEngine debugger, ProcessInfo proc)
 		{
 			var session = debugger.CreateSession ();
-			var monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor ();
-			var sessionManager = new SessionManager (session, monitor.Console, debugger);
-			session.ExceptionHandler = ExceptionHandler;
+			var monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor (proc.Name);
+			var sessionManager = new SessionManager (session, monitor.Console, debugger, null);
 			SetupSession (sessionManager);
 			session.TargetExited += delegate {
 				monitor.Dispose ();
@@ -615,11 +637,21 @@ namespace MonoDevelop.Debugger
 			eval.EvaluationTimeout = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.EvaluationTimeout", 2500);
 			eval.FlattenHierarchy = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.FlattenHierarchy", false);
 			eval.GroupPrivateMembers = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.GroupPrivateMembers", true);
+			eval.EllipsizedLength = 260; // Instead of random default(100), lets use 260 which should cover 99.9% of file path cases
 			eval.GroupStaticMembers = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.GroupStaticMembers", true);
 			eval.MemberEvaluationTimeout = eval.EvaluationTimeout * 2;
+			eval.StackFrameFormat = new StackFrameFormat () {
+				Module = PropertyService.Get ("Monodevelop.StackTrace.ShowModuleName", eval.StackFrameFormat.Module),
+				ParameterTypes = PropertyService.Get ("Monodevelop.StackTrace.ShowParameterType", eval.StackFrameFormat.ParameterTypes),
+				ParameterNames = PropertyService.Get ("Monodevelop.StackTrace.ShowParameterName", eval.StackFrameFormat.ParameterNames),
+				ParameterValues = PropertyService.Get ("Monodevelop.StackTrace.ShowParameterValue", eval.StackFrameFormat.ParameterValues),
+				Line = PropertyService.Get ("Monodevelop.StackTrace.ShowLineNumber", eval.StackFrameFormat.Line),
+				ExternalCode = PropertyService.Get ("Monodevelop.StackTrace.ShowExternalCode", eval.StackFrameFormat.ExternalCode)
+			};
 			return new DebuggerSessionOptions {
 				StepOverPropertiesAndOperators = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.StepOverPropertiesAndOperators", true),
 				ProjectAssembliesOnly = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.ProjectAssembliesOnly", true),
+				AutomaticSourceLinkDownload = PropertyService.Get ("MonoDevelop.Debugger.DebuggingService.AutomaticSourceDownload", AutomaticSourceDownload.Ask),
 				EvaluationOptions = eval,
 			};
 		}
@@ -628,6 +660,7 @@ namespace MonoDevelop.Debugger
 		{
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.StepOverPropertiesAndOperators", options.StepOverPropertiesAndOperators);
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.ProjectAssembliesOnly", options.ProjectAssembliesOnly);
+			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.AutomaticSourceDownload", options.AutomaticSourceLinkDownload);
 
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.AllowTargetInvoke", options.EvaluationOptions.AllowTargetInvoke);
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.AllowToStringCalls", options.EvaluationOptions.AllowToStringCalls);
@@ -635,6 +668,14 @@ namespace MonoDevelop.Debugger
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.FlattenHierarchy", options.EvaluationOptions.FlattenHierarchy);
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.GroupPrivateMembers", options.EvaluationOptions.GroupPrivateMembers);
 			PropertyService.Set ("MonoDevelop.Debugger.DebuggingService.GroupStaticMembers", options.EvaluationOptions.GroupStaticMembers);
+
+
+			PropertyService.Set ("Monodevelop.StackTrace.ShowModuleName", options.EvaluationOptions.StackFrameFormat.Module);
+			PropertyService.Set ("Monodevelop.StackTrace.ShowParameterType", options.EvaluationOptions.StackFrameFormat.ParameterTypes);
+			PropertyService.Set ("Monodevelop.StackTrace.ShowParameterName", options.EvaluationOptions.StackFrameFormat.ParameterNames);
+			PropertyService.Set ("Monodevelop.StackTrace.ShowParameterValue", options.EvaluationOptions.StackFrameFormat.ParameterValues);
+			PropertyService.Set ("Monodevelop.StackTrace.ShowLineNumber", options.EvaluationOptions.StackFrameFormat.Line);
+			PropertyService.Set ("Monodevelop.StackTrace.ShowExternalCode", options.EvaluationOptions.StackFrameFormat.ExternalCode);
 
 			foreach (var session in sessions.Keys.ToArray ()) {
 				session.Options.EvaluationOptions = GetUserOptions ().EvaluationOptions;
@@ -651,11 +692,22 @@ namespace MonoDevelop.Debugger
 
 		internal static ProcessAsyncOperation InternalRun (ExecutionCommand cmd, DebuggerEngine factory, OperationConsole c)
 		{
+			// Start assuming success, update on failure
+			var metadata = new DebuggerStartMetadata {
+				Result = CounterResult.Success
+			};
+			var timer = Counters.DebuggerStart.BeginTiming (metadata);
+
 			if (factory == null) {
 				factory = GetFactoryForCommand (cmd);
-				if (factory == null)
+				if (factory == null) {
+					metadata.SetFailure ();
+					timer.Dispose ();
 					throw new InvalidOperationException ("Unsupported command: " + cmd);
+				}
 			}
+
+			metadata.Name = factory.Name;
 
 			DebuggerStartInfo startInfo = factory.CreateDebuggerStartInfo (cmd);
 			startInfo.UseExternalConsole = c is ExternalConsole;
@@ -663,23 +715,25 @@ namespace MonoDevelop.Debugger
 				startInfo.CloseExternalConsoleOnExit = ((ExternalConsole)c).CloseOnDispose;
 
 			var session = factory.CreateSession ();
-			session.ExceptionHandler = ExceptionHandler;
 
 			SessionManager sessionManager;
 			// When using an external console, create a new internal console which will be used
 			// to show the debugger log
 			if (startInfo.UseExternalConsole)
-				sessionManager = new SessionManager (session, IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor ().Console, factory);
+				sessionManager = new SessionManager (session, IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor (System.IO.Path.GetFileNameWithoutExtension (startInfo.Command)).Console, factory, timer);
 			else
-				sessionManager = new SessionManager (session, c, factory);
+				sessionManager = new SessionManager (session, c, factory, timer);
 			SetupSession (sessionManager);
 
 			SetDebugLayout ();
 
 			try {
+				sessionManager.PrepareForRun ();
 				session.Run (startInfo, GetUserOptions ());
 			} catch {
+				sessionManager.SessionError = true;
 				Cleanup (sessionManager);
+				metadata.SetFailure ();
 				throw;
 			}
 			return sessionManager.debugOperation;
@@ -687,7 +741,7 @@ namespace MonoDevelop.Debugger
 
 		static bool ExceptionHandler (Exception ex)
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				if (ex is DebuggerException)
 					MessageService.ShowError (ex.Message, ex);
 				else
@@ -700,15 +754,26 @@ namespace MonoDevelop.Debugger
 		{
 			OperationConsole console;
 			IDisposable cancelRegistration;
+			System.Diagnostics.Stopwatch firstAssemblyLoadTimer;
+
 			public readonly DebuggerSession Session;
 			public readonly DebugAsyncOperation debugOperation;
 			public readonly DebuggerEngine Engine;
+			internal ITimeTracker<DebuggerStartMetadata> StartTimer { get; set; }
 
-			public SessionManager (DebuggerSession session, OperationConsole console, DebuggerEngine engine)
+			internal bool TrackActionTelemetry { get; set; }
+			internal DebuggerActionMetadata.ActionType CurrentAction { get; set; }
+			internal ITimeTracker ActionTimeTracker { get; set; }
+
+			public SessionManager (DebuggerSession session, OperationConsole console, DebuggerEngine engine, ITimeTracker<DebuggerStartMetadata> timeTracker)
 			{
 				Engine = engine;
 				Session = session;
+				session.ExceptionHandler = ExceptionHandler;
+				session.AssemblyLoaded += OnAssemblyLoaded;
 				this.console = console;
+				StartTimer = timeTracker;
+
 				cancelRegistration = console.CancellationToken.Register (Cancel);
 				debugOperation = new DebugAsyncOperation (session);
 			}
@@ -716,6 +781,7 @@ namespace MonoDevelop.Debugger
 			void Cancel ()
 			{
 				Session.Exit ();
+				StartTimer?.Metadata.SetUserCancel ();
 				Cleanup (this);
 			}
 
@@ -748,12 +814,88 @@ namespace MonoDevelop.Debugger
 
 			public void Dispose ()
 			{
+				UpdateDebugSessionCounter ();
+				UpdateEvaluationStatsCounter ();
+
 				console?.Dispose ();
 				console = null;
+				Session.AssemblyLoaded -= OnAssemblyLoaded;
 				Session.Dispose ();
 				debugOperation.Cleanup ();
 				cancelRegistration?.Dispose ();
 				cancelRegistration = null;
+
+				StartTimer?.Dispose ();
+			}
+
+			bool sessionError;
+			/// <summary>
+			/// Indicates whether the debug session failed to an exception or any debugger
+			/// operation failed and was reported to the user.
+			/// </summary>
+			public bool SessionError {
+				get => sessionError;
+				set {
+					sessionError = value;
+					StartTimer?.Metadata.SetFailure ();
+				}
+			}
+
+			void UpdateDebugSessionCounter ()
+			{
+				var metadata = new Dictionary<string, object> ();
+				metadata ["Success"] = (!SessionError).ToString ();
+				metadata ["DebuggerType"] = Engine.Id;
+
+				if (firstAssemblyLoadTimer != null) {
+					if (firstAssemblyLoadTimer.IsRunning) {
+						// No first assembly load event.
+						firstAssemblyLoadTimer.Stop ();
+					} else {
+						metadata ["AssemblyFirstLoadDuration"] = firstAssemblyLoadTimer.ElapsedMilliseconds.ToString ();
+					}
+				}
+
+				Counters.DebugSession.Inc (1, null, metadata);
+			}
+
+			void UpdateEvaluationStatsCounter ()
+			{
+				if (Session.EvaluationStats.TimingsCount == 0 && Session.EvaluationStats.FailureCount == 0) {
+					// No timings or failures recorded.
+					return;
+				}
+
+				var metadata = new Dictionary<string, object> ();
+				metadata ["DebuggerType"] = Engine.Id;
+				metadata ["AverageDuration"] = Session.EvaluationStats.AverageTime.ToString ();
+				metadata ["MaximumDuration"] = Session.EvaluationStats.MaxTime.ToString ();
+				metadata ["MinimumDuration"] = Session.EvaluationStats.MinTime.ToString ();
+				metadata ["FailureCount"] = Session.EvaluationStats.FailureCount.ToString ();
+				metadata ["SuccessCount"] = Session.EvaluationStats.TimingsCount.ToString ();
+
+				Counters.EvaluationStats.Inc (1, null, metadata);
+			}
+
+			bool ExceptionHandler (Exception ex)
+			{
+				SessionError = true;
+				return DebuggingService.ExceptionHandler (ex);
+			}
+
+			/// <summary>
+			/// Called just before DebugSession.Run is called.
+			/// </summary>
+			public void PrepareForRun ()
+			{
+				firstAssemblyLoadTimer = new System.Diagnostics.Stopwatch ();
+				firstAssemblyLoadTimer.Start ();
+			}
+
+			void OnAssemblyLoaded (object sender, AssemblyEventArgs e)
+			{
+				DebuggerSession.AssemblyLoaded -= OnAssemblyLoaded;
+				firstAssemblyLoadTimer?.Stop ();
 			}
 		}
 
@@ -763,10 +905,29 @@ namespace MonoDevelop.Debugger
 			await Runtime.RunInMainThread (delegate {
 				busyEvaluator.UpdateBusyState (args);
 				if (args.IsBusy) {
+					var session = (DebuggerSession) s;
+
+					if (sessions.TryGetValue (session, out var manager)) {
+						var metadata = new Dictionary<string, object> {
+							["DebuggerType"] = manager.Engine.Id,
+							["Debugger.AsyncOperation.Description"] = args.Description,
+							["Debugger.EvaluationOptions.AllowDisplayStringEvaluation"] = args.EvaluationContext.Options.AllowDisplayStringEvaluation,
+							["Debugger.EvaluationOptions.AllowMethodEvaluation"] = args.EvaluationContext.Options.AllowMethodEvaluation,
+							["Debugger.EvaluationOptions.AllowTargetInvoke"] = args.EvaluationContext.Options.AllowTargetInvoke,
+							["Debugger.EvaluationOptions.AllowToStringCalls"] = args.EvaluationContext.Options.AllowToStringCalls,
+							["Debugger.EvaluationOptions.ChunkRawStrings"] = args.EvaluationContext.Options.ChunkRawStrings,
+							["Debugger.EvaluationOptions.EvaluationTimeout"] = args.EvaluationContext.Options.EvaluationTimeout,
+						};
+
+						Counters.DebuggerBusy.Inc (1, null, metadata);
+					}
+
 					if (busyStatusIcon == null) {
 						busyStatusIcon = IdeApp.Workbench.StatusBar.ShowStatusIcon (ImageService.GetIcon ("md-bug", Gtk.IconSize.Menu));
 						busyStatusIcon.SetAlertMode (100);
+						busyStatusIcon.Title = GettextCatalog.GetString ("Debugger");
 						busyStatusIcon.ToolTip = GettextCatalog.GetString ("The debugger runtime is not responding. You can wait for it to recover, or stop debugging.");
+						busyStatusIcon.Help = GettextCatalog.GetString ("Debugger information");
 						busyStatusIcon.Clicked += OnBusyStatusIconClicked;
 					}
 				} else {
@@ -794,6 +955,7 @@ namespace MonoDevelop.Debugger
 		static void OnStarted (object s, EventArgs a)
 		{
 			nextStatementLocations.Clear ();
+
 			if (currentSession?.Session == s) {
 				currentBacktrace = null;
 				currentSession = null;
@@ -816,6 +978,7 @@ namespace MonoDevelop.Debugger
 				return;
 			nextStatementLocations.Clear ();
 
+			SessionManager sessionManager = null;
 			try {
 				switch (args.Type) {
 				case TargetEventType.TargetExited:
@@ -831,22 +994,41 @@ namespace MonoDevelop.Debugger
 				case TargetEventType.UnhandledException:
 				case TargetEventType.ExceptionThrown:
 					var action = new Func<bool> (delegate {
-						SessionManager sessionManager;
 						if (!sessions.TryGetValue (session, out sessionManager))
 							return false;
+
+						if (sessionManager.TrackActionTelemetry) {
+							var metadata = new DebuggerActionMetadata () {
+								Type = sessionManager.CurrentAction
+							};
+							sessionManager.ActionTimeTracker = Counters.DebuggerAction.BeginTiming ("Debugger action", metadata);
+						}
 						Breakpoints.RemoveRunToCursorBreakpoints ();
 						currentSession = sessionManager;
 						ActiveThread = args.Thread;
-						NotifyPaused ();
+						NotifyPaused (currentSession);
 						NotifyException (args);
 						return true;
 					});
 					if (currentSession != null && currentSession != sessions [session]) {
 						StopsQueue.Enqueue (action);
-						NotifyPaused ();//Notify about pause again, so ThreadsPad can update, to show all processes
+						NotifyPaused (null);//Notify about pause again, so ThreadsPad can update, to show all processes
 					} else {
 						action ();
 					}
+					break;
+				case TargetEventType.TargetReady:
+					if (!sessions.TryGetValue (session, out sessionManager)) {
+						return;
+					}
+
+					sessionManager.StartTimer?.Metadata.SetSuccess ();
+
+					sessionManager.StartTimer?.Dispose ();
+					sessionManager.StartTimer = null;
+
+					Ide.Counters.BuildAndDeployTracker?.End ();
+					Ide.Counters.BuildAndDeployTracker = null;
 					break;
 				}
 			} catch (Exception ex) {
@@ -861,7 +1043,7 @@ namespace MonoDevelop.Debugger
 				handler (null, e);
 		}
 
-		static void NotifyPaused ()
+		static void NotifyPaused (SessionManager sessionManager)
 		{
 			Runtime.RunInMainThread (delegate {
 				stepSwitchCts?.Cancel ();
@@ -869,6 +1051,16 @@ namespace MonoDevelop.Debugger
 					PausedEvent (null, EventArgs.Empty);
 				NotifyLocationChanged ();
 				IdeApp.Workbench.GrabDesktopFocus ();
+
+			}).ContinueWith ((arg) => {
+				// PausedEventHandlers may queue additional UI events that can cause a freeze.
+				// Ensure those UI events have completed before we stop tracking the time.
+				Runtime.RunInMainThread (() => {
+					if (sessionManager.TrackActionTelemetry) {
+						sessionManager.ActionTimeTracker.Dispose ();
+						sessionManager.TrackActionTelemetry = false;
+					}
+				});
 			});
 		}
 
@@ -886,22 +1078,26 @@ namespace MonoDevelop.Debugger
 		static void NotifyLocationChanged ()
 		{
 			Runtime.AssertMainThread ();
-			if (ExecutionLocationChanged != null)
-				ExecutionLocationChanged (null, EventArgs.Empty);
+
+			ExecutionLocationChanged?.Invoke (null, EventArgs.Empty);
 		}
 
 		static void NotifyCurrentFrameChanged ()
 		{
 			if (currentBacktrace != null)
 				pinnedWatches.InvalidateAll ();
-			if (CurrentFrameChanged != null)
-				CurrentFrameChanged (null, EventArgs.Empty);
+
+			CurrentFrameChanged?.Invoke (null, EventArgs.Empty);
 		}
 
 		static void NotifyCallStackChanged ()
 		{
-			if (CallStackChanged != null)
-				CallStackChanged (null, EventArgs.Empty);
+			CallStackChanged?.Invoke (null, EventArgs.Empty);
+		}
+
+		internal static void NotifyVariableChanged ()
+		{
+			VariableChanged?.Invoke (null, EventArgs.Empty);
 		}
 
 		public static void Stop ()
@@ -917,10 +1113,15 @@ namespace MonoDevelop.Debugger
 
 		public static void StepInto ()
 		{
+
 			Runtime.AssertMainThread ();
 
 			if (!IsDebugging || !IsPaused || CheckIsBusy ())
 				return;
+
+			currentSession.TrackActionTelemetry = true;
+			currentSession.CurrentAction = DebuggerActionMetadata.ActionType.StepInto;
+
 			currentSession.Session.StepLine ();
 			NotifyLocationChanged ();
 			DelayHandleStopQueue ();
@@ -932,6 +1133,10 @@ namespace MonoDevelop.Debugger
 
 			if (!IsDebugging || !IsPaused || CheckIsBusy ())
 				return;
+
+			currentSession.TrackActionTelemetry = true;
+			currentSession.CurrentAction = DebuggerActionMetadata.ActionType.StepOver;
+
 			currentSession.Session.NextLine ();
 			NotifyLocationChanged ();
 			DelayHandleStopQueue ();
@@ -943,6 +1148,10 @@ namespace MonoDevelop.Debugger
 
 			if (!IsDebugging || !IsPaused || CheckIsBusy ())
 				return;
+
+			currentSession.TrackActionTelemetry = true;
+			currentSession.CurrentAction = DebuggerActionMetadata.ActionType.StepOut;
+
 			currentSession.Session.Finish ();
 			NotifyLocationChanged ();
 			DelayHandleStopQueue ();
@@ -1136,18 +1345,24 @@ namespace MonoDevelop.Debugger
 
 		static void OnLineCountChanged (object ob, LineCountEventArgs a)
 		{
-			lock (breakpoints) {
-				foreach (Breakpoint bp in breakpoints.GetBreakpoints ()) {
-					if (bp.FileName == a.TextFile.Name) {
-						if (bp.Line > a.LineNumber) {
-							// If the line that has the breakpoint is deleted, delete the breakpoint, otherwise update the line #.
-							if (bp.Line + a.LineCount >= a.LineNumber)
-								breakpoints.UpdateBreakpointLine (bp, bp.Line + a.LineCount);
-							else
-								breakpoints.Remove (bp);
-						} else if (bp.Line == a.LineNumber && a.LineCount < 0)
+			foreach (var bp in breakpoints.GetBreakpoints ()) {
+				if (bp.FileName == a.TextFile.Name) {
+					if (bp.Line > a.LineNumber) {
+						var startIndex = a.TextFile.GetPositionFromLineColumn (bp.Line, bp.Column);
+						var endIndex = a.TextFile.GetPositionFromLineColumn (bp.Line + 1, 0) - 1;
+
+						if (endIndex < startIndex)
+							endIndex = startIndex;
+
+						var text = a.TextFile.GetText (startIndex, endIndex);
+
+						// If the line that has the breakpoint is deleted, delete the breakpoint, otherwise update the line #.
+						if (bp.Line + a.LineCount >= a.LineNumber && !string.IsNullOrWhiteSpace (text))
+							breakpoints.UpdateBreakpointLine (bp, bp.Line + a.LineCount);
+						else
 							breakpoints.Remove (bp);
-					}
+					} else if (bp.Line == a.LineNumber && a.LineCount < 0)
+						breakpoints.Remove (bp);
 				}
 			}
 		}
@@ -1155,8 +1370,7 @@ namespace MonoDevelop.Debugger
 		static void OnStoreUserPrefs (object s, UserPreferencesEventArgs args)
 		{
 			var baseDir = (args.Item as Solution)?.BaseDirectory;
-			lock (breakpoints)
-				args.Properties.SetValue ("MonoDevelop.Ide.DebuggingService.Breakpoints", breakpoints.Save (baseDir));
+			args.Properties.SetValue ("MonoDevelop.Ide.DebuggingService.Breakpoints", breakpoints.Save (baseDir));
 			args.Properties.SetValue ("MonoDevelop.Ide.DebuggingService.PinnedWatches", pinnedWatches);
 		}
 
@@ -1166,44 +1380,84 @@ namespace MonoDevelop.Debugger
 
 			if (elem != null) {
 				var baseDir = (args.Item as Solution)?.BaseDirectory;
-				lock (breakpoints)
-					breakpoints.Load (elem, baseDir);
+				breakpoints.Load (elem, baseDir);
 			}
 
 			PinnedWatchStore wstore = args.Properties.GetValue<PinnedWatchStore> ("MonoDevelop.Ide.DebuggingService.PinnedWatches");
 			if (wstore != null)
 				pinnedWatches.LoadFrom (wstore);
 
-			lock (breakpoints)
-				pinnedWatches.BindAll (breakpoints);
+			pinnedWatches.BindAll (breakpoints);
+
+			pinnedWatches.SetAllLiveUpdateBreakpoints (breakpoints);
 
 			return Task.FromResult (true);
 		}
 
 		static void OnSolutionClosed (object s, EventArgs args)
 		{
-			lock (breakpoints)
-				breakpoints.Clear ();
+			breakpoints.Clear ();
+		}
+
+		static Microsoft.CodeAnalysis.ISymbol GetLanguageItem (MonoDevelop.Ide.Gui.Document document, SourceLocation sourceLocation, string identifier)
+		{
+			var textBuffer = document.GetContent<ITextBuffer> (true);
+			if (textBuffer == null)
+				return null;
+
+			var currentSnapshot = textBuffer.CurrentSnapshot;
+			var roslynDocument = currentSnapshot.GetOpenDocumentInCurrentContextWithChanges ();
+			if (roslynDocument == null)
+				return null;
+
+			var model = roslynDocument.GetSemanticModelAsync ().WaitAndGetResult ();
+			if (model == null)
+				return null;
+
+			int index = identifier.LastIndexOf ("`", System.StringComparison.Ordinal);
+			int arity = 0;
+			if (index != -1) {
+				try {
+					arity = int.Parse (identifier.Substring (index + 1));
+				} catch {
+					return null;
+				}
+				identifier = identifier.Remove (index);
+			}
+			var line = currentSnapshot.GetLineFromLineNumber (sourceLocation.Line - 1);
+			foreach (var symbol in model.LookupSymbols (line.Start.Position + sourceLocation.Column - 1, name: identifier)) {
+				var typeSymbol = symbol as Microsoft.CodeAnalysis.INamedTypeSymbol;
+				if (typeSymbol != null && (arity == 0 || arity == typeSymbol.Arity)) {
+					return symbol;
+				}
+				var namespaceSymbol = symbol as Microsoft.CodeAnalysis.INamespaceSymbol;
+				if (namespaceSymbol != null) {
+					return namespaceSymbol;
+				}
+			}
+			return null;
 		}
 
 		static string ResolveType (string identifier, SourceLocation location)
 		{
 			Document doc = IdeApp.Workbench.GetDocument (location.FileName);
 			if (doc != null) {
-				ITextEditorResolver textEditorResolver = doc.GetContent<ITextEditorResolver> ();
-				if (textEditorResolver != null) {
-					var rr = textEditorResolver.GetLanguageItem (doc.Editor.LocationToOffset (location.Line, 1), identifier);
-					var ns = rr as Microsoft.CodeAnalysis.INamespaceSymbol;
-					if (ns != null)
-						return ns.ToDisplayString (Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat);
-					var result = rr as Microsoft.CodeAnalysis.INamedTypeSymbol;
-					if (result != null && !(result.TypeKind == Microsoft.CodeAnalysis.TypeKind.Dynamic && result.ToDisplayString (Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat) == "dynamic")) {
-						return result.ToDisplayString (new Microsoft.CodeAnalysis.SymbolDisplayFormat (
-							typeQualificationStyle: Microsoft.CodeAnalysis.SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
-							miscellaneousOptions:
-							Microsoft.CodeAnalysis.SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
-							Microsoft.CodeAnalysis.SymbolDisplayMiscellaneousOptions.UseSpecialTypes));
-					}
+				Microsoft.CodeAnalysis.ISymbol rr = null;
+				if (doc.GetContent<ITextEditorResolver> (true) is ITextEditorResolver textEditorResolver) {
+					rr = textEditorResolver.GetLanguageItem (doc.Editor.LocationToOffset (location.Line, 1), identifier);
+				} else {
+					rr = GetLanguageItem (doc, location, identifier);
+				}
+				var ns = rr as Microsoft.CodeAnalysis.INamespaceSymbol;
+				if (ns != null)
+					return ns.ToDisplayString (Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat);
+				var result = rr as Microsoft.CodeAnalysis.INamedTypeSymbol;
+				if (result != null && !(result.TypeKind == Microsoft.CodeAnalysis.TypeKind.Dynamic && result.ToDisplayString (Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat) == "dynamic")) {
+					return result.ToDisplayString (new Microsoft.CodeAnalysis.SymbolDisplayFormat (
+						typeQualificationStyle: Microsoft.CodeAnalysis.SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+						miscellaneousOptions:
+						Microsoft.CodeAnalysis.SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
+						Microsoft.CodeAnalysis.SymbolDisplayMiscellaneousOptions.UseSpecialTypes));
 				}
 			}
 			return null;
@@ -1224,6 +1478,46 @@ namespace MonoDevelop.Debugger
 			var info = EvaluatorForExtension (extension);
 
 			return info != null ? info.Evaluator : null;
+		}
+
+		static Task<CompletionData> GetExpressionCompletionDataAsync (string exp, StackFrame frame, CancellationToken token)
+		{
+			Document doc = IdeApp.Workbench.GetDocument (frame.SourceLocation.FileName);
+			if (doc == null)
+				return null;
+			var completionProvider = doc.GetContent<IDebuggerCompletionProvider> (true);
+			if (completionProvider == null)
+				return null;
+			return completionProvider.GetExpressionCompletionDataAsync (exp, frame, token);
+		}
+
+		public static async Task<CompletionData> GetCompletionDataAsync (StackFrame frame, string exp, CancellationToken token = default (CancellationToken))
+		{
+			var result = await GetExpressionCompletionDataAsync (exp, frame, token);
+			if (result != null)
+				return result;
+			return frame.GetExpressionCompletionData (exp);
+		}
+
+		public static Task<Span> GetBreakpointSpanAsync (ITextDocument document, int position, CancellationToken cancellationToken = default (CancellationToken))
+		{
+			var doc = IdeApp.Workbench.GetDocument (document.FilePath);
+			IBreakpointSpanResolver resolver = null;
+			ITextBuffer buffer;
+
+			if (doc != null) {
+				resolver = doc.GetContent<IBreakpointSpanResolver> ();
+				buffer = doc.TextBuffer;
+			} else {
+				buffer = document.TextBuffer;
+			}
+
+			if (buffer == null)
+				return Task.FromResult (default (Span));
+
+			resolver = resolver ?? new DefaultBreakpointSpanResolver ();
+
+			return resolver.GetBreakpointSpanAsync (buffer, position, cancellationToken);
 		}
 	}
 
@@ -1266,18 +1560,20 @@ namespace MonoDevelop.Debugger
 
 	class StatusBarConnectionDialog : IConnectionDialog
 	{
+		#pragma warning disable 67 //never used
 		public event EventHandler UserCancelled;
+		#pragma warning restore 67
 
 		public void SetMessage (DebuggerStartInfo dsi, string message, bool listening, int attemptNumber)
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				IdeApp.Workbench.StatusBar.ShowMessage (Ide.Gui.Stock.StatusConnecting, message);
 			});
 		}
 
 		public void Dispose ()
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				IdeApp.Workbench.StatusBar.ShowReady ();
 			});
 		}
@@ -1300,7 +1596,7 @@ namespace MonoDevelop.Debugger
 			cts = new System.Threading.CancellationTokenSource ();
 
 			//MessageService is threadsafe but we want this to be async
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				RunDialog (message);
 			});
 		}

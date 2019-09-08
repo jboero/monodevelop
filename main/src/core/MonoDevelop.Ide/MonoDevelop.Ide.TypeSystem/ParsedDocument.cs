@@ -31,16 +31,29 @@ using System.Linq;
 using System.Threading;
 using MonoDevelop.Ide.Editor;
 using System.Threading.Tasks;
+using MonoDevelop.Core.Text;
 
 namespace MonoDevelop.Ide.TypeSystem
 {
 	[Flags]
+	[Obsolete ("Not supported in new editor")]
 	public enum ParsedDocumentFlags
 	{
 		None            = 0,
-		NonSerializable = 1
+		NonSerializable = 1,
+
+		/// <summary>
+		/// Used for files where a custom folding extension is taken.
+		/// </summary>
+		SkipFoldings   = 2,
+
+		/// <summary>
+		/// Used for files that have a custom completion extension.
+		/// </summary>
+		HasCustomCompletionExtension = 4
 	}
 
+	[Obsolete ("Not supported in new editor")]
 	public abstract class ParsedDocument
 	{
 		DateTime lastWriteTimeUtc = DateTime.UtcNow;
@@ -93,14 +106,7 @@ namespace MonoDevelop.Ide.TypeSystem
 
 		public async Task<bool> HasErrorsAsync (CancellationToken cancellationToken = default (CancellationToken))
 		{
-			return (await GetErrorsAsync (cancellationToken)).Any (e => e.ErrorType == ErrorType.Error);
-		}
-
-		[Obsolete ("Use the HasErrorsAsync method for cancellation and async support.")]
-		public bool HasErrors {
-			get {
-				return GetErrorsAsync ().Result.Any (e => e.ErrorType == ErrorType.Error);
-			}
+			return (await GetErrorsAsync (cancellationToken).ConfigureAwait (false)).Any (e => e.ErrorType == ErrorType.Error);
 		}
 		
 		/// <summary>
@@ -109,11 +115,6 @@ namespace MonoDevelop.Ide.TypeSystem
 		public object Ast {
 			get;
 			set;
-		}
-		
-		public T GetAst<T> () where T : class
-		{
-			return Ast as T;
 		}
 		
 		public ParsedDocument ()
@@ -125,7 +126,8 @@ namespace MonoDevelop.Ide.TypeSystem
 			this.fileName = fileName;
 		}
 	}
-	
+
+	[Obsolete]
 	public class DefaultParsedDocument : ParsedDocument
 	{
 		public DefaultParsedDocument (string fileName) : base (fileName)
@@ -202,13 +204,15 @@ namespace MonoDevelop.Ide.TypeSystem
 		}
 	}
 
+	[Obsolete ("Old editor")]
 	public static class FoldingUtilities
 	{
 		static bool IncompleteOrSingleLine (DomRegion region)
 		{
 			return region.BeginLine <= 0 || region.EndLine <= region.BeginLine;
 		}
-		
+
+		[Obsolete("Language backends need to implement a custom version.")]
 		public static IEnumerable<FoldingRegion> ToFolds (this IReadOnlyList<Comment> comments)
 		{
 			for (int i = 0; i < comments.Count; i++) {
@@ -234,7 +238,7 @@ namespace MonoDevelop.Ide.TypeSystem
 					
 					string txt;
 					if (endOffset > startOffset) {
-						txt = "/* " + SubstrEllipsize (comment.Text, startOffset, endOffset - startOffset) + " */";
+						txt = "/* " + GetFirstLine (comment.Text) + " ...";
 					} else {
 						txt = "/* */";
 					}
@@ -260,13 +264,12 @@ namespace MonoDevelop.Ide.TypeSystem
 				}
 				
 				if (j - i > 1 || (comment.IsDocumentation && comment.Region.BeginLine < comment.Region.EndLine)) {
-					string txt;
+					string txt = null;
 					if (comment.IsDocumentation) {
-						txt = "/// ..."; 
 						string cmtText = commentText.ToString ();
-						int idx = cmtText.IndexOf ("<summary>");
+						int idx = cmtText.IndexOf ("<summary>", StringComparison.Ordinal);
 						if (idx >= 0) {
-							int maxOffset = cmtText.IndexOf ("</summary>");
+							int maxOffset = cmtText.IndexOf ("</summary>", StringComparison.Ordinal);
 							while (maxOffset > 0 && cmtText[maxOffset-1] == ' ')
 								maxOffset--;
 							if (maxOffset < 0)
@@ -286,10 +289,12 @@ namespace MonoDevelop.Ide.TypeSystem
 								endOffset++;
 							}
 							if (endOffset > startOffset)
-								txt = "/// " + SubstrEllipsize (cmtText, startOffset, endOffset - startOffset);
+								txt = "/// <summary> " + cmtText.Substring (startOffset, endOffset - startOffset).Trim()+ " ...";
 						}
+						if (txt == null)
+							txt = "/// " + comment.Text.Trim () + " ...";
 					} else {
-						txt = "// " + SubstrEllipsize (comment.Text, 0, comment.Text.Length);
+						txt = "// " + comment.Text.Trim () + " ...";
 					}
 					
 					yield return new FoldingRegion (txt,
@@ -299,35 +304,27 @@ namespace MonoDevelop.Ide.TypeSystem
 				}
 			}
 		}
-		
-		static string SubstrEllipsize (string str, int start, int length)
-		{
-			//TODO: would be nice to ellipsize fold labels to a specific column, ideally the the formatting 
-			// policy's desired width. However, we would have to know the "real" start column, i.e. respecting 
-			// tab widths. Maybe that would work best by performing the ellipsis in the editor, instead of the parser.
-			const int TRUNC_LEN = 60;
-			
-			if (start == 0 && length == str.Length)
-				return str;
 
-			if (str.Length == 0 || length == 0)
-				return " ...";
-			
-			if (!(start == 0 && length <= TRUNC_LEN)) {
-				if (length > TRUNC_LEN) {
-					length = TRUNC_LEN;
-					int wordBoundaryLen = str.LastIndexOf (' ', length) - start;
-					if (wordBoundaryLen > TRUNC_LEN - 20)
-						length = wordBoundaryLen;
-				}
+		static string GetFirstLine (string text)
+		{
+			int start = 0;
+			while (start < text.Length) {
+				char ch = text [start];
+				if (ch != ' ' && ch != '\t')
+					break;
+				start++;
 			}
-			str = str.Substring (start, length);
-				
-			if (str [str.Length - 1] == '.')
-				return str + "..";
-			else if (char.IsPunctuation (str [str.Length - 1]))
-				return str + " ...";
-			return str + "...";
+			int end = start;
+
+			while (end < text.Length) {
+				char ch = text [end];
+				if (NewLine.IsNewLine (ch))
+					break;
+				end++;
+			}
+			if (end <= start)
+				return "";
+			return text.Substring (start, end - start);
 		}
 		
 		public static IEnumerable<FoldingRegion> FlagIfInsideMembers (this IEnumerable<FoldingRegion> folds,

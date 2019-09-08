@@ -1,4 +1,4 @@
-﻿//
+//
 // TemplateCategoryCodon.cs
 //
 // Author:
@@ -24,18 +24,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System.Linq;
 using Mono.Addins;
 using MonoDevelop.Ide.Templates;
-using MonoDevelop.Core;
-using System.Linq;
 
 namespace MonoDevelop.Ide.Codons
 {
 	[ExtensionNode (Description="A template category.")]
-	internal class TemplateCategoryCodon : ExtensionNode
+	class TemplateCategoryCodon : ExtensionNode
 	{
+		//these fields are assigned by reflection, suppress "never assigned" warning
+		#pragma warning disable 649
+
+		// OBSOLETE: This member is ignored when generating translations.
 		[NodeAttribute ("name", "Name of the category.", Localizable=true)]
 		string name;
+
+		[NodeAttribute ("_name", "Name of the category.", Localizable=true)]
+		string _name;
 
 		[NodeAttribute("icon", "Icon for the category.")]
 		string icon;
@@ -46,9 +52,11 @@ namespace MonoDevelop.Ide.Codons
 		[NodeAttribute ("mappedCategories", "Legacy categories that will be used for mapping templates.")]
 		string mappedCategories;
 
+		#pragma warning restore 649
+
 		public TemplateCategory ToTemplateCategory ()
 		{
-			var category = new TemplateCategory (Id, name, icon);
+			var category = new TemplateCategory (Id, _name ?? name, icon);
 			category.MappedCategories = mappedCategories;
 			category.IsDefault = IsDefaultCategory ();
 
@@ -58,7 +66,7 @@ namespace MonoDevelop.Ide.Codons
 
 		public TemplateCategory ToTopLevelTemplateCategory ()
 		{
-			TemplateCategory category = ToTemplateCategory ();
+			var category = ToTemplateCategory ();
 			category.IsTopLevel = true;
 			return category;
 		}

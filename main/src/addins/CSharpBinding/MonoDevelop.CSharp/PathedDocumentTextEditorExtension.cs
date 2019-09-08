@@ -1,4 +1,4 @@
-// 
+﻿// 
 // PathedDocumentTextEditorExtension.cs
 //  
 // Author:
@@ -38,6 +38,8 @@ using MonoDevelop.Ide.Editor.Extension;
 using MonoDevelop.Projects;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Extensions;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using System.Threading.Tasks;
@@ -50,11 +52,11 @@ namespace MonoDevelop.CSharp
 	{
 		static PathedDocumentTextEditorExtension ()
 		{
-			MonoDevelopWorkspace.GetInsertionPoints = async delegate (TextEditor editor, int offset) {
+			MonoDevelopWorkspace.GetInsertionPoints = async delegate (Ide.Editor.TextEditor editor, int offset) {
 				var doc = IdeApp.Workbench.ActiveDocument;
-				if (doc == null || doc.AnalysisDocument == null)
+				if (doc == null || doc.DocumentContext.AnalysisDocument == null)
 					return new List<InsertionPoint> ();
-				var semanticModel = await doc.AnalysisDocument.GetSemanticModelAsync ();
+				var semanticModel = await doc.DocumentContext.AnalysisDocument.GetSemanticModelAsync ();
 				var declaringType = semanticModel.GetEnclosingSymbol<INamedTypeSymbol> (offset, default(CancellationToken));
 				if (declaringType == null)
 					return new List<InsertionPoint> ();
@@ -65,7 +67,7 @@ namespace MonoDevelop.CSharp
 					offset
 				);
 			};
-			MonoDevelopWorkspace.StartRenameSession = async (TextEditor editor, DocumentContext ctx, Core.Text.ITextSourceVersion version, SyntaxToken? token) => {
+			MonoDevelopWorkspace.StartRenameSession = async (Ide.Editor.TextEditor editor, DocumentContext ctx, Core.Text.ITextSourceVersion version, SyntaxToken? token) => {
 				var latestDocument = ctx.AnalysisDocument;
 				var cancellationToken = default (CancellationToken);
 				var latestModel = await latestDocument.GetSemanticModelAsync (cancellationToken).ConfigureAwait (false);
@@ -130,7 +132,9 @@ namespace MonoDevelop.CSharp
 			isPathSet = false;
 			// Delay the execution of UpdateOwnerProjects since it may end calling DocumentContext.AttachToProject,
 			// which shouldn't be called while the extension chain is being initialized.
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
+				if (Editor == null)
+					return;
 				UpdateOwnerProjects ();
 				Editor_CaretPositionChanged (null, null);
 			});
@@ -164,8 +168,8 @@ namespace MonoDevelop.CSharp
 			SubscribeCaretPositionChange ();
 
 			// Fixes a potential memory leak see: https://bugzilla.xamarin.com/show_bug.cgi?id=38041
-			if (ownerProjects.Count > 1) {
-				var currentOwners = ownerProjects.Where (p => p != DocumentContext.Project).Select (TypeSystemService.GetCodeAnalysisProject).ToList ();
+			if (ownerProjects?.Count > 1) {
+				var currentOwners = ownerProjects.Where (p => p != DocumentContext.Project).Select (IdeApp.TypeSystemService.GetCodeAnalysisProject).ToList ();
 				CancelDocumentParsedUpdate ();
 				var token = documentParsedCancellationTokenSource.Token;
 				Task.Run (async delegate {
@@ -251,10 +255,10 @@ namespace MonoDevelop.CSharp
 
 		void UpdateOwnerProjects (IEnumerable<DotNetProject> allProjects)
 		{
-			if (DocumentContext == null) {
-				return;//This can happen if this object is disposed
-			}
-			Editor.RunWhenRealized (() => {
+			Editor?.RunWhenRealized (() => {
+				if (DocumentContext == null) {
+					return;//This can happen if this object is disposed
+				}
 				var projects = new HashSet<DotNetProject> (allProjects.Where (p => p.IsFileInProject (DocumentContext.Name)));
 				if (ownerProjects == null || !projects.SetEquals (ownerProjects)) {
 					SetOwnerProjects (projects.OrderBy (p => p.Name).ToList ());
@@ -346,7 +350,7 @@ namespace MonoDevelop.CSharp
 			var sol = (Projects.Solution) sender;
 			var p = sol.StartupItem as DotNetProject;
 			if (p != null && ownerProjects.Contains (p))
-				DocumentContext.AttachToProject (p);
+				DocumentContext?.AttachToProject (p);
 		}
 
 		#region IPathedDocument implementation
@@ -405,19 +409,18 @@ namespace MonoDevelop.CSharp
 				if (tag is SyntaxTree) {
 					var unit = tag as SyntaxTree;
 					memberList.AddRange (unit.GetRoot ().DescendantNodes ().Where (IsType));
-				} else if (tag is BaseTypeDeclarationSyntax) {
-					AddTypeToMemberList ((BaseTypeDeclarationSyntax)tag);
 				} else if (tag is AccessorDeclarationSyntax) {
 					var acc = (AccessorDeclarationSyntax)tag;
 					var parent = (MemberDeclarationSyntax)acc.Parent;
 					memberList.AddRange (parent.ChildNodes ().OfType<AccessorDeclarationSyntax> ());
-				} else if (tag is MemberDeclarationSyntax) {
-					var entity = (MemberDeclarationSyntax)tag;
-					var type = entity.Parent as BaseTypeDeclarationSyntax;
+				} else if (tag is SyntaxNode) {
+					var entity = (SyntaxNode)tag;
+					var type = entity.AncestorsAndSelf ().OfType<BaseTypeDeclarationSyntax> ().FirstOrDefault ();
 					if (type != null) {
 						AddTypeToMemberList (type);
 					}
 				}
+
 				memberList.Sort ((x, y) => {
 					var result = String.Compare (GetName (x), GetName (y), StringComparison.OrdinalIgnoreCase);
 					if (result == 0)
@@ -453,13 +456,13 @@ namespace MonoDevelop.CSharp
 				if (tag is SyntaxTree) {
 					var type = node;
 					if (type != null) {
-						var sb = new StringBuilder ();
+						var sb = StringBuilderCache.Allocate ();
 						sb.Append (ext.GetEntityMarkup (type));
 						while (type.Parent is BaseTypeDeclarationSyntax) {
 							sb.Insert (0, ext.GetEntityMarkup (type.Parent) + ".");
 							type = type.Parent;
 						}
-						return sb.ToString ();
+						return StringBuilderCache.ReturnAndFree (sb);
 					}
 				}
 				var accessor = node as AccessorDeclarationSyntax;
@@ -505,13 +508,13 @@ namespace MonoDevelop.CSharp
 				if (tag is SyntaxTree) {
 					var type = node;
 					if (type != null) {
-						var sb = new StringBuilder ();
+						var sb = StringBuilderCache.Allocate ();
 						sb.Append (ext.GetEntityMarkup (type));
 						while (type.Parent is BaseTypeDeclarationSyntax) {
 							sb.Insert (0, ext.GetEntityMarkup (type.Parent) + ".");
 							type = type.Parent;
 						}
-						return sb.ToString ();
+						return StringBuilderCache.ReturnAndFree (sb);
 					}
 				}
 				return ext.GetEntityMarkup (node);
@@ -549,7 +552,7 @@ namespace MonoDevelop.CSharp
 					ext.DocumentContext.AttachToProject (ext.ownerProjects [n]);
 				} else {
 					var node = memberList [n];
-					var extEditor = ext.DocumentContext.GetContent<TextEditor> ();
+					var extEditor = ext.DocumentContext.GetContent<Ide.Editor.TextEditor> ();
 					if (extEditor != null) {
 						int offset;
 						if (node is OperatorDeclarationSyntax) { 
@@ -579,14 +582,14 @@ namespace MonoDevelop.CSharp
 
 		class CompilationUnitDataProvider : DropDownBoxListWindow.IListDataProvider
 		{
-			TextEditor editor;
+			Ide.Editor.TextEditor editor;
 
 			DocumentContext DocumentContext {
 				get;
 				set;
 			}
 
-			public CompilationUnitDataProvider (TextEditor editor, DocumentContext documentContext)
+			public CompilationUnitDataProvider (Ide.Editor.TextEditor editor, DocumentContext documentContext)
 			{
 				this.editor = editor;
 				this.DocumentContext = documentContext;
@@ -668,12 +671,14 @@ namespace MonoDevelop.CSharp
 		async static Task<PathEntry> GetRegionEntry (ParsedDocument unit, DocumentLocation loc)
 		{
 			PathEntry entry;
-			FoldingRegion reg;
+			FoldingRegion reg = null;
 			try {
-				var regions = await unit.GetUserRegionsAsync ().ConfigureAwait (false);
-				if (unit == null || !regions.Any ())
-					return null;
-				reg = regions.LastOrDefault (r => r.Region.Contains (loc));
+				if (unit != null) {
+					var regions = await unit.GetUserRegionsAsync ().ConfigureAwait (false);
+					if (!regions.Any ())
+						return null;
+					reg = regions.LastOrDefault (r => r.Region.Contains (loc));
+				}
 			} catch (AggregateException) {
 				return null;
 			} catch (OperationCanceledException) {
@@ -682,7 +687,8 @@ namespace MonoDevelop.CSharp
 			if (reg == null) {
 				entry = new PathEntry (GettextCatalog.GetString ("No region"));
 			} else {
-				entry = new PathEntry (CompilationUnitDataProvider.Pixbuf, GLib.Markup.EscapeText (reg.Name));
+				var pixbuf = await Runtime.RunInMainThread (() => CompilationUnitDataProvider.Pixbuf).ConfigureAwait (false);
+				entry = new PathEntry (pixbuf, GLib.Markup.EscapeText (reg.Name));
 			}
 			entry.Position = EntryPosition.Right;
 			return entry;
@@ -700,7 +706,7 @@ namespace MonoDevelop.CSharp
 		SyntaxNode lastMember;
 		string lastMemberMarkup;
 		MonoDevelop.Projects.Project lastProject;
-		AstAmbience amb;
+		AstAmbience? amb;
 		CancellationTokenSource src = new CancellationTokenSource ();
 		bool caretPositionChangedSubscribed;
 		uint updatePathTimeoutId;
@@ -710,7 +716,7 @@ namespace MonoDevelop.CSharp
 		{
 			if (amb == null || node == null)
 				return "";
-			return amb.GetEntityMarkup (node);
+			return amb.Value.GetEntityMarkup (node);
 		}
 
 
@@ -720,56 +726,67 @@ namespace MonoDevelop.CSharp
 			Update ();
 		}
 
-		void Update()
+		async void Update()
 		{
 			if (DocumentContext == null)
 				return;
-			var parsedDocument = DocumentContext.ParsedDocument;
-			if (parsedDocument == null)
+			var analysisDocument = DocumentContext.AnalysisDocument;
+			if (analysisDocument == null)
 				return;
+
 			var caretOffset = Editor.CaretOffset;
-			var model = parsedDocument.GetAst<SemanticModel>();
+			var loc = Editor.CaretLocation;
+
+			var model = await analysisDocument.GetSemanticModelAsync ().ConfigureAwait (false);
 			if (model == null)
 				return;
+
 			CancelUpdatePath ();
+
 			var cancellationToken = src.Token;
-			amb = new AstAmbience(TypeSystemService.Workspace.Options);
-			var loc = Editor.CaretLocation;
-			Task.Run(async delegate {
-				var unit = model.SyntaxTree;
-				SyntaxNode root;
-				SyntaxNode node;
-				try {
-					root = await unit.GetRootAsync(cancellationToken).ConfigureAwait(false);
-					if (root.FullSpan.Length <= caretOffset) {
-						return;
-					}
-					node = root.FindNode(TextSpan.FromBounds(caretOffset, caretOffset));
-					if (node.SpanStart != caretOffset)
-						node = root.SyntaxTree.FindTokenOnLeftOfPosition(caretOffset, cancellationToken).Parent;
-				} catch (Exception ex ) {
-					Console.WriteLine (ex);
+			amb = new AstAmbience(IdeApp.TypeSystemService.Workspace.Options);
+
+			var unit = model.SyntaxTree;
+			SyntaxNode root;
+			SyntaxNode node;
+			try {
+				root = await unit.GetRootAsync(cancellationToken).ConfigureAwait(false);
+				if (root.FullSpan.Length <= caretOffset) {
+					var prevPath = CurrentPath;
+					CurrentPath = new PathEntry [] { new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = null } };
+					isPathSet = false;
+					await Runtime.RunInMainThread (delegate {
+						OnPathChanged (new DocumentPathChangedEventArgs (prevPath));
+					});
 					return;
 				}
+				node = root.FindNode(TextSpan.FromBounds(caretOffset, caretOffset));
+				if (node.SpanStart != caretOffset)
+					node = root.SyntaxTree.FindTokenOnLeftOfPosition(caretOffset, cancellationToken).Parent;
+			} catch (Exception ex ) {
+				Console.WriteLine (ex);
+				return;
+			}
 
-				var curMember = node != null ? node.AncestorsAndSelf ().FirstOrDefault (m => m is VariableDeclaratorSyntax && m.Parent != null && !(m.Parent.Parent is LocalDeclarationStatementSyntax) || (m is MemberDeclarationSyntax && !(m is NamespaceDeclarationSyntax))) : null;
-				var curType = node != null ? node.AncestorsAndSelf ().FirstOrDefault (IsType) : null;
+			var curMember = node != null ? node.AncestorsAndSelf ().FirstOrDefault (m => m is VariableDeclaratorSyntax && m.Parent != null && !(m.Parent.Parent is LocalDeclarationStatementSyntax) || (m is MemberDeclarationSyntax && !(m is NamespaceDeclarationSyntax))) : null;
+			var curType = node != null ? node.AncestorsAndSelf ().FirstOrDefault (IsType) : null;
 
-				var curProject = ownerProjects != null && ownerProjects.Count > 1 ? DocumentContext.Project : null;
+			var curProject = ownerProjects != null && ownerProjects.Count > 1 ? DocumentContext.Project : null;
+			if (curType == curMember || curType is DelegateDeclarationSyntax)
+				curMember = null;
+			if (isPathSet && curType == lastType && curMember == lastMember && curProject == lastProject) {
+				return;
+			}
+			var curTypeMakeup = GetEntityMarkup(curType);
+			var curMemberMarkup = GetEntityMarkup(curMember);
+			if (isPathSet && curType != null && lastType != null && curTypeMakeup == lastTypeMarkup &&
+				curMember != null && lastMember != null && curMemberMarkup == lastMemberMarkup && curProject == lastProject) {
+				return;
+			}
 
-				if (curType == curMember || curType is DelegateDeclarationSyntax)
-					curMember = null;
-				if (isPathSet && curType == lastType && curMember == lastMember && curProject == lastProject) {
-					return;
-				}
-				var curTypeMakeup = GetEntityMarkup(curType);
-				var curMemberMarkup = GetEntityMarkup(curMember);
-				if (isPathSet && curType != null && lastType != null && curTypeMakeup == lastTypeMarkup &&
-					curMember != null && lastMember != null && curMemberMarkup == lastMemberMarkup && curProject == lastProject) {
-					return;
-				}
+			var regionEntry = await GetRegionEntry (DocumentContext.ParsedDocument, loc).ConfigureAwait (false);
 
-
+			await Runtime.RunInMainThread (() => {
 				var result = new List<PathEntry>();
 
 				if (curProject != null) {
@@ -784,75 +801,10 @@ namespace MonoDevelop.CSharp
 						return;
 					var prevPath = CurrentPath;
 					result.Add (new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = unit });
-					Gtk.Application.Invoke (delegate {
-						if (cancellationToken.IsCancellationRequested)
-							return;
-
-						CurrentPath = result.ToArray ();
-						lastType = curType;
-						lastTypeMarkup = curTypeMakeup;
-
-						lastMember = curMember;
-						lastMemberMarkup = curMemberMarkup;
-
-						lastProject = curProject;
-						OnPathChanged (new DocumentPathChangedEventArgs (prevPath));
-					});
-					return;
-				}
-				var regionEntry = await GetRegionEntry (DocumentContext.ParsedDocument, loc).ConfigureAwait (false);
-
-				Gtk.Application.Invoke(delegate {
-					if (curType != null) {
-						var type = curType;
-						var pos = result.Count;
-						while (type != null) {
-							if (!(type is BaseTypeDeclarationSyntax))
-								break;
-							var tag = (object)type.Ancestors ().FirstOrDefault (IsType) ?? unit;
-							result.Insert (pos, new PathEntry (ImageService.GetIcon (type.GetStockIcon (), Gtk.IconSize.Menu), GetEntityMarkup (type)) { Tag = tag });
-							type = type.Parent;
-						}
-					}
-					if (curMember != null) {
-						result.Add (new PathEntry (ImageService.GetIcon (curMember.GetStockIcon (), Gtk.IconSize.Menu), curMemberMarkup) { Tag = curMember });
-						if (curMember.Kind () == SyntaxKind.GetAccessorDeclaration ||
-						curMember.Kind () == SyntaxKind.SetAccessorDeclaration ||
-						curMember.Kind () == SyntaxKind.AddAccessorDeclaration ||
-						curMember.Kind () == SyntaxKind.RemoveAccessorDeclaration) {
-							var parent = curMember.Parent;
-							if (parent != null)
-								result.Insert (result.Count - 1, new PathEntry (ImageService.GetIcon (parent.GetStockIcon (), Gtk.IconSize.Menu), GetEntityMarkup (parent)) { Tag = parent });
-						}
-					}
-
-					if (regionEntry != null)
-						result.Add(regionEntry);
-
-					PathEntry noSelection = null;
-					if (curType == null) {
-						noSelection = new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = unit };
-					} else if (curMember == null && !(curType is DelegateDeclarationSyntax)) {
-						noSelection = new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = curType };
-					}
-
-					if (noSelection != null)
-						result.Add(noSelection);
-					var prev = CurrentPath;
-					if (prev != null && prev.Length == result.Count) {
-						bool equals = true;
-						for (int i = 0; i < prev.Length; i++) {
-							if (prev [i].Markup != result [i].Markup) {
-								equals = false;
-								break;
-							}
-						}
-						if (equals)
-							return;
-					}
 					if (cancellationToken.IsCancellationRequested)
 						return;
-					CurrentPath = result.ToArray();
+
+					CurrentPath = result.ToArray ();
 					lastType = curType;
 					lastTypeMarkup = curTypeMakeup;
 
@@ -860,9 +812,69 @@ namespace MonoDevelop.CSharp
 					lastMemberMarkup = curMemberMarkup;
 
 					lastProject = curProject;
+					OnPathChanged (new DocumentPathChangedEventArgs (prevPath));
+					return;
+				}
 
-					OnPathChanged (new DocumentPathChangedEventArgs(prev));
-				});
+				if (curType != null) {
+					var type = curType;
+					var pos = result.Count;
+					while (type != null) {
+						if (!(type is BaseTypeDeclarationSyntax))
+							break;
+						var tag = (object)type.Ancestors ().FirstOrDefault (IsType) ?? unit;
+						result.Insert (pos, new PathEntry (ImageService.GetIcon (type.GetStockIcon (), Gtk.IconSize.Menu), GetEntityMarkup (type)) { Tag = tag });
+						type = type.Parent;
+					}
+				}
+				if (curMember != null) {
+					result.Add (new PathEntry (ImageService.GetIcon (curMember.GetStockIcon (), Gtk.IconSize.Menu), curMemberMarkup) { Tag = curMember });
+					if (curMember.Kind () == SyntaxKind.GetAccessorDeclaration ||
+					curMember.Kind () == SyntaxKind.SetAccessorDeclaration ||
+					curMember.Kind () == SyntaxKind.AddAccessorDeclaration ||
+					curMember.Kind () == SyntaxKind.RemoveAccessorDeclaration) {
+						var parent = curMember.Parent;
+						if (parent != null)
+							result.Insert (result.Count - 1, new PathEntry (ImageService.GetIcon (parent.GetStockIcon (), Gtk.IconSize.Menu), GetEntityMarkup (parent)) { Tag = parent });
+					}
+				}
+
+				if (regionEntry != null)
+					result.Add(regionEntry);
+
+				PathEntry noSelection = null;
+				if (curType == null) {
+					noSelection = new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = unit };
+				} else if (curMember == null && !(curType is DelegateDeclarationSyntax)) {
+					noSelection = new PathEntry (GettextCatalog.GetString ("No selection")) { Tag = curType };
+				}
+
+				if (noSelection != null)
+					result.Add(noSelection);
+				var prev = CurrentPath;
+				if (prev != null && prev.Length == result.Count) {
+					bool equals = true;
+					for (int i = 0; i < prev.Length; i++) {
+						if (prev [i].Markup != result [i].Markup) {
+							equals = false;
+							break;
+						}
+					}
+					if (equals)
+						return;
+				}
+				if (cancellationToken.IsCancellationRequested)
+					return;
+				CurrentPath = result.ToArray();
+				lastType = curType;
+				lastTypeMarkup = curTypeMakeup;
+
+				lastMember = curMember;
+				lastMemberMarkup = curMemberMarkup;
+
+				lastProject = curProject;
+
+				OnPathChanged (new DocumentPathChangedEventArgs(prev));
 			});
 		}
 

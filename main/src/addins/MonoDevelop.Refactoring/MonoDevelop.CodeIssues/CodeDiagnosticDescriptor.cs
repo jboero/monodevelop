@@ -23,27 +23,25 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+
 using System;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.Diagnostics;
 using MonoDevelop.Core;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.Text;
 using MonoDevelop.Ide.Editor;
-using System.Threading;
-using MonoDevelop.Ide.TypeSystem;
-using System.Reflection;
-using Microsoft.CodeAnalysis.CodeActions;
-using System.Collections.Immutable;
 
 namespace MonoDevelop.CodeIssues
 {
 	class CodeDiagnosticDescriptor
 	{
 		readonly Type diagnosticAnalyzerType;
-		readonly Microsoft.CodeAnalysis.DiagnosticDescriptor descriptor;
 
 		DiagnosticAnalyzer instance;
-
 
 		/// <summary>
 		/// Gets the identifier string.
@@ -61,38 +59,16 @@ namespace MonoDevelop.CodeIssues
 		}
 
 		/// <summary>
-		/// Gets the display name for this issue.
-		/// </summary>
-		public string Name { get; private set; }
-
-		/// <summary>
-		/// Gets the description of the issue provider (used in the option panel).
-		/// </summary>
-
-		/// <summary>
 		/// Gets the languages for this issue.
 		/// </summary>
 		public string[] Languages { get; private set; }
 
 		public DiagnosticSeverity? DiagnosticSeverity {
 			get {
-				DiagnosticSeverity? result = null;
-
 				foreach (var diagnostic in GetProvider ().SupportedDiagnostics) {
-					if (!result.HasValue)
-						result = GetSeverity(diagnostic);
-					if (result != GetSeverity(diagnostic))
-						return null;
+					return diagnostic.DefaultSeverity;
 				}
-				return result;
-			}
-
-			set {
-				if (!value.HasValue)
-					return;
-				foreach (var diagnostic in GetProvider ().SupportedDiagnostics) {
-					SetSeverity (diagnostic, value.Value);
-				}
+				return null;
 			}
 		}
 
@@ -103,57 +79,21 @@ namespace MonoDevelop.CodeIssues
 		public bool IsEnabled {
 			get {
 				foreach (var diagnostic in GetProvider ().SupportedDiagnostics) {
-					if (GetIsEnabled (diagnostic))
-						return true;
+					if (!diagnostic.IsEnabledByDefault)
+						return false;
 				}
-				return false;
-			}
-			set {
-				foreach (var diagnostic in GetProvider ().SupportedDiagnostics) {
-					SetIsEnabled (diagnostic, value);
-				}
+				return true;
 			}
 		}
 
-		internal DiagnosticSeverity GetSeverity (DiagnosticDescriptor diagnostic)
+		internal CodeDiagnosticDescriptor (string[] languages, Type codeIssueType)
 		{
-			return PropertyService.Get ("CodeIssues." + Languages + "." + IdString + "." + diagnostic.Id + ".severity", diagnostic.DefaultSeverity);
-		}
-
-		internal void SetSeverity (DiagnosticDescriptor diagnostic, DiagnosticSeverity severity)
-		{
-			PropertyService.Set ("CodeIssues." + Languages + "." + IdString + "." + diagnostic.Id + ".severity", severity);
-		}
-
-		internal bool GetIsEnabled (DiagnosticDescriptor diagnostic)
-		{
-			return PropertyService.Get ("CodeIssues." + Languages + "." + IdString + "." + diagnostic.Id + ".enabled", true);
-		}
-
-		internal void SetIsEnabled (DiagnosticDescriptor diagnostic, bool value)
-		{
-			PropertyService.Set ("CodeIssues." + Languages + "." + IdString + "." + diagnostic.Id + ".enabled", value);
-		}
-
-		static CodeDiagnosticDescriptor ()
-		{
-			getCodeActionsMethod = typeof (CodeAction).GetMethod ("GetCodeActions", BindingFlags.Instance | BindingFlags.NonPublic);
-			hasCodeActionsProperty = typeof (CodeAction).GetProperty ("HasCodeActions", BindingFlags.Instance | BindingFlags.NonPublic);
-
-		}
-
-		internal CodeDiagnosticDescriptor (Microsoft.CodeAnalysis.DiagnosticDescriptor descriptor, string[] languages, Type codeIssueType)
-		{
-			if (descriptor == null)
-				throw new ArgumentNullException ("descriptor");
 			if (languages == null)
-				throw new ArgumentNullException ("languages");
+				throw new ArgumentNullException (nameof (languages));
 			if (codeIssueType == null)
-				throw new ArgumentNullException ("codeIssueType");
-			Name = descriptor.Title.ToString () ?? "unnamed";
+				throw new ArgumentNullException (nameof (codeIssueType));
 			Languages = languages;
-			this.descriptor = descriptor;
-			this.diagnosticAnalyzerType = codeIssueType;
+			diagnosticAnalyzerType = codeIssueType;
 		}
 
 		/// <summary>
@@ -169,56 +109,25 @@ namespace MonoDevelop.CodeIssues
 
 		public override string ToString ()
 		{
-			return string.Format ("[CodeIssueDescriptor: IdString={0}, Name={1}, Language={2}]", IdString, Name, Languages);
+			return $"[CodeIssueDescriptor: IdString={IdString}, Language={Languages}]";
 		}
 
-		public bool CanDisableWithPragma { get { return !string.IsNullOrEmpty (descriptor.Id); } }
-
-		const string analysisDisableTag = "Analysis ";
-		readonly static MethodInfo getCodeActionsMethod;
-		readonly static PropertyInfo hasCodeActionsProperty;
-
-		public async void DisableWithPragma (TextEditor editor, DocumentContext context, Diagnostic fix, CancellationToken cancellationToken = default(CancellationToken))
-		{
-			var line = editor.GetLineByOffset (fix.Location.SourceSpan.Start);
-			var span = new TextSpan (line.Offset, line.Length);
-			var fixes = await CSharpSuppressionFixProvider.Instance.GetSuppressionsAsync (context.AnalysisDocument, span, new [] { fix }, cancellationToken).ConfigureAwait (false);
-			foreach (var f in fixes) {
-				RunAction (context, f.Action, cancellationToken);
-			}
-		}
-
-		public async void DisableWithFile (TextEditor editor, DocumentContext context, Diagnostic fix, CancellationToken cancellationToken = default(CancellationToken))
-		{
-			var p = context.RoslynWorkspace.CurrentSolution.GetProject (TypeSystemService.GetProjectId (context.Project));
-
-			var fixes = await CSharpSuppressionFixProvider.Instance.GetSuppressionsAsync (p, new [] { fix }, cancellationToken ).ConfigureAwait (false);
-
-			foreach (var f in fixes) {
-				RunAction (context, f.Action, cancellationToken);
-			}
-		}
-
-		internal static async void RunAction (DocumentContext context, CodeAction action, CancellationToken cancellationToken)
+		internal static async Task RunAction (DocumentContext context, CodeAction action, CancellationToken cancellationToken)
 		{
 			var operations = await action.GetOperationsAsync (cancellationToken).ConfigureAwait (false);
-			if (operations == null)
-				return;
+
 			foreach (var op in operations) {
 				if (op == null)
 					continue;
 				try {
 					op.Apply (context.RoslynWorkspace, cancellationToken);
 				} catch (Exception e) {
-					LoggingService.LogError ("Error while appyling operation : " + op, e);
+					LoggingService.LogError ("Error while applying operation : " + op, e);
 				}
 			}
 
-			if ((bool)hasCodeActionsProperty.GetValue (action)) {
-				var result = (ImmutableArray<CodeAction>)getCodeActionsMethod.Invoke (action, null);
-				foreach (var nested in result) {
-					RunAction (context, nested, cancellationToken);
-				}
+			foreach (var nested in action.NestedCodeActions) {
+				await RunAction (context, nested, cancellationToken).ConfigureAwait (false);
 			}
 		}
 	}

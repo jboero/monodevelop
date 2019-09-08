@@ -36,7 +36,7 @@ using System.Text.RegularExpressions;
 namespace MonoDevelop.UnitTesting
 {
 	[Serializable]
-	public class UnitTestResult
+	public class UnitTestResult : IEquatable<UnitTestResult>
 	{
 		DateTime testDate;
 		ResultStatus status;
@@ -223,6 +223,36 @@ namespace MonoDevelop.UnitTesting
 			Ignored += res.Ignored;
 			Inconclusive += res.Inconclusive;
 			Skipped += res.Skipped;
+		}
+
+		public override int GetHashCode ()
+		{
+			var unknowObject = new {
+				Status,
+				Passed,
+				Errors,
+				Failures,
+				Inconclusive,
+				NotRunnable,
+				Skipped,
+				Ignored
+			};
+			return unknowObject.GetHashCode ();
+		}
+
+		public override bool Equals (object obj) => obj is UnitTestResult other && Equals (other);
+
+		public bool Equals (UnitTestResult other)
+		{
+			return other != null &&
+				Status == other.Status &&
+				Passed == other.Passed &&
+				Errors == other.Errors &&
+				Failures == other.Failures &&
+				Inconclusive == other.Inconclusive &&
+				NotRunnable == other.NotRunnable &&
+				Skipped == other.Skipped &&
+				Ignored == other.Ignored;
 		}
 	}
 }

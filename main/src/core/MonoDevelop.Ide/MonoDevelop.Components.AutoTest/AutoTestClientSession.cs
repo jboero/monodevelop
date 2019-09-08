@@ -122,6 +122,8 @@ namespace MonoDevelop.Components.AutoTest
 			return null;
 		}
 
+		public void DisconnectQueries () => session.DisconnectQueries ();
+
 		public void Stop ()
 		{
 			if (service != null)
@@ -193,7 +195,8 @@ namespace MonoDevelop.Components.AutoTest
 
 		public T GetGlobalValue<T> (string name)
 		{
-			return (T) session.GetGlobalValue (name);
+			var val = (T)session.GetGlobalValue(name);
+			return val;
 		}
 
 		public void SetGlobalValue (string name, object value)
@@ -413,6 +416,42 @@ namespace MonoDevelop.Components.AutoTest
 			AutoTestSession.TimerCounterContext context = session.CreateNewTimerContext (counterName);
 			action ();
 			session.WaitForTimerContext (context, timeout);
+		}
+
+		public TimeSpan GetTimerDuration (string timerName)
+		{
+			return session.CreateNewTimerContext (timerName).TotalTime;
+		}
+
+		public int GetTimerCount (string timerName)
+		{
+			return session.CreateNewTimerContext (timerName).Count;
+		}
+
+		public void WaitForCounterChange (string counterName, int timeout = 20000)
+		{
+			AutoTestSession.CounterContext context = session.CreateNewCounterContext (counterName);
+
+			session.WaitForCounterToChange (context, timeout);
+		}
+
+		public int WaitForCounterToExceed (string counterName, int count, int timeout = 20000)
+		{
+			AutoTestSession.CounterContext context = session.CreateNewCounterContext (counterName);
+
+			return session.WaitForCounterToExceed (context, count, timeout);
+		}
+
+		public int WaitForCounterToStabilize (string counterName, int timeout = 20000, int pollStep = 500)
+		{
+			AutoTestSession.CounterContext context = session.CreateNewCounterContext (counterName);
+
+			return session.WaitForCounterToStabilize (context, timeout, pollStep);
+		}
+
+		public T GetCounterMetadataValue<T> (string counterName, string propertyName)
+		{
+			return session.GetCounterMetadataValue<T> (counterName, propertyName);
 		}
 
 		public XmlDocument ResultsAsXml (AppResult[] results)

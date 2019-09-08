@@ -24,54 +24,68 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
+using System.Linq;
+using System.Threading;
 using MonoDevelop.Ide;
 using MonoDevelop.Ide.FindInFiles;
-using MonoDevelop.Ide.TypeSystem;
-using MonoDevelop.Core;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Extensions;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Refactoring;
-using System.Collections;
-using System.Reflection;
-using System.Collections.Generic;
-using System.Linq;
 using ICSharpCode.NRefactory6.CSharp;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.CSharp.Navigation
 {
 	class FindExtensionMethodsHandler : CommandHandler
 	{
-		protected override async void Update (CommandInfo info)
+		protected override async Task UpdateAsync (CommandInfo info, CancellationToken cancelToken)
 		{
-			var sym = await GetNamedTypeAtCaret (IdeApp.Workbench.ActiveDocument);
+			var sym = await GetNamedTypeAtCaret (IdeApp.Workbench.ActiveDocument, cancelToken);
 			info.Enabled = sym != null && sym.IsKind (SymbolKind.NamedType);
 			info.Bypass = !info.Enabled;
 		}
 
 		protected async override void Run ()
 		{
-			var doc = IdeApp.Workbench.ActiveDocument;
-			var sym = await GetNamedTypeAtCaret (doc);
-			if (sym != null)
-				FindExtensionMethods (await doc.GetCompilationAsync (), sym);
+			var metadata = Counters.CreateNavigateToMetadata ("ExtensionMethods");
+			using (var timer = Counters.NavigateTo.BeginTiming (metadata)) {
+				var doc = IdeApp.Workbench.ActiveDocument;
+				var sym = await GetNamedTypeAtCaret (doc);
+				if (sym == null) {
+					metadata.SetUserFault ();
+					return;
+				}
+
+				using (var source = new CancellationTokenSource ()) {
+					try {
+						FindExtensionMethods (await doc.GetCompilationAsync (), sym, source);
+						metadata.SetResult (true);
+					} finally {
+						metadata.UpdateUserCancellation (source.Token);
+					}
+				}
+			}
 		}
 
-		internal static async System.Threading.Tasks.Task<INamedTypeSymbol> GetNamedTypeAtCaret (Ide.Gui.Document doc)
+		internal static async System.Threading.Tasks.Task<INamedTypeSymbol> GetNamedTypeAtCaret (Ide.Gui.Document doc, CancellationToken cancellationToken = default)
 		{
-			if (doc == null)
+			if (doc == null || doc.Editor == null)
 				return null;
-			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc, doc.Editor);
+			var info = await RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, doc.Editor, cancellationToken);
 			var sym = info.Symbol ?? info.DeclaredSymbol;
 			return sym as INamedTypeSymbol;
 		}
 
-		void FindExtensionMethods (Compilation compilation, ISymbol sym)
+		void FindExtensionMethods (Compilation compilation, ISymbol sym, CancellationTokenSource cancellationTokenSource)
 		{
 			var symType = sym as ITypeSymbol;
 			if (symType == null)
 				return;
-			using (var monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true)) {
+
+			var searchMonitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
+			using (var monitor = searchMonitor.WithCancellationSource (cancellationTokenSource)) {
 				foreach (var type in compilation.Assembly.GlobalNamespace.GetAllTypes (monitor.CancellationToken)) {
 					if (!type.MightContainExtensionMethods)
 						continue;
@@ -83,7 +97,7 @@ namespace MonoDevelop.CSharp.Navigation
 						var reducedMethod = extMethod.ReduceExtensionMethod (symType);
 						if (reducedMethod != null) {
 							var loc = extMethod.Locations.First ();
-							monitor.ReportResult (new MemberReference (extMethod, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
+							searchMonitor.ReportResult (new MemberReference (extMethod, loc.SourceTree.FilePath, loc.SourceSpan.Start, loc.SourceSpan.Length));
 						}
 					}
 				}

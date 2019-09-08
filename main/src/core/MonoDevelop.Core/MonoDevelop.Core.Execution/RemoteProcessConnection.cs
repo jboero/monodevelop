@@ -1,26 +1,23 @@
-﻿//#define DEBUG_MESSAGES
+//#define DEBUG_MESSAGES
 
 using System;
 using System.Threading;
 using System.Net.Sockets;
 using System.Net;
-using System.Diagnostics;
 using System.IO;
 using System.Collections.Generic;
-
-using System.Linq;
 using System.Threading.Tasks;
-using System.Text;
-using MonoDevelop.Core.Assemblies;
-using System.Reflection;
+using System.Linq;
 
 namespace MonoDevelop.Core.Execution
 {
 	public class RemoteProcessConnection: IDisposable
 	{
+		const string DisposedMessage = "{0}: Could not start process";
+		const string StreamNullMessage = "{0}: Connection stream unexpectedly null.";
+
 		bool initializationDone;
 		TaskCompletionSource<bool> processConnectedEvent = new TaskCompletionSource<bool> ();
-		ManualResetEvent processDisconnectedEvent = new ManualResetEvent (false);
 		ProcessAsyncOperation process;
 		ConnectionStatus status;
 		bool disposed;
@@ -31,7 +28,7 @@ namespace MonoDevelop.Core.Execution
 		List<MessageListener> listeners = new List<MessageListener> ();
 		object listenersLock = new object ();
 
-		string exePath;
+		string exePath, workingDirectory;
 
 		// This class will ping the remote process every PingPeriod milliseconds
 		// If the remote process doesn't get a message in PingPeriod*2 it assumes
@@ -60,6 +57,7 @@ namespace MonoDevelop.Core.Execution
 		SynchronizationContext syncContext;
 		IExecutionHandler executionHandler;
 		OperationConsole console;
+		readonly Dictionary<string, string> environmentVariables;
 
 		public event EventHandler<MessageEventArgs> MessageReceived;
 		public event EventHandler StatusChanged;
@@ -75,6 +73,18 @@ namespace MonoDevelop.Core.Execution
 			this.syncContext = syncContext;
 			this.console = console;
 			mainCancelSource = new CancellationTokenSource ();
+		}
+
+		public RemoteProcessConnection (string exePath, string workingDirectory, IExecutionHandler executionHandler = null, OperationConsole console = null, SynchronizationContext syncContext = null)
+			: this (exePath, executionHandler, console, syncContext)
+		{
+			this.workingDirectory = workingDirectory;
+		}
+
+		public RemoteProcessConnection (string exePath, string workingDirectory, Dictionary<string, string> environmentVariables, IExecutionHandler executionHandler = null, OperationConsole console = null, SynchronizationContext syncContext = null)
+			: this (exePath, workingDirectory, executionHandler, console, syncContext)
+		{
+			this.environmentVariables = environmentVariables;
 		}
 
 		public ConnectionStatus Status {
@@ -112,9 +122,10 @@ namespace MonoDevelop.Core.Execution
 		void PostSetStatus (ConnectionStatus s, string message, Exception e = null)
 		{
 			if (syncContext != null) {
-				syncContext.Post (delegate {
-					SetStatus (s, message, e);
-				}, null);
+				syncContext.Post (state => {
+					var (rpc, status, msg, exc) = (ValueTuple<RemoteProcessConnection, ConnectionStatus, string, Exception>)state;
+					rpc.SetStatus (status, msg, exc);
+				}, (this, s, message, e));
 			} else {
 				SetStatus (s, message, e);
 			}
@@ -133,7 +144,7 @@ namespace MonoDevelop.Core.Execution
 
 		public void Dispose ()
 		{
-			Disconnect (false);
+			Disconnect ().Ignore ();
 		}
 
 		public void AddListener (MessageListener listener)
@@ -155,34 +166,52 @@ namespace MonoDevelop.Core.Execution
 			}
 		}
 
-		public void Disconnect (bool waitUntilDone)
+		public async Task Disconnect ()
 		{
-			mainCancelSource.Cancel ();
-			mainCancelSource = new CancellationTokenSource ();
+			StopPinger ();
+		
+			if (process == null)
+				return;
+			
+			try {
+				// Send a stop message to try a graceful stop. Don't wait more than 2s for a response
+				var timeout = Task.Delay (2000, mainCancelSource.Token);
+				if (await Task.WhenAny (SendMessage (new BinaryMessage ("Stop", "Process")), timeout) != timeout) {
+					// Wait for at most two seconds for the process to end
+					timeout = Task.Delay (4000, mainCancelSource.Token);
+					if (await Task.WhenAny (process.Task, timeout) != timeout)
+						return; // All done!
+				}
+			} catch {
+			}
+
+			using (var source = Interlocked.Exchange (ref mainCancelSource, new CancellationTokenSource ())) {
+				source.Cancel ();
+			}
+
+			// The process did not gracefully stop. Kill the process.
 
 			try {
 				StopRemoteProcess ();
 			} catch {
 				// Ignore
 			}
-			if (waitUntilDone)
-				processDisconnectedEvent.WaitOne (TimeSpan.FromSeconds (7));
+			await process.Task;
 		}
 
-		public Task Connect ()
+		public async Task Connect ()
 		{
 			initializationDone = false;
 			AbortPendingMessages ();
 			if (listener != null && !disposed) {
 				// Disconnect the current session and reconnect
-				Disconnect (true);
+				await Disconnect ();
 			}
-			return StartConnecting ();
+			await StartConnecting ();
 		}
 
 		Task StartConnecting ()
 		{
-			processDisconnectedEvent.Reset ();
 			disposed = false;
 			SetStatus (ConnectionStatus.Connecting, "Connecting");
 			return DoConnect (mainCancelSource.Token);
@@ -212,6 +241,14 @@ namespace MonoDevelop.Core.Execution
 			}
 		}
 
+		string GetCleanExeName()
+		{
+			if (string.IsNullOrWhiteSpace (exePath))
+				return "(null)";
+
+			return Path.GetFileName (exePath);
+		}
+
 		async Task InitializeRemoteProcessAsync (CancellationToken token)
 		{
 			try {
@@ -220,27 +257,29 @@ namespace MonoDevelop.Core.Execution
 				token.ThrowIfCancellationRequested ();
 
 				if (disposed)
-					throw new Exception ("Could not start process");
-				
+					throw new ObjectDisposedException (string.Format (DisposedMessage, GetCleanExeName ()));
+
 				var timeout = Task.Delay (ProcessInitializationTimeout, token).ContinueWith (t => {
 					if (t.IsCanceled)
 						return;
-					if (!processConnectedEvent.Task.IsCompleted)
-						processConnectedEvent.SetException (new Exception ("Could not start process"));
+					processConnectedEvent.TrySetException (new Exception ("Could not start process"));
 				});
 
 				await Task.WhenAny (timeout, processConnectedEvent.Task).ConfigureAwait (false);
 
-				if (connectionStream == null || disposed)
-					throw new Exception ("Process failed to start");
+				if (disposed)
+					throw new ObjectDisposedException (string.Format (DisposedMessage, GetCleanExeName ()));
 
-/*				var msg = new BinaryMessage ("Initialize", "Process").AddArgument ("MessageWaitTimeout", PingPeriod * 2);
-				msg.BypassConnection = true;
-				var cs = new TaskCompletionSource<BinaryMessage> ();
-				PostMessage (msg, cs, false);
-				token.ThrowIfCancellationRequested ();
-				await cs.Task;
-*/
+				if (connectionStream == null)
+					throw new InvalidOperationException (string.Format (StreamNullMessage, GetCleanExeName ()));
+
+				/*				var msg = new BinaryMessage ("Initialize", "Process").AddArgument ("MessageWaitTimeout", PingPeriod * 2);
+								msg.BypassConnection = true;
+								var cs = new TaskCompletionSource<BinaryMessage> ();
+								PostMessage (msg, cs, false);
+								token.ThrowIfCancellationRequested ();
+								await cs.Task;
+				*/
 				token.ThrowIfCancellationRequested ();
 
 				SetStatus (ConnectionStatus.Connected, "Connected");
@@ -257,16 +296,30 @@ namespace MonoDevelop.Core.Execution
 			token.ThrowIfCancellationRequested ();
 			StopRemoteProcess ();
 			SetStatus (ConnectionStatus.ConnectionFailed, ex.Message, ex);
-			processDisconnectedEvent.Set ();
 		}
+
+		public ProcessExecutionArchitecture ProcessExecutionArchitecture { get; set; }
 
 		Task StartRemoteProcess ()
 		{
 			return Task.Run (() => {
 				var cmd = Runtime.ProcessService.CreateCommand (exePath);
 				cmd.Arguments = ((IPEndPoint)listener.LocalEndpoint).Port + " " + DebugMode;
+				if (!string.IsNullOrEmpty (workingDirectory))
+					cmd.WorkingDirectory = workingDirectory;
+
+				if (environmentVariables != null) {
+					foreach (var env in environmentVariables) {
+						cmd.EnvironmentVariables [env.Key] = env.Value;
+					}
+				}
+
+				// Explicitly propagate the PATH var to the process. It ensures that tools required
+				// to run XS are also in the PATH for remote processes.
+				cmd.EnvironmentVariables ["PATH"] = Environment.GetEnvironmentVariable ("PATH");
+				cmd.ProcessExecutionArchitecture = ProcessExecutionArchitecture;
 				process = executionHandler.Execute (cmd, console);
-				process.Task.ContinueWith (t => ProcessExited ());
+				process.Task.ContinueWith (t => ProcessExited (), mainCancelSource.Token);
 			});
 		}
 
@@ -275,7 +328,6 @@ namespace MonoDevelop.Core.Execution
 		{
 			if (!stopping)
 				AbortConnection (isAsync: true);
-			processDisconnectedEvent.Set ();
 		}
 
 		public async Task<RT> SendMessage<RT> (BinaryMessage<RT> message) where RT:BinaryMessage
@@ -318,6 +370,8 @@ namespace MonoDevelop.Core.Execution
 
 			if (cs != null) {
 				lock (messageWaiters) {
+					if (disposed)
+						throw new RemoteProcessException ("Not connected");
 					messageWaiters [message.Id] = new MessageRequest {
 						Request = message,
 						TaskSource = cs
@@ -326,6 +380,8 @@ namespace MonoDevelop.Core.Execution
 			}
 
 			lock (messageQueue) {
+				if (disposed)
+					return;
 				messageQueue.Add (message);
 				if (!senderRunning) {
 					senderRunning = true;
@@ -395,9 +451,9 @@ namespace MonoDevelop.Core.Execution
 		void AbortConnection (string message = null, bool isAsync = false)
 		{
 			if (message == null)
-				message = "Disconnected from layout renderer";
-			AbortPendingMessages ();
+				message = "Disconnected from remote process";
 			disposed = true;
+			AbortPendingMessages ();
 			processConnectedEvent.TrySetResult (true);
 			if (isAsync)
 				PostSetStatus (ConnectionStatus.Disconnected, message);
@@ -407,11 +463,22 @@ namespace MonoDevelop.Core.Execution
 
 		void AbortPendingMessages ()
 		{
+			List<MessageRequest> messagesToAbort;
+			lock (messageQueue)
 			lock (messageWaiters) {
-				foreach (var m in messageWaiters.Values)
-					NotifyResponse (m, m.Request.CreateErrorResponse ("Connection closed"));
+				messagesToAbort = messageWaiters.Values.ToList ();
 				messageWaiters.Clear ();
 				messageQueue.Clear ();
+			}
+			foreach (var m in messagesToAbort)
+				NotifyResponse (m, m.Request.CreateErrorResponse ("Connection closed"));
+		}
+
+		void StopPinger ()
+		{
+			if (pinger != null) {
+				pinger.Dispose ();
+				pinger = null;
 			}
 		}
 
@@ -421,11 +488,8 @@ namespace MonoDevelop.Core.Execution
 				stopping = true;
 
 			AbortConnection (isAsync: isAsync);
+			StopPinger ();
 
-			if (pinger != null) {
-				pinger.Dispose ();
-				pinger = null;
-			}
 			if (listener != null) {
 				listener.Stop ();
 				listener = null;
@@ -438,7 +502,7 @@ namespace MonoDevelop.Core.Execution
 				connection.Close ();
 				connection = null;
 			}
-			process.Cancel ();
+			process?.Cancel ();
 		}
 
 		void OnConnected (IAsyncResult res)
@@ -473,7 +537,7 @@ namespace MonoDevelop.Core.Execution
 				try {
 					int nr = await connectionStream.ReadAsync (buffer, 0, 1, mainCancelSource.Token).ConfigureAwait (false);
 					if (nr == 0) {
-						StopRemoteProcess (isAsync: true);
+						// Connection closed. Remote process should die by itself.
 						return;
 					}
 					type = buffer [0];
@@ -483,33 +547,66 @@ namespace MonoDevelop.Core.Execution
 						return;
 					LoggingService.LogError ("ReadMessage failed", ex);
 					StopRemoteProcess (isAsync: true);
-					PostSetStatus (ConnectionStatus.ConnectionFailed, "Connection to layout renderer failed.");
+					PostSetStatus (ConnectionStatus.ConnectionFailed, "Connection to remote process failed.");
 					return;
 				}
 
-				lock (pendingMessageTasks) {
-					var t = Task.Run (() => {
-						msg = LoadMessageData (msg);
-						if (type == 0)
-							ProcessResponse (msg);
-						else
-							ProcessRemoteMessage (msg);
-					});
-					t.ContinueWith (ta => {
-						lock (pendingMessageTasks) {
-							pendingMessageTasks.Remove (ta);
-						}
-					});
+				HandleMessage (msg, type);
+			}
+		}
+
+		async void HandleMessage (BinaryMessage msg, byte type)
+		{
+			var t = Task.Run (() => {
+				msg = LoadMessageData (msg);
+				if (type == 0)
+					ProcessResponse (msg);
+				else
+					ProcessRemoteMessage (msg);
+			});
+
+			try {
+				lock (pendingMessageTasks)
 					pendingMessageTasks.Add (t);
-				}
+
+				await t.ConfigureAwait (false);
+			} catch (Exception e) {
+				LoggingService.LogError ("RemoteProcessConnection.HandleMessage failed", e);
+			} finally {
+				lock (pendingMessageTasks)
+					pendingMessageTasks.Remove (t);
 			}
 		}
 
 		List<Task> pendingMessageTasks = new List<Task> ();
 
+		/// <summary>
+		/// Waits for all messages received from the server to be processed.
+		/// Useful for example to ensure that all logging messages sent by
+		/// the server during a build operation are processed before closing the
+		/// connection.
+		/// </summary>
+		/// <returns>The pending messages.</returns>
 		public Task ProcessPendingMessages ()
 		{
-			return Task.WhenAll (pendingMessageTasks.ToArray ());
+			lock (pendingMessageTasks)
+				return Task.WhenAll (pendingMessageTasks.ToArray ());
+		}
+
+		/// <summary>
+		/// Waits for all queued messages to be processed. That is, when the
+		/// returned task completes, all messages in progess will have received
+		/// a response and all responses will have been processed.
+		/// </summary>
+		/// <returns>The queued messages.</returns>
+		public async Task ProcessQueuedMessages ()
+		{
+			Task[] waiters;
+			lock (messageWaiters)
+				waiters = messageWaiters.Values.Select (w => w.TaskSource.Task).ToArray ();
+
+			await Task.WhenAll (waiters);
+			await ProcessPendingMessages ();
 		}
 
 		BinaryMessage LoadMessageData (BinaryMessage msg)
@@ -526,9 +623,9 @@ namespace MonoDevelop.Core.Execution
 		void ProcessResponse (BinaryMessage msg)
 		{
 			DateTime respTime = DateTime.Now;
+			MessageRequest req;
 
 			lock (messageWaiters) {
-				MessageRequest req;
 				if (messageWaiters.TryGetValue (msg.Id, out req)) {
 					messageWaiters.Remove (msg.Id);
 					try {
@@ -547,12 +644,15 @@ namespace MonoDevelop.Core.Execution
 						LogMessage (MessageType.Response, msg, time);
 					}
 
-					if (!req.Request.OneWay)
-						NotifyResponse (req, msg);
-				}
-				else if (DebugMode)
+				} else if (DebugMode) {
+					req = null;
 					LogMessage (MessageType.Response, msg, -1);
+				}
 			}
+
+			// Notify the response outside the lock to avoid deadlocks
+			if (req != null && !req.Request.OneWay)
+				NotifyResponse (req, msg);
 		}
 
 		void NotifyResponse (MessageRequest req, BinaryMessage res)
@@ -577,14 +677,15 @@ namespace MonoDevelop.Core.Execution
 				LogMessage (MessageType.Message, msg);
 
 			if (msg.Name == "Connect") {
-				processConnectedEvent.SetResult (true);
+				processConnectedEvent.TrySetResult (true);
 				return;
 			}
 
-			Runtime.RunInMainThread (delegate {
-				if (MessageReceived != null)
-					MessageReceived (null, new MessageEventArgs () { Message = msg });
-			});
+			if (MessageReceived != null) {
+				Runtime.RunInMainThread (delegate {
+					MessageReceived?.Invoke (null, new MessageEventArgs () { Message = msg });
+				});
+			}
 
 			try {
 				foreach (var li in listeners) {

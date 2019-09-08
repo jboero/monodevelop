@@ -33,59 +33,38 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis;
 using System.Threading.Tasks;
+using MonoDevelop.Ide;
 
 namespace MonoDevelop.CSharp.Parser
 {
 	sealed class TypeSystemParser : MonoDevelop.Ide.TypeSystem.TypeSystemParser
 	{
-		public override async System.Threading.Tasks.Task<ParsedDocument> Parse (MonoDevelop.Ide.TypeSystem.ParseOptions options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken))
+		public override System.Threading.Tasks.Task<ParsedDocument> Parse (MonoDevelop.Ide.TypeSystem.ParseOptions options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken))
 		{
 			var fileName = options.FileName;
 			var project = options.Project;
-			var result = new CSharpParsedDocument (fileName);
+			var result = new CSharpParsedDocument (options, fileName);
 
 			if (project != null) {
 				
 				var projectFile = project.Files.GetFile (fileName);
-				SourceCodeKind kind;
-				if (projectFile != null && !TypeSystemParserNode.IsCompileableFile (projectFile, out kind))
+				if (projectFile != null && !project.IsCompileable (projectFile.FilePath))
 					result.Flags |= ParsedDocumentFlags.NonSerializable;
 			}
-
-			SyntaxTree unit = null;
 
 			if (project != null) {
 				var curDoc = options.RoslynDocument;
 				if (curDoc == null) {
-					var curProject = TypeSystemService.GetCodeAnalysisProject (project);
+					var curProject = IdeApp.TypeSystemService.GetCodeAnalysisProject (project);
 					if (curProject != null) {
-						var documentId = TypeSystemService.GetDocumentId (project, fileName);
-						if (documentId != null)
-							curDoc = curProject.GetDocument (documentId);
+						var documentId = IdeApp.TypeSystemService.GetDocumentId (project, fileName);
+						result.DocumentId = documentId;
 					}
 				}
-				if (curDoc != null) {
-					try {
-						var model = await curDoc.GetSemanticModelAsync (cancellationToken).ConfigureAwait (false);
-						unit = model.SyntaxTree;
-						result.Ast = model;
-					} catch (AggregateException ae) {
-						ae.Flatten ().Handle (x => x is OperationCanceledException); 
-						return result;
-					} catch (OperationCanceledException) {
-						return result;
-					} catch (Exception e) {
-						LoggingService.LogError ("Error while getting the semantic model for " + fileName, e); 
-					}
-				}
-			}
-
-			if (unit == null) {
+			} else {
 				var compilerArguments = GetCompilerArguments (project);
-				unit = CSharpSyntaxTree.ParseText (SourceText.From (options.Content.Text), compilerArguments, fileName);
-			} 
-
-			result.Unit = unit;
+				result.ParsedUnit = CSharpSyntaxTree.ParseText (SourceText.From (options.Content.Text), compilerArguments, fileName);
+			}
 
 			DateTime time;
 			try {
@@ -94,7 +73,7 @@ namespace MonoDevelop.CSharp.Parser
 				time = DateTime.UtcNow;
 			}
 			result.LastWriteTimeUtc = time;
-			return result;
+			return Task.FromResult<ParsedDocument> (result);
 		}
 
 		public static CSharpParseOptions GetCompilerArguments (MonoDevelop.Projects.Project project)
@@ -119,7 +98,7 @@ namespace MonoDevelop.CSharp.Parser
 
 			 
 			// compilerArguments.AllowUnsafeBlocks = par.UnsafeCode;
-			compilerArguments = compilerArguments.WithLanguageVersion (ConvertLanguageVersion (par.LangVersion));
+			compilerArguments = compilerArguments.WithLanguageVersion (par.LangVersion);
 //			compilerArguments.CheckForOverflow = par.GenerateOverflowChecks;
 
 //			compilerArguments.WarningLevel = par.WarningLevel;
@@ -137,27 +116,6 @@ namespace MonoDevelop.CSharp.Parser
 //			}
 			
 			return compilerArguments;
-		}
-		
-		internal static Microsoft.CodeAnalysis.CSharp.LanguageVersion ConvertLanguageVersion (LangVersion ver)
-		{
-			switch (ver) {
-			case LangVersion.ISO_1:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp1;
-			case LangVersion.ISO_2:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp2;
-			case LangVersion.Version3:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp3;
-			case LangVersion.Version4:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp4;
-			case LangVersion.Version5:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp5;
-			case LangVersion.Version6:
-				return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp6;
-			case LangVersion.Default:
-				break;
-			}
-			return Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp6;
 		}
 	}
 }

@@ -24,10 +24,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using System.Collections.Generic;
-using MonoDevelop.PackageManagement;
-using NuGet;
+using NuGet.ProjectManagement;
 using NUnit.Framework;
 
 namespace MonoDevelop.PackageManagement.Tests
@@ -76,6 +74,20 @@ namespace MonoDevelop.PackageManagement.Tests
 			logger.Log (MessageLevel.Info, format, "C");
 
 			AssertOnPackageOperationMessageLoggedCalled (MessageLevel.Info, "Test C");
+		}
+
+		[Test]
+		public void Log_ErrorMessageLogged_CaptureErrorsForSummary ()
+		{
+			CreateLogger ();
+			logger.SaveErrors = true;
+
+			logger.Log (MessageLevel.Error, "test");
+			messagesLoggedEventArgs.Clear ();
+
+			logger.LogSavedErrors ();
+
+			AssertOnPackageOperationMessageLoggedCalled (MessageLevel.Info, "test");
 		}
 	}
 }

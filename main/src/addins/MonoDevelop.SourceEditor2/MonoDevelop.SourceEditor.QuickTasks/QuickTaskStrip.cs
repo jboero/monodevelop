@@ -31,14 +31,14 @@ using System.Collections.Generic;
 using Gdk;
 using MonoDevelop.Core;
 using MonoDevelop.Ide;
+using MonoDevelop.Components.AtkCocoaHelper;
 using MonoDevelop.Components.Commands;
-using ICSharpCode.NRefactory;
 using System.Linq;
-using ICSharpCode.NRefactory.Refactoring;
 using MonoDevelop.Ide.Editor;
 using MonoDevelop.Ide.Editor.Extension;
 using Microsoft.CodeAnalysis;
 using System.Collections.Immutable;
+using MonoDevelop.Components;
 
 namespace MonoDevelop.SourceEditor.QuickTasks
 {
@@ -58,7 +58,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			};
 		}
 		Adjustment adj;
-		
+
 		public Adjustment VAdjustment {
 			get {
 				return this.adj;
@@ -67,7 +67,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 				adj = value;
 			}
 		}
-		
+
 		Mono.TextEditor.MonoTextEditor textEditor;
 		public Mono.TextEditor.MonoTextEditor TextEditor {
 			get {
@@ -83,7 +83,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 				SetupMode ();
 			}
 		}
-		
+
 		ScrollBarMode mode;
 		public ScrollBarMode ScrollBarMode {
 			get {
@@ -95,7 +95,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 				SetupMode ();
 			}
 		}
-		
+
 		ImmutableDictionary<IQuickTaskProvider, ImmutableArray<QuickTask>> providerTasks = ImmutableDictionary<IQuickTaskProvider, ImmutableArray<QuickTask>>.Empty;
 		ImmutableDictionary<UsageProviderEditorExtension, ImmutableArray<Usage>> providerUsages = ImmutableDictionary<UsageProviderEditorExtension, ImmutableArray<Usage>>.Empty;
 
@@ -105,7 +105,8 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 					yield break;
 				foreach (var tasks in providerTasks.Values) {
 					foreach (var task in tasks) {
-						yield return task;
+						if (task.Severity != DiagnosticSeverity.Hidden)
+							yield return task;
 					}
 				}
 			}
@@ -122,20 +123,34 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			}
 		}
 
-		public QuickTaskStrip ()
+		internal SourceEditorView SourceEditorView { get; private set; }
+
+		public QuickTaskStrip (SourceEditorView parentView)
 		{
+			SourceEditorView = parentView ?? throw new ArgumentNullException (nameof (parentView));
 			ScrollBarMode = PropertyService.Get ("ScrollBar.Mode", ScrollBarMode.Overview);
 			PropertyService.AddPropertyHandler ("ScrollBar.Mode", ScrollBarModeChanged);
 			EnableFancyFeatures.Changed += HandleChanged;
 			Events |= EventMask.ButtonPressMask;
+
+			Accessible.Name = "MainWindow.QuickTaskStrip";
+			Accessible.SetShouldIgnore (false);
+			Accessible.SetRole (AtkCocoa.Roles.AXRuler);
+			Accessible.SetLabel (GettextCatalog.GetString ("Quick Task Strip"));
+			Accessible.Description = GettextCatalog.GetString ("An overview of the current file's messages, warnings and errors");
+
+			var actionHandler = new ActionDelegate (this);
+			actionHandler.PerformShowMenu += PerformShowMenu;
 		}
 
 		void HandleChanged (object sender, EventArgs e)
 		{
 			SetupMode ();
 		}
-		
+
 		Widget mapMode;
+		QuickTaskOverviewMode overviewMode;
+
 		void SetupMode ()
 		{
 			if (adj == null || textEditor == null)
@@ -145,14 +160,20 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 				mapMode.Destroy ();
 				mapMode = null;
 			}
+			if (overviewMode != null) {
+				overviewMode.Destroy ();
+				overviewMode = null;
+			}
+
 			if (EnableFancyFeatures) {
 				switch (ScrollBarMode) {
 				case ScrollBarMode.Overview:
-					mapMode = new QuickTaskOverviewMode (this);
+					mapMode = overviewMode = new QuickTaskOverviewMode (this);
 					PackStart (mapMode, true, true, 0);
 					break;
 				case ScrollBarMode.Minimap:
 					mapMode = new QuickTaskMiniMapMode (this);
+					overviewMode = null;
 					PackStart (mapMode, true, true, 0);
 					break;
 				default:
@@ -161,7 +182,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			}
 			ShowAll ();
 		}
-		
+
 		protected override void OnDestroyed ()
 		{
 			adj = null;
@@ -171,28 +192,69 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			providerTasks = null;
 			PropertyService.RemovePropertyHandler ("ScrollBar.Mode", ScrollBarModeChanged);
 			EnableFancyFeatures.Changed -= HandleChanged;
+
+			if (updateAccessibilityId != 0) {
+				GLib.Source.Remove (updateAccessibilityId);
+				updateAccessibilityId = 0;
+			}
+
 			base.OnDestroyed ();
 		}
-		
+
 		void ScrollBarModeChanged (object sender, PropertyChangedEventArgs args)
 		{
-			var newMode =  (ScrollBarMode)args.NewValue;
+			var newMode = (ScrollBarMode)args.NewValue;
 			this.ScrollBarMode = newMode;
 		}
-		
+
+
+		uint updateAccessibilityId = 0;
+		void UpdateAccessibility ()
+		{
+			if (!IdeTheme.AccessibilityEnabled) {
+				return;
+			}
+
+			// If a timer is already scheduled then ignore this update
+			if (updateAccessibilityId != 0) {
+				return;
+			}
+
+			updateAccessibilityId = GLib.Timeout.Add (5000, UpdateAccessibilityTimer);
+		}
+
+
+		bool UpdateAccessibilityTimer ()
+		{
+			AccessibilityElementProxy [] children = null;
+			updateAccessibilityId = 0;
+
+			if (overviewMode != null && AccessibilityElementProxy.Enabled) {
+				children = overviewMode.UpdateAccessibility ();
+			}
+
+			Accessible.SetAccessibleChildren (children);
+
+			return false;
+		}
+
 		public void Update (IQuickTaskProvider provider)
 		{
 			if (providerTasks == null)
 				return;
 			providerTasks = providerTasks.SetItem (provider, provider.QuickTasks);
+
+			UpdateAccessibility ();
 			OnTaskProviderUpdated (EventArgs.Empty);
 		}
-		
+
 		public void Update (UsageProviderEditorExtension provider)
 		{
 			if (providerTasks == null)
 				return;
 			providerUsages = providerUsages.SetItem (provider, provider.Usages);
+
+			UpdateAccessibility ();
 			OnTaskProviderUpdated (EventArgs.Empty);
 		}
 
@@ -202,9 +264,21 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			if (handler != null)
 				handler (this, e);
 		}
-		
+
 		public event EventHandler TaskProviderUpdated;
-		
+
+		internal void ShowMenu ()
+		{
+			int x, y;
+			TranslateCoordinates (Toplevel, 0, 0, out x, out y);
+			IdeApp.CommandService.ShowContextMenu (this, x, y, IdeApp.CommandService.CreateCommandEntrySet ("/MonoDevelop/SourceEditor2/ContextMenu/Scrollbar"), this);
+		}
+
+		void PerformShowMenu (object sender, EventArgs e)
+		{
+			ShowMenu (); 
+		}
+
 		protected override bool OnButtonPressEvent (EventButton evnt)
 		{
 			if (evnt.Button == 3) {
@@ -242,40 +316,32 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 		internal void GotoPgDown ()
 		{
 			VAdjustment.Value = Math.Min (VAdjustment.Upper, VAdjustment.Value + VAdjustment.PageSize);
-		}	
-
-		[CommandUpdateHandler (ScrollbarCommand.ShowTasks)]
-		internal void UpdateShowMap (CommandInfo info)
-		{
-			info.Visible = EnableFancyFeatures;
-			info.Checked = ScrollBarMode == ScrollBarMode.Overview;
-		}
-
-		[CommandHandler (ScrollbarCommand.ShowTasks)]
-		internal void ShowMap ()
-		{
-			ScrollBarMode = ScrollBarMode.Overview; 
 		}
 
 		[CommandUpdateHandler (ScrollbarCommand.ShowMinimap)]
-		internal void UpdateShowFull (CommandInfo info)
+		internal void UpdateShowMinimap (CommandInfo info)
 		{
 			info.Visible = EnableFancyFeatures;
 			info.Checked = ScrollBarMode == ScrollBarMode.Minimap;
 		}
 
 		[CommandHandler (ScrollbarCommand.ShowMinimap)]
-		internal void ShowFull ()
+		internal void ShowShowMinimap ()
 		{
-			ScrollBarMode = ScrollBarMode.Minimap; 
+			if (ScrollBarMode == ScrollBarMode.Overview)
+				ScrollBarMode = ScrollBarMode.Minimap;
+			else
+				ScrollBarMode = ScrollBarMode.Overview;
 		}
+
+		#endregion
 
 		internal enum HoverMode { NextMessage, NextWarning, NextError }
 		internal QuickTask SearchNextTask (HoverMode mode)
 		{
 			var curLoc = TextEditor.Caret.Offset;
 			QuickTask firstTask = null;
-			foreach (var task in AllTasks.OrderBy (t => t.Location) ) {
+			foreach (var task in AllTasks.OrderBy (t => t.Location)) {
 				bool isNextTask = task.Location > curLoc;
 				if (mode == HoverMode.NextMessage ||
 					mode == HoverMode.NextWarning && task.Severity == DiagnosticSeverity.Warning ||
@@ -293,7 +359,7 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 		{
 			var curLoc = TextEditor.Caret.Offset;
 			QuickTask firstTask = null;
-			foreach (var task in AllTasks.OrderByDescending (t => t.Location) ) {
+			foreach (var task in AllTasks.OrderByDescending (t => t.Location)) {
 				bool isNextTask = task.Location < curLoc;
 				if (mode == HoverMode.NextMessage ||
 					mode == HoverMode.NextWarning && task.Severity == DiagnosticSeverity.Warning ||
@@ -307,16 +373,31 @@ namespace MonoDevelop.SourceEditor.QuickTasks
 			return firstTask;
 		}
 
-		internal void GotoTask (QuickTask quickTask)
+		internal void GotoTask (QuickTask quickTask, bool grabFocus = true)
 		{
 			if (quickTask == null)
 				return;
-			TextEditor.Caret.Offset = quickTask.Location;
-			TextEditor.CenterToCaret ();
-			TextEditor.StartCaretPulseAnimation ();
-			TextEditor.GrabFocus ();
+
+			GotoLocation (quickTask.Location, grabFocus);
 		}
 
-		#endregion
+		void GotoLocation (int location, bool grabFocus = true)
+		{
+			TextEditor.Caret.Offset = location;
+			TextEditor.CenterToCaret ();
+			TextEditor.StartCaretPulseAnimation ();
+
+			if (grabFocus) {
+				TextEditor.GrabFocus ();
+			}
+		}
+
+		internal void GotoUsage (Usage usage, bool grabFocus = true)
+		{
+			if (usage == null)
+				return;
+
+			GotoLocation (usage.Offset, grabFocus);
+		}
 	}
 }

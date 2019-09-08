@@ -1,4 +1,4 @@
-﻿// 
+// 
 // Formatter.cs
 //  
 // Author:
@@ -31,9 +31,12 @@ using MonoDevelop.Core;
 using MonoDevelop.Ide.Editor;
 using MonoDevelop.Core.Text;
 using MonoDevelop.Ide.Gui;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.Ide.CodeFormatting
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
 	public sealed class CodeFormatter
 	{
 		readonly AbstractCodeFormatter formatter;
@@ -53,7 +56,6 @@ namespace MonoDevelop.Ide.CodeFormatting
 			this.formatter = formatter;
 		}
 
-		[Obsolete("Use Format (PolicyContainer policyParent, ITextSource input, ISegment segment = null) instead. This function is going to be removed.")]
 		public ITextSource Format (PolicyContainer policyParent, ITextSource input, int fromOffset, int toOffset)
 		{
 			return formatter.Format (policyParent, mimeType, input, fromOffset, toOffset);
@@ -73,7 +75,6 @@ namespace MonoDevelop.Ide.CodeFormatting
 			}
 		}
 
-		[Obsolete("Use FormatText (PolicyContainer policyParent, string input, ISegment segment) instead. This function is going to be removed.")]
 		public string FormatText (PolicyContainer policyParent, string input, int fromOffset, int toOffset)
 		{
 			return formatter.FormatText (policyParent, mimeType, input, fromOffset, toOffset);
@@ -117,7 +118,7 @@ namespace MonoDevelop.Ide.CodeFormatting
 		[Obsolete("Use OnTheFlyFormat (TextEditor editor, DocumentContext context, ISegment segment) instead. This function is going to be removed.")]
 		public void OnTheFlyFormat (Document ideDocument, int startOffset, int endOffset)
 		{
-			formatter.OnTheFlyFormat (ideDocument.Editor, ideDocument, startOffset, endOffset - startOffset);
+			formatter.OnTheFlyFormat (ideDocument.Editor, ideDocument.DocumentContext, startOffset, endOffset - startOffset);
 		}
 
 		public bool SupportsCorrectingIndent { get { return formatter.SupportsCorrectingIndent; } }
@@ -125,6 +126,11 @@ namespace MonoDevelop.Ide.CodeFormatting
 		public void CorrectIndenting (PolicyContainer policyParent, TextEditor editor, int line)
 		{
 			formatter.CorrectIndenting (policyParent, editor, line);
+		}
+
+		public Task CorrectIndentingAsync (TextEditor editor, DocumentContext context, int startLine, int endLine, CancellationToken cancellationToken = default)
+		{
+			return formatter.CorrectIndentingAsync (editor, context, startLine, endLine, cancellationToken);
 		}
 
 		public void CorrectIndenting (PolicyContainer policyParent, TextEditor editor, IDocumentLine line)

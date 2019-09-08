@@ -70,6 +70,22 @@ namespace MonoDevelop.PackageManagement.Commands
 			};
 		}
 
+		static internal IPackageAction CreateUninstallPackageAction (DotNetProject project, string packageId)
+		{
+			var solutionManager = PackageManagementServices.Workspace.GetSolutionManager (project.ParentSolution);
+			return new UninstallNuGetPackageAction (solutionManager, new DotNetProjectProxy (project)) {
+				PackageId = packageId
+			};
+		}
+
+		internal static IPackageAction CreateUninstallPackagesAction (DotNetProject project, string[] packageIds)
+		{
+			var solutionManager = PackageManagementServices.Workspace.GetSolutionManager (project.ParentSolution);
+			var action = new UninstallNuGetPackagesAction (solutionManager, new DotNetProjectProxy (project));
+			action.AddPackageIds (packageIds);
+			return action;
+		}
+
 		[CommandUpdateHandler (EditCommands.Delete)]
 		public void UpdateRemoveItem (CommandInfo info)
 		{
@@ -82,41 +98,48 @@ namespace MonoDevelop.PackageManagement.Commands
 			return !MultipleSelectedNodes;
 		}
 
+		[CommandUpdateHandler (PackageReferenceNodeCommands.UpdatePackage)]
+		void CheckCanUpdatePackage (CommandInfo info)
+		{
+			var packageReferenceNode = (PackageReferenceNode)CurrentNode.DataItem;
+			info.Text = packageReferenceNode.GetUpdateLabel ();
+		}
+
 		[CommandHandler (PackageReferenceNodeCommands.UpdatePackage)]
 		public void UpdatePackage ()
 		{
 			var packageReferenceNode = (PackageReferenceNode)CurrentNode.DataItem;
 
+			UpdatePackage (
+				packageReferenceNode.Project,
+				packageReferenceNode.Id,
+				!packageReferenceNode.IsReleaseVersion ());
+		}
+
+		internal static void UpdatePackage (IDotNetProject project, string packageId, bool includePrerelease)
+		{
 			try {
-				var solutionManager = PackageManagementServices.Workspace.GetSolutionManager (packageReferenceNode.Project.ParentSolution);
-				var action = new UpdateNuGetPackageAction (solutionManager, packageReferenceNode.Project) {
-					PackageId = packageReferenceNode.Id,
-					IncludePrerelease = !packageReferenceNode.IsReleaseVersion ()
+				var solutionManager = PackageManagementServices.Workspace.GetSolutionManager (project.ParentSolution);
+				var action = new UpdateNuGetPackageAction (solutionManager, project) {
+					PackageId = packageId,
+					IncludePrerelease = includePrerelease
 				};
 
-				ProgressMonitorStatusMessage progressMessage = ProgressMonitorStatusMessageFactory.CreateUpdatingSinglePackageMessage (packageReferenceNode.Id, packageReferenceNode.Project);
+				ProgressMonitorStatusMessage progressMessage = ProgressMonitorStatusMessageFactory.CreateUpdatingSinglePackageMessage (packageId, project);
 				UpdatePackage (progressMessage, action);
 			} catch (Exception ex) {
-				ProgressMonitorStatusMessage progressMessage = ProgressMonitorStatusMessageFactory.CreateUpdatingSinglePackageMessage (packageReferenceNode.Id);
+				ProgressMonitorStatusMessage progressMessage = ProgressMonitorStatusMessageFactory.CreateUpdatingSinglePackageMessage (packageId);
 				PackageManagementServices.BackgroundPackageActionRunner.ShowError (progressMessage, ex);
 			}
 		}
 
-		void UpdatePackage (ProgressMonitorStatusMessage progressMessage, IPackageAction action)
+		static void UpdatePackage (ProgressMonitorStatusMessage progressMessage, IPackageAction action)
 		{
 			try {
 				PackageManagementServices.BackgroundPackageActionRunner.Run (progressMessage, action);
 			} catch (Exception ex) {
 				PackageManagementServices.BackgroundPackageActionRunner.ShowError (progressMessage, ex);
 			}
-		}
-
-		[CommandUpdateHandler (PackageReferenceNodeCommands.ShowPackageVersion)]
-		public void UpdateShowPackageVersionItem (CommandInfo info)
-		{
-			var packageReferenceNode = (PackageReferenceNode)CurrentNode.DataItem;
-			info.Enabled = false;
-			info.Text = packageReferenceNode.GetPackageVersionLabel ();
 		}
 
 		[CommandUpdateHandler (PackageReferenceNodeCommands.ReinstallPackage)]

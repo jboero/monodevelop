@@ -1,4 +1,4 @@
-//
+﻿//
 // ToolboxService.cs: Loads, stores and manipulates toolbox items.
 //
 // Authors:
@@ -67,7 +67,7 @@ namespace MonoDevelop.DesignerSupport
 		{
 			// Null check here because the service may be loaded in an external process
 			if (IdeApp.Workbench != null)
-				IdeApp.Workbench.ActiveDocumentChanged += new EventHandler (onActiveDocChanged);
+				IdeApp.Workbench.ActiveDocumentChanged += onActiveDocChanged;
 			
 			AddinManager.AddExtensionNodeHandler (toolboxLoaderPath, OnLoaderExtensionChanged);
 			AddinManager.AddExtensionNodeHandler (toolboxProviderPath, OnProviderExtensionChanged);
@@ -152,8 +152,16 @@ namespace MonoDevelop.DesignerSupport
 		
 		public void RemoveUserItem (ItemToolboxNode node)
 		{
-			Configuration.ItemList.Remove (node);
-			SaveConfiguration ();
+			if (Configuration.ItemList.Remove (node)) {
+				SaveConfiguration ();
+			} else {
+				//we need check in the dynamic providers
+				foreach (var prov in dynamicProviders) {
+					if (prov is IToolboxDynamicProviderDeleteSupport provDelSupport && provDelSupport.DeleteDynamicItem (node)) {
+						break;
+					}
+				}
+			}
 			OnToolboxContentsChanged ();
 		}
 		
@@ -167,6 +175,8 @@ namespace MonoDevelop.DesignerSupport
 				OnToolboxContentsChanged ();
 
 				System.Threading.ThreadPool.QueueUserWorkItem (delegate {
+					if (!Runtime.Initialized)
+						return;
 					List<ItemToolboxNode> nodes = new List<ItemToolboxNode> ();
 					try {
 						IEnumerable<ItemToolboxNode> newItems = provider.GetDefaultItems ();
@@ -181,14 +191,20 @@ namespace MonoDevelop.DesignerSupport
 						IEnumerable<string> files = provider.GetDefaultFiles ();
 						if (files != null) {
 							ctx = new LoaderContext ();
-							foreach (string f in files)
+							foreach (string f in files) {
+								if (ctx.CancellationToken.IsCancellationRequested)
+									break;
 								nodes.AddRange (GetFileItems (ctx, f));
+							}
 						}
 					} finally {
 						if (ctx != null)
 							ctx.Dispose ();
 					}
 
+					if (!Runtime.Initialized)
+						return;
+					
 					Runtime.RunInMainThread (delegate {
 						AddUserItems (nodes);
 						initializing--;
@@ -236,6 +252,8 @@ namespace MonoDevelop.DesignerSupport
 					continue;
 				
 				try {
+					if (ctx.CancellationToken.IsCancellationRequested)
+						break;
 					IList<ItemToolboxNode> loadedItems = loader.Load (ctx, fileName);
 					items.AddRange (loadedItems);
 				}
@@ -394,53 +412,53 @@ namespace MonoDevelop.DesignerSupport
 		#region Change notification
 		
 		Document oldActiveDoc =  null;
-		Project oldProject = null;
+		SolutionFolderItem oldProject = null;
 		bool configChanged;
-		IToolboxDynamicProvider viewProvider = null;
+		List<IToolboxDynamicProvider> viewProviders = new List<IToolboxDynamicProvider> ();
 		
 		void onActiveDocChanged (object o, EventArgs e)
 		{
 			if (oldActiveDoc != null)
-				oldActiveDoc.ViewChanged -= OnViewChanged;
+				oldActiveDoc.ContentChanged -= OnContentChanged;
 			if (oldProject != null)
 				oldProject.Modified -= onProjectConfigChanged;
 			
 			oldActiveDoc = IdeApp.Workbench.ActiveDocument;
-			oldProject = oldActiveDoc != null?
-				oldActiveDoc.Project : null;
+			oldProject = oldActiveDoc?.Owner as SolutionFolderItem;
 			
 			if (oldActiveDoc != null)
-				oldActiveDoc.ViewChanged += OnViewChanged;					
+				oldActiveDoc.ContentChanged += OnContentChanged;					
 			if (oldProject != null)
 				oldProject.Modified += onProjectConfigChanged;
 			
-			OnViewChanged (null, null);
+			OnContentChanged (null, null);
 		}
 		
-		void OnViewChanged (object sender, EventArgs args)
+		void OnContentChanged (object sender, EventArgs args)
 		{
-			if (viewProvider != null) {
+			foreach (var viewProvider in viewProviders) {
 				this.dynamicProviders.Remove (viewProvider);
 				viewProvider.ItemsChanged -= OnProviderItemsChanged;
 			}
-			
+			viewProviders.Clear ();
+
 			//only treat active ViewContent as a Toolbox consumer if it implements IToolboxConsumer
-			if (IdeApp.Workbench.ActiveDocument != null && IdeApp.Workbench.ActiveDocument.ActiveView != null) {
-				CurrentConsumer = IdeApp.Workbench.ActiveDocument.ActiveView.GetContent<IToolboxConsumer> ();
-				viewProvider    = IdeApp.Workbench.ActiveDocument.ActiveView.GetContent<IToolboxDynamicProvider> ();
-				customizer = IdeApp.Workbench.ActiveDocument.ActiveView.GetContent<IToolboxCustomizer> ();
-				if (viewProvider != null)  {
-					this.dynamicProviders.Add (viewProvider);
+			if (IdeApp.Workbench.ActiveDocument != null) {
+				CurrentConsumer = IdeApp.Workbench.ActiveDocument.GetContent<IToolboxConsumer> (true);
+				foreach (var viewProvider in IdeApp.Workbench.ActiveDocument.GetContents<IToolboxDynamicProvider> ()) {
+					viewProviders.Add (viewProvider);
+					dynamicProviders.Add (viewProvider);
 					viewProvider.ItemsChanged += OnProviderItemsChanged;
-					OnToolboxContentsChanged ();
 				}
+				customizer = IdeApp.Workbench.ActiveDocument.GetContent<IToolboxCustomizer> (true);
+				if (viewProviders.Count > 0)
+					OnToolboxContentsChanged ();
 			} else {
 				CurrentConsumer = null;
-				viewProvider = null;
 				customizer = null;
 			}
 		}
-		
+
 		//changing project settings could cause the toolbox contents to change
 		void onProjectConfigChanged (object sender, EventArgs args)
 		{
@@ -516,7 +534,22 @@ namespace MonoDevelop.DesignerSupport
 			//we assume permitted, so only return false when blocked by a filter
 			return true;
 		}
-		
+
+		internal bool CanRemoveUserItem (ItemToolboxNode node)
+		{
+			if (Configuration.ItemList.Contains (node)) {
+				return true;
+			} else {
+				//we need check in the dynamic providers
+				foreach (var prov in dynamicProviders) {
+					if (prov is IToolboxDynamicProviderDeleteSupport provDelSupport && provDelSupport.CanDeleteDynamicItem (node)) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
 		//evaluate a filter attribute against a list, and check whether permitted
 		private bool FilterPermitted (ItemToolboxNode node, ToolboxItemFilterAttribute desFa, 
 		    ICollection<ToolboxItemFilterAttribute> filterAgainst, IToolboxConsumer consumer)
@@ -628,7 +661,7 @@ namespace MonoDevelop.DesignerSupport
 			if (!File.Exists (ToolboxIndexFile))
 				return new ComponentIndex ();
 			
-			XmlDataSerializer ser = new XmlDataSerializer (IdeApp.Services.ProjectService.DataContext);
+			XmlDataSerializer ser = new XmlDataSerializer (IdeServices.ProjectService.DataContext);
 			try {
 				using (StreamReader sr = new StreamReader (ToolboxIndexFile)) {
 					return (ComponentIndex) ser.Deserialize (sr, typeof(ComponentIndex));
@@ -643,7 +676,7 @@ namespace MonoDevelop.DesignerSupport
 		
 		public void Save ()
 		{
-			XmlDataSerializer ser = new XmlDataSerializer (IdeApp.Services.ProjectService.DataContext);
+			XmlDataSerializer ser = new XmlDataSerializer (IdeServices.ProjectService.DataContext);
 			try {
 				using (StreamWriter sw = new StreamWriter (ToolboxIndexFile)) {
 					ser.Serialize (sw, this, typeof(ComponentIndex));

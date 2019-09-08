@@ -27,57 +27,154 @@ using System;
 using MonoDevelop.Ide.Gui;
 using Mono.Addins;
 using System.Linq;
+using MonoDevelop.Components;
+using System.Threading.Tasks;
+using MonoDevelop.Core;
+using MonoDevelop.Components.Commands;
 
 namespace MonoDevelop.Ide.WelcomePage
 {
-	static class WelcomePageService
+	public static class WelcomePageService
 	{
 		static bool visible;
 		static WelcomePageFrame welcomePage;
+		static IWelcomeWindowProvider welcomeWindowProvider;
+		static IWelcomeWindowProvider WelcomeWindowProvider {
+			get {
+				if (welcomeWindowProvider == null) {
+					welcomeWindowProvider = AddinManager.GetExtensionObjects<IWelcomeWindowProvider> ().FirstOrDefault ();
+				}
 
-		public static void Initialize ()
-		{
-			IdeApp.Workspace.FirstWorkspaceItemOpened += delegate {
-				HideWelcomePage ();
-			};
-			IdeApp.Workspace.LastWorkspaceItemClosed += delegate {
-				ShowWelcomePage ();
-			};
-			IdeApp.Workbench.DocumentOpened += delegate {
-				HideWelcomePage ();
-			};
-			IdeApp.Workbench.DocumentClosed += delegate {
-				if (IdeApp.Workbench.Documents.Count == 0 && !IdeApp.Workspace.IsOpen)
-					ShowWelcomePage ();
-			};
+				return welcomeWindowProvider;
+			}
 		}
 
-		public static bool WelcomePageVisible {
-			get { return visible; }
+		public static event EventHandler WelcomePageShown;
+		public static event EventHandler WelcomePageHidden;
+		public static event EventHandler WelcomeWindowShown;
+		public static event EventHandler WelcomeWindowHidden;
+
+		internal static async Task Initialize (bool hideWelcomePage)
+		{
+			IdeApp.Initialized += (s, args) => {
+				IdeApp.Workbench.RootWindow.Hidden += (sender, e) => {
+					if (!IdeApp.IsExiting && HasWindowImplementation) {
+						ShowWelcomeWindow (new WelcomeWindowShowOptions (true));
+					}
+				};
+				IdeApp.Workspace.FirstWorkspaceItemOpened += delegate {
+					HideWelcomePageOrWindow ();
+				};
+				IdeApp.Workspace.LastWorkspaceItemClosed += delegate {
+					if (!IdeApp.IsExiting && !IdeApp.Workspace.WorkspaceItemIsOpening) {
+						ShowWelcomePageOrWindow ();
+					}
+				};
+				IdeApp.Workbench.DocumentOpened += delegate {
+					HideWelcomePageOrWindow ();
+				};
+				IdeApp.Workbench.DocumentClosed += delegate {
+					if (!IdeApp.IsExiting && IdeApp.Workbench.Documents.Count == 0 && !IdeApp.Workspace.IsOpen && !HasWindowImplementation) {
+						ShowWelcomePage ();
+					}
+				};
+			};
+
+			if (!hideWelcomePage && HasWindowImplementation) {
+				await Runtime.GetService<DesktopService> ();
+				var commandManager = await Runtime.GetService<CommandManager> ();
+
+				var reason = await IdeApp.LaunchCompletionSource.Task;
+
+				if (IdeApp.LaunchReason == IdeApp.LaunchType.Normal) {
+					await ShowWelcomeWindow (new WelcomeWindowShowOptions (false));
+				} else if (IdeApp.LaunchReason == IdeApp.LaunchType.Unknown) {
+					LoggingService.LogInternalError ("LaunchCompletion is still Unknown", new Exception ());
+				}
+			}
+		}
+
+		public static bool WelcomePageVisible => visible;
+
+		public static bool WelcomeWindowVisible => WelcomeWindowProvider?.IsWindowVisible ?? false;
+
+		public static Window WelcomeWindow => WelcomeWindowProvider?.WindowInstance;
+
+		public static bool HasWindowImplementation => WelcomeWindowProvider != null;
+
+		public static async void ShowWelcomePageOrWindow (WelcomeWindowShowOptions options = null)
+		{
+			if (options == null) {
+				options = new WelcomeWindowShowOptions (true);
+			}
+
+			// Try to get a dialog version of the "welcome screen" first
+			if (!await ShowWelcomeWindow (options)) {
+				await Runtime.RunInMainThread (() => ShowWelcomePage (true));
+			}
+		}
+
+		public static async void HideWelcomePageOrWindow ()
+		{
+			await Runtime.RunInMainThread (async () => {
+				if (WelcomeWindowProvider != null) {
+					await WelcomeWindowProvider.HideWindow ();
+					visible = false;
+					WelcomeWindowHidden?.Invoke (WelcomeWindow, EventArgs.Empty);
+				} else {
+					HideWelcomePage (true);
+				}
+			});
 		}
 
 		public static void ShowWelcomePage (bool animate = false)
 		{
+			Runtime.AssertMainThread ();
 			if (!visible) {
 				visible = true;
 				if (welcomePage == null) {
 					var provider = AddinManager.GetExtensionObjects<IWelcomePageProvider> ().FirstOrDefault ();
 					welcomePage = new WelcomePageFrame (provider != null ? provider.CreateWidget () : new DefaultWelcomePage ());
 				}
+				WelcomePageShown?.Invoke (welcomePage, EventArgs.Empty);
 				welcomePage.UpdateProjectBar ();
-				((DefaultWorkbench)IdeApp.Workbench.RootWindow).BottomBar.Visible = false;
-				((DefaultWorkbench)IdeApp.Workbench.RootWindow).DockFrame.AddOverlayWidget (welcomePage, animate);
+				
+				var rootWindow = (DefaultWorkbench)IdeApp.Workbench.RootWindow;
+				if (rootWindow.BottomBar is MonoDevelopStatusBar statusBar) {
+					statusBar.Visible = false;
+				}
+
+				if (rootWindow.DockFrame is Components.Docking.DockFrame dockFrame) {
+					dockFrame.AddOverlayWidget (welcomePage, animate);
+				}
 				welcomePage.GrabFocus ();
 			}
 		}
 
 		public static void HideWelcomePage (bool animate = false)
 		{
+			Runtime.AssertMainThread ();
 			if (visible) {
 				visible = false;
 				((DefaultWorkbench)IdeApp.Workbench.RootWindow).BottomBar.Show ();
 				((DefaultWorkbench)IdeApp.Workbench.RootWindow).DockFrame.RemoveOverlayWidget (animate);
 			}
+			WelcomePageHidden?.Invoke (welcomePage, EventArgs.Empty);
+		}
+
+		public static async Task<bool> ShowWelcomeWindow (WelcomeWindowShowOptions options)
+		{
+			if (!HasWindowImplementation) {
+				return false;
+			}
+
+			await Runtime.RunInMainThread (async () => {
+				await WelcomeWindowProvider.ShowWindow (options);
+				visible = true;
+				WelcomeWindowShown?.Invoke (WelcomeWindow, EventArgs.Empty);
+			});
+
+			return true;
 		}
 	}
 }

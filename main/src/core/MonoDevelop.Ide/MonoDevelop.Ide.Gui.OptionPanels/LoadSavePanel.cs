@@ -37,6 +37,7 @@ using MonoDevelop.Ide.Gui;
 using MonoDevelop.Projects;
 
 using MonoDevelop.Components;
+using MonoDevelop.Components.AtkCocoaHelper;
 
 #pragma warning disable 612
 
@@ -80,9 +81,32 @@ namespace MonoDevelop.Ide.Gui.OptionPanels
 			
 			loadUserDataCheckButton.Active = IdeApp.Preferences.LoadDocumentUserProperties;
 			createBackupCopyCheckButton.Active = IdeApp.Preferences.CreateFileBackupCopies;
-			loadPrevProjectCheckButton.Active = IdeApp.Preferences.LoadPrevSolutionOnStartup.Value;
+			openStartWindowRadioButton.Active = IdeApp.Preferences.StartupBehaviour.Value == OnStartupBehaviour.ShowStartWindow;
+			loadPrevProjectRadioButton.Active = IdeApp.Preferences.StartupBehaviour.Value == OnStartupBehaviour.LoadPreviousSolution;
+			emptyEnvironmentRadioButton.Active = IdeApp.Preferences.StartupBehaviour.Value == OnStartupBehaviour.EmptyEnvironment;
+
+			SetupAccessibility ();
 		}
-		
+
+		void SetupAccessibility ()
+		{
+			folderEntry.EntryAccessible.SetCommonAttributes ("LoadSavePanel.folderEntry", "",
+			                                                 GettextCatalog.GetString ("Enter the default path for the solution"));
+			folderEntry.EntryAccessible.SetTitleUIElement (locationLabel.Accessible);
+			locationLabel.Accessible.SetTitleFor (folderEntry.EntryAccessible);
+
+			loadUserDataCheckButton.SetCommonAccessibilityAttributes ("LoadSavePanel.loadUserData", "",
+			                                                          GettextCatalog.GetString ("Check to load the user specific settings with the solution"));
+			openStartWindowRadioButton.SetCommonAccessibilityAttributes ("LoadSavePanel.openStartWindow", "",
+				GettextCatalog.GetString ("Check to load the Start Window when starting the application"));
+			loadPrevProjectRadioButton.SetCommonAccessibilityAttributes ("LoadSavePanel.loadPrevious", "",
+			                                                             GettextCatalog.GetString ("Check to load the previous solution when starting the application"));
+			emptyEnvironmentRadioButton.SetCommonAccessibilityAttributes ("LoadSavePanel.emptyEnvironment", "",
+				GettextCatalog.GetString ("Check to load an empty environment when starting the application"));
+			createBackupCopyCheckButton.SetCommonAccessibilityAttributes ("LoadSavePanel.createBackup", "",
+			                                                              GettextCatalog.GetString ("Check to always create a backup copy"));
+		}
+
 		public bool ValidateChanges ()
 		{
 			// check for correct settings
@@ -98,7 +122,14 @@ namespace MonoDevelop.Ide.Gui.OptionPanels
 		
 		public void Store () 
 		{
-			IdeApp.Preferences.LoadPrevSolutionOnStartup.Value = loadPrevProjectCheckButton.Active;
+			if (openStartWindowRadioButton.Active) {
+				IdeApp.Preferences.StartupBehaviour.Value = OnStartupBehaviour.ShowStartWindow;
+			} else if (loadPrevProjectRadioButton.Active) {
+				IdeApp.Preferences.StartupBehaviour.Value = OnStartupBehaviour.LoadPreviousSolution;
+			} else if (emptyEnvironmentRadioButton.Active) {
+				IdeApp.Preferences.StartupBehaviour.Value = OnStartupBehaviour.EmptyEnvironment;
+			}
+
 			IdeApp.Preferences.LoadDocumentUserProperties.Value = loadUserDataCheckButton.Active;
 			IdeApp.Preferences.CreateFileBackupCopies.Value = createBackupCopyCheckButton.Active;
 			IdeApp.Preferences.ProjectsDefaultPath.Value = folderEntry.Path;

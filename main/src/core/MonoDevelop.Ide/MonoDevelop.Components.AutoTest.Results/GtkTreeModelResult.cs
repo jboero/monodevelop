@@ -149,7 +149,8 @@ namespace MonoDevelop.Components.AutoTest.Results
 			TreeIter currentIter = (TreeIter) resultIter;
 
 			while (TModel.IterNext (ref currentIter)) {
-				newList.Add (new GtkTreeModelResult (ParentWidget, TModel, Column, currentIter) { SourceQuery = this.SourceQuery });
+				var result = DisposeWithResult (new GtkTreeModelResult (ParentWidget, TModel, Column, currentIter) { SourceQuery = this.SourceQuery });
+				newList.Add (result);
 			}
 
 			return newList;
@@ -188,6 +189,8 @@ namespace MonoDevelop.Components.AutoTest.Results
 						}
 					}
 				}
+
+				DisposeWithResult (FirstChild);
 				return children;
 			}
 
@@ -225,6 +228,7 @@ namespace MonoDevelop.Components.AutoTest.Results
 				}
 			}
 			result.FirstChild = newList.FirstOrDefault ();
+			DisposeWithResult (result.FirstChild);
 			return newList;
 		}
 
@@ -279,8 +283,15 @@ namespace MonoDevelop.Components.AutoTest.Results
 			if (resultIter.HasValue) {
 				var modelValue = TModel.GetValue ((TreeIter)resultIter, Column);
 
-				SetProperty (modelValue, propertyName, value);
+				base.SetProperty (modelValue, propertyName, value);
 			}
+		}
+
+		protected override void Dispose (bool disposing)
+		{
+			ParentWidget = null;
+			TModel = null;
+			base.Dispose (disposing);
 		}
 	}
 }

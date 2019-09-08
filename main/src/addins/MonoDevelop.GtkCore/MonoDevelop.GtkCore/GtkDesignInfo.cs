@@ -1,4 +1,4 @@
-//
+﻿//
 // GtkDesignInfo.cs
 //
 // Authors:
@@ -216,7 +216,7 @@ namespace MonoDevelop.GtkCore
 				return (bool)project.ExtendedProperties ["GtkRefactoringSupported"];
 
 			var testFileName = project.LanguageBinding.GetFileName ("test");
-			bool hasSupport = CodeGenerator.HasGenerator (DesktopService.GetMimeTypeForUri (testFileName));
+			bool hasSupport = CodeGenerator.HasGenerator (IdeServices.DesktopService.GetMimeTypeForUri (testFileName));
 			project.ExtendedProperties ["GtkRefactoringSupported"] = hasSupport;
 			return hasSupport;
 		}
@@ -293,7 +293,6 @@ namespace MonoDevelop.GtkCore
 				StreamWriter sw = new StreamWriter (SteticFile);
 				sw.WriteLine ("<stetic-interface />");
 				sw.Close ();
-				FileService.NotifyFileChanged (SteticFile);
 			}
 				
 			if (!project.IsFileInProject (SteticFile)) {

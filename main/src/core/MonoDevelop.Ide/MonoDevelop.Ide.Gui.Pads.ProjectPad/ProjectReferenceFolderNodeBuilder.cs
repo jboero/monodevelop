@@ -55,6 +55,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		
 		protected override void Initialize ()
 		{
+			base.Initialize ();
+
 			IdeApp.Workspace.ReferenceAddedToProject += OnAddReference;
 			IdeApp.Workspace.ReferenceRemovedFromProject += OnRemoveReference;
 		}
@@ -63,6 +65,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		{
 			IdeApp.Workspace.ReferenceAddedToProject -= OnAddReference;
 			IdeApp.Workspace.ReferenceRemovedFromProject -= OnRemoveReference;
+
+			base.Dispose ();
 		}
 		
 		public override void BuildNode (ITreeBuilder treeBuilder, object dataObject, NodeInfo nodeInfo)
@@ -95,12 +99,10 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			var p = (DotNetProject) builder.GetParentDataItem (typeof(DotNetProject), true);
 			return p != null && p.IsPortableLibrary;
 		}
-		
-		public override int CompareObjects (ITreeNavigator thisNode, ITreeNavigator otherNode)
+
+		public override int GetSortIndex (ITreeNavigator node)
 		{
-			if (otherNode.DataItem is GettingStartedNode)
-				return 1;
-			return -1;
+			return -1000;
 		}
 
 		void OnRemoveReference (object sender, ProjectReferenceEventArgs e)
@@ -121,6 +123,14 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 				if (tb != null)
 					tb.AddChild (e.ProjectReference);
 			}
+		}
+
+		public override void GetNodeAttributes (ITreeNavigator parentNode, object dataObject, ref NodeAttributes attributes)
+		{
+			// Hide References folder if the project is a SDK style project.
+			var project = (DotNetProject)parentNode.GetParentDataItem (typeof (DotNetProject), true);
+			if (project.HasFlavor<SdkProjectExtension> ())
+				attributes |= NodeAttributes.Hidden;
 		}
 	}
 	

@@ -25,7 +25,6 @@
 // THE SOFTWARE.
 using System;
 using MonoDevelop.Core;
-using Mono.Cecil;
 using Microsoft.CodeAnalysis;
 
 namespace MonoDevelop.Ide.TypeSystem
@@ -39,7 +38,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			return "md-" + GetAccess (symbol.DeclaredAccessibility) + GetGlobal (symbol) + GetSource (symbol);
 		}
 
-		internal static string GetAccess (Accessibility accessibility)
+		internal static string GetAccess (Microsoft.CodeAnalysis.Accessibility accessibility)
 		{
 			switch (accessibility) {
 			case Microsoft.CodeAnalysis.Accessibility.NotApplicable:

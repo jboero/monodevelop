@@ -3,7 +3,7 @@ open System
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open Microsoft.FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.SourceCodeServices
 open MonoDevelop.Components.Commands
 open MonoDevelop.Core
 open MonoDevelop.Core.Assemblies
@@ -35,7 +35,7 @@ type ScriptBuildTarget(scriptPath, consoleKind, source) =
         async {
             let filename = scriptPath |> string
             let checker = FSharpChecker.Create()
-            let! opts = checker.GetProjectOptionsFromScript(filename, source)
+            let! opts, _errors = checker.GetProjectOptionsFromScript(filename, source)
             let! _parseFileResults, checkFileResults = 
                     checker.ParseAndCheckFileInProject(filename, 0, source, opts)
             let checkResults =
@@ -71,7 +71,7 @@ type ScriptBuildTarget(scriptPath, consoleKind, source) =
                 let framework = Project.getDefaultTargetFramework runtime
                 let args =
                     [ 
-                      yield "--target:exe --nologo -g --debug:full --define:DEBUG --define:INTERACTIVE --optimize- --tailcalls-"
+                      yield "--target:exe --nologo -g --debug:portable --define:DEBUG --define:INTERACTIVE --optimize- --tailcalls-"
                       yield "--fullpaths --flaterrors --highentropyva-"
                       if not Platform.IsWindows then
                           yield "--noframework"
@@ -85,7 +85,7 @@ type ScriptBuildTarget(scriptPath, consoleKind, source) =
                       yield sprintf "--out:%s" (wrapFile exeName) ]
 
                 return CompilerService.compile runtime framework monitor tempPath args
-            } |> Async.StartAsTask
+            } |> StartAsyncAsTask monitor.CancellationToken
 
         member x.CanBuild _configSelector = true
         member x.NeedsBuilding _configSelector = true
@@ -105,10 +105,9 @@ type ScriptBuildTarget(scriptPath, consoleKind, source) =
                     | External -> context.ExternalConsoleFactory.CreateConsole token
                 let oper = context.ExecutionHandler.Execute(command, console)
 
-                let stopper = monitor.CancellationToken.Register (Action(fun() -> oper.Cancel()))
-                oper.Task |> Async.AwaitTask |> Async.RunSynchronously
-                stopper.Dispose ();
-            } |> Async.startAsPlainTask
+                use _stopper = monitor.CancellationToken.Register (Action(fun() -> oper.Cancel()))
+                do! oper.Task |> Async.AwaitTask 
+            } |> StartAsyncAsTask monitor.CancellationToken :> Task
 
         member x.PrepareExecution(_monitor, _context, _configSelector) = emptyTask
 
@@ -142,8 +141,9 @@ type FSharpDebugScriptTextEditorExtension() =
 type DebugScriptNodeHandler() =
     inherit NodeCommandHandler()
     member x.IsVisible ()=
-        let filepath = (x.CurrentNode.DataItem :?> ProjectFile).FilePath |> string
-        FileSystem.IsAScript filepath
+        match x.CurrentNode.DataItem with
+        | :? ProjectFile as pf -> FileSystem.IsAScript (pf.FilePath |> string)
+        | _ -> false
 
     member x.StartDebugging consoleKind =
         let file = x.CurrentNode.DataItem :?> ProjectFile

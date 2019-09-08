@@ -53,7 +53,7 @@ namespace MonoDevelop.PackageManagement
 			: this (
 				solutionManager,
 				dotNetProject,
-				new NuGetProjectContext (),
+				new NuGetProjectContext (solutionManager.Settings),
 				new MonoDevelopNuGetPackageManager (solutionManager),
 				PackageManagementServices.PackageManagementEvents)
 		{
@@ -80,6 +80,10 @@ namespace MonoDevelop.PackageManagement
 		public string PackageId { get; set; }
 		public bool IncludePrerelease { get; set; }
 
+		public PackageActionType ActionType {
+			get { return PackageActionType.Install; }
+		}
+
 		public void Execute ()
 		{
 			Execute (CancellationToken.None);
@@ -94,10 +98,12 @@ namespace MonoDevelop.PackageManagement
 
 		async Task ExecuteAsync (CancellationToken cancellationToken)
 		{
+			var resolutionContext = CreateResolutionContext ();
+
 			actions = await packageManager.PreviewUpdatePackagesAsync (
 				PackageId,
 				project,
-				CreateResolutionContext (),
+				resolutionContext,
 				context,
 				primarySources,
 				new SourceRepository[0],
@@ -113,12 +119,15 @@ namespace MonoDevelop.PackageManagement
 			SetDirectInstall ();
 
 			using (IDisposable fileMonitor = CreateFileMonitor ()) {
-				using (IDisposable referenceMaintainer = CreateLocalCopyReferenceMaintainer ()) {
+				using (var referenceMaintainer = new ProjectReferenceMaintainer (project)) {
 					await packageManager.ExecuteNuGetProjectActionsAsync (
 						project,
 						actions,
 						context,
+						resolutionContext.SourceCacheContext,
 						cancellationToken);
+
+					await referenceMaintainer.ApplyChanges ();
 				}
 			}
 
@@ -171,11 +180,6 @@ namespace MonoDevelop.PackageManagement
 		protected virtual ILicenseAcceptanceService GetLicenseAcceptanceService ()
 		{
 			return new LicenseAcceptanceService ();
-		}
-
-		LocalCopyReferenceMaintainer CreateLocalCopyReferenceMaintainer ()
-		{
-			return new LocalCopyReferenceMaintainer (packageManagementEvents);
 		}
 
 		public IEnumerable<NuGetProjectAction> GetNuGetProjectActions ()

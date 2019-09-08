@@ -7,6 +7,7 @@ using Gtk;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Components;
+using MonoDevelop.Components.AtkCocoaHelper;
 using System.Threading.Tasks;
 
 namespace MonoDevelop.Ide.Gui.Dialogs
@@ -28,34 +29,43 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 		public DirtyFilesDialog (IReadOnlyList<Document> docs, bool closeWorkspace, bool groupByProject) :
 			base (GettextCatalog.GetString ("Save Files"), IdeApp.Workbench.RootWindow, DialogFlags.Modal)
 		{
-			tsFiles = new TreeStore (typeof(string), typeof(bool), typeof(SdiWorkspaceWindow), typeof(bool));
+			Accessible.Name = "Dialog.DirtyFiles";
+
+			string description;
+			if (closeWorkspace) {
+				description = GettextCatalog.GetString ("Select which files should be saved before closing the workspace");
+			} else {
+				description = GettextCatalog.GetString ("Select which files should be saved before quitting the application");
+			}
+			Accessible.Description = description;
+
+			tsFiles = new TreeStore (typeof(string), typeof(bool), typeof(Document), typeof(bool));
 			tvFiles = new TreeView (tsFiles);
 			TreeIter topCombineIter = TreeIter.Zero;
 			Hashtable projectIters = new Hashtable ();
-			
+
+			tvFiles.Accessible.Name = "Dialog.DirtyFiles.FileList";
+			tvFiles.Accessible.SetLabel (GettextCatalog.GetString ("Dirty Files"));
+			tvFiles.Accessible.Description = GettextCatalog.GetString ("The list of files which have changes and need saving");
 			foreach (Document doc in docs) {
 				if (!doc.IsDirty)
 					continue;
 				
-				ViewContent viewcontent = doc.Window.ViewContent;
-				 
-				if (groupByProject && viewcontent.Project != null) {
+				if (groupByProject && doc.Owner != null) {
 					TreeIter projIter = TreeIter.Zero;
-					if (projectIters.ContainsKey (viewcontent.Project))
-						projIter = (TreeIter)projectIters [viewcontent.Project];
+					if (projectIters.ContainsKey (doc.Owner))
+						projIter = (TreeIter)projectIters [doc.Owner];
 					else {
 						if (topCombineIter.Equals (TreeIter.Zero))
-							projIter = tsFiles.AppendValues (GettextCatalog.GetString ("Project: {0}", viewcontent.Project.Name), true, null, false);
+							projIter = tsFiles.AppendValues (GettextCatalog.GetString ("Project: {0}", doc.Owner.Name), true, null, false);
 						else
-							projIter = tsFiles.AppendValues (topCombineIter, GettextCatalog.GetString ("Project: {0}", viewcontent.Project.Name), true, null, false);
-						projectIters [viewcontent.Project] = projIter;
+							projIter = tsFiles.AppendValues (topCombineIter, GettextCatalog.GetString ("Project: {0}", doc.Owner.Name), true, null, false);
+						projectIters [doc.Owner] = projIter;
 					}
-					tsFiles.AppendValues (projIter, viewcontent.PathRelativeToProject, true, viewcontent.WorkbenchWindow);
+					var name = doc.FilePath.IsNullOrEmpty ? doc.Name : doc.FilePath.ToRelative (doc.Owner.BaseDirectory).ToString ();
+					tsFiles.AppendValues (projIter, name, true, doc);
 				} else {
-					if (viewcontent.ContentName == null) {
-						viewcontent.ContentName = System.IO.Path.Combine (Environment.GetFolderPath (Environment.SpecialFolder.Personal), viewcontent.UntitledName);
-					}
-					tsFiles.AppendValues (viewcontent.ContentName, true, viewcontent.WorkbenchWindow);
+					tsFiles.AppendValues (doc.Name, true, doc);
 				}
 			}
 			if (!topCombineIter.Equals (TreeIter.Zero)) {
@@ -81,6 +91,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			tvFiles.ExpandAll ();
 
 			ScrolledWindow sc = new ScrolledWindow ();
+			sc.Accessible.SetShouldIgnore (true);
 			sc.Add (tvFiles);
 			sc.ShadowType = ShadowType.In;
 
@@ -88,8 +99,32 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			this.VBox.PackStart (sc, true, true, 6);
 
 			btnSaveAndQuit = new Button (closeWorkspace ? GettextCatalog.GetString ("_Save and Quit") : GettextCatalog.GetString ("_Save and Close"));
+			btnSaveAndQuit.Accessible.Name = "Dialog.DirtyFiles.SaveAndQuit";
+
+			if (closeWorkspace) {
+				description = GettextCatalog.GetString ("Save the selected files and close the workspace");
+			} else {
+				description = GettextCatalog.GetString ("Save the selected files and quit the application");
+			}
+			btnSaveAndQuit.Accessible.Description = description;
+
 			btnQuit = new Button (closeWorkspace ? Gtk.Stock.Quit : Gtk.Stock.Close);
+			btnQuit.Accessible.Name = "Dialog.DirtyFiles.Quit";
+			if (closeWorkspace) {
+				description = GettextCatalog.GetString ("Close the workspace");
+			} else {
+				description = GettextCatalog.GetString ("Quit the application");
+			}
+			btnQuit.Accessible.Description = description;
+
 			btnCancel = new Button (Gtk.Stock.Cancel);
+			btnCancel.Accessible.Name = "Dialog.DirtyFiles.Cancel";
+			if (closeWorkspace) {
+				description = GettextCatalog.GetString ("Cancel closing the workspace");
+			} else {
+				description = GettextCatalog.GetString ("Cancel quitting the application");
+			}
+			btnCancel.Accessible.Description = description;
 
 			btnSaveAndQuit.Clicked += SaveAndQuit;
 			btnQuit.Clicked += Quit;
@@ -101,7 +136,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 			this.SetDefaultSize (300, 200);
 			this.Child.ShowAll ();
 		}
-		
+
 		protected override void OnDestroyed ()
 		{
 			btnSaveAndQuit.Clicked -= SaveAndQuit;
@@ -125,14 +160,11 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 
 			List<Task> saveTasks = new List<Task> ();
 			tsFiles.Foreach (delegate (TreeModel model, TreePath path, TreeIter iter) {
-				var window = tsFiles.GetValue (iter, 2) as SdiWorkspaceWindow;
-				if (window == null)
+				var doc = tsFiles.GetValue (iter, 2) as Document;
+				if (doc == null)
 					return false;
-				if ((bool)tsFiles.GetValue (iter, 1)) {
-					saveTasks.Add (window.ViewContent.Save (window.ViewContent.ContentName));
-				} else {
-					window.ViewContent.DiscardChanges ();
-				}
+				if ((bool)tsFiles.GetValue (iter, 1))
+					saveTasks.Add (doc.Save ());
 				return false;
 			});
 
@@ -148,14 +180,6 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 
 		void Quit (object o, EventArgs e)
 		{
-			tsFiles.Foreach (delegate (TreeModel model, TreePath path, TreeIter iter) {
-				var window = tsFiles.GetValue (iter, 2) as SdiWorkspaceWindow;
-				if (window == null)
-					return false;
-				window.ViewContent.DiscardChanges ();
-				return false;
-			});
-			
 			Respond (Gtk.ResponseType.Ok);
 			Hide ();
 		}

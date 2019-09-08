@@ -25,9 +25,6 @@
 //
 //
 
-using System;
-using Mono.Debugging.Client;
-using System.Collections.Generic;
 using System.Linq;
 
 namespace MonoDevelop.Debugger
@@ -36,21 +33,57 @@ namespace MonoDevelop.Debugger
 	{
 		public LocalsPad ()
 		{
-			tree.AllowEditing = true;
-			tree.AllowAdding = false;
+			if (UseNewTreeView) {
+				controller.AllowEditing = true;
+			} else {
+				tree.AllowEditing = true;
+				tree.AllowAdding = false;
+			}
 		}
 
-		public override void OnUpdateList ()
+		void ReloadValues ()
 		{
-			base.OnUpdateList ();
-
 			var frame = DebuggingService.CurrentFrame;
-			
+
 			if (frame == null)
 				return;
 
-			tree.ClearValues ();
-			tree.AddValues (frame.GetAllLocals ().Where (l => !string.IsNullOrWhiteSpace (l.Name) && l.Name != "?").ToArray ());
+			var locals = frame.GetAllLocals ().Where (l => !string.IsNullOrWhiteSpace (l.Name) && l.Name != "?").ToArray();
+			if (UseNewTreeView) {
+				controller.ClearValues ();
+				controller.AddValues (locals);
+
+				//var xx = new System.Collections.Generic.List<ObjectValueNode> ();
+
+				//xx.Add (new FakeObjectValueNode ("f1"));
+				//xx.Add (new FakeIsImplicitNotSupportedObjectValueNode ());
+
+				//xx.Add (new FakeEvaluatingGroupObjectValueNode (1));
+				//xx.Add (new FakeEvaluatingGroupObjectValueNode (0));
+				//xx.Add (new FakeEvaluatingGroupObjectValueNode (5));
+
+				//xx.Add (new FakeEvaluatingObjectValueNode ());
+				//xx.Add (new FakeEnumerableObjectValueNode (10));
+				//xx.Add (new FakeEnumerableObjectValueNode (20));
+				//xx.Add (new FakeEnumerableObjectValueNode (23));
+
+				//controller.AddValues (xx);
+			} else {
+				tree.ClearValues ();
+				tree.AddValues (locals);
+			}
+		}
+
+		public override void OnUpdateFrame ()
+		{
+			base.OnUpdateFrame ();
+			ReloadValues ();
+		}
+
+		public override void OnUpdateValues ()
+		{
+			base.OnUpdateValues ();
+			ReloadValues ();
 		}
 	}
 }

@@ -43,6 +43,8 @@ using CustomCommand = MonoDevelop.Projects.CustomCommand;
 using System.Linq;
 using MonoDevelop.Ide.Projects;
 using MonoDevelop.Projects.Policies;
+using MonoDevelop.Core.FeatureConfiguration;
+using MonoDevelop.Ide.Projects.FileNesting;
 
 namespace MonoDevelop.Ide.Commands
 {
@@ -87,7 +89,10 @@ namespace MonoDevelop.Ide.Commands
 		SelectActiveConfiguration,
 		SelectActiveRuntime,
 		EditSolutionItem,
-		Unload
+		Unload,
+		SetStartupProjects,
+		AddEmptyClass,
+		ToggleFileNesting
 	}
 
 	internal class SolutionOptionsHandler : CommandHandler
@@ -128,6 +133,40 @@ namespace MonoDevelop.Ide.Commands
 		protected override void Run ()
 		{
 			IdeApp.ProjectOperations.ShowOptions (IdeApp.ProjectOperations.CurrentSelectedObject);
+		}
+	}
+
+	internal class SetStartupProjectsHandler : CommandHandler
+	{
+		protected override void Update (CommandInfo info)
+		{
+			info.Enabled = IdeApp.ProjectOperations.CurrentSelectedSolution?.GetAllProjects ()?.Skip (1)?.Any () ?? false;
+		}
+
+		protected override void Run ()
+		{
+			var sol = IdeApp.ProjectOperations.CurrentSelectedSolution;
+			if (sol != null) {
+				MultiItemSolutionRunConfiguration config = null;
+				if (!sol.MultiStartupRunConfigurations.Any ()) {
+					Xwt.Toolkit.NativeEngine.Invoke (() => {
+						using (var dlg = new NewSolutionRunConfigurationDialog ()) {
+							if (dlg.Run (IdeServices.DesktopService.GetFocusedTopLevelWindow ()).Id == "create") {
+								config = new MultiItemSolutionRunConfiguration (dlg.RunConfigurationName, dlg.RunConfigurationName);
+								sol.MultiStartupRunConfigurations.Add (config);
+								sol.StartupConfiguration = config;
+							}
+						}
+					});
+				} else {
+					config = sol.MultiStartupRunConfigurations.FirstOrDefault ();
+				}
+
+				// Show run configurations dialog
+				if (config != null) {
+					IdeApp.ProjectOperations.ShowRunConfiguration (sol, config);
+				}
+			}
 		}
 	}
 
@@ -301,6 +340,11 @@ namespace MonoDevelop.Ide.Commands
 		{
 			IBuildTarget buildTarget = IdeApp.ProjectOperations.CurrentSelectedBuildTarget;
 			info.Enabled = ((buildTarget != null) && (!(buildTarget is Workspace)) && IdeApp.ProjectOperations.CanExecute (buildTarget));
+
+			if (buildTarget is Solution)
+				info.Text = GettextCatalog.GetString ("Run Solution");
+			else if (buildTarget is Project)
+				info.Text = GettextCatalog.GetString ("Run Project");
 		}
 
 		protected override void Run ()
@@ -401,7 +445,7 @@ namespace MonoDevelop.Ide.Commands
 		{
 			var ce = IdeApp.ProjectOperations.CurrentSelectedBuildTarget as WorkspaceObject;
 			CustomCommand cmd = (CustomCommand) dataItem;
-			ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor ();
+			ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetRunProgressMonitor (cmd.Name);
 			
 			Thread t = new Thread (
 				async delegate () {
@@ -464,7 +508,9 @@ namespace MonoDevelop.Ide.Commands
 	{
 		protected override void Update (CommandArrayInfo info)
 		{
-			if (IdeApp.Workspace.IsOpen && Runtime.SystemAssemblyService.GetTargetRuntimes ().Count () > 1) {
+			var enabled = FeatureSwitchService.IsFeatureEnabled ("RUNTIME_SELECTOR");
+
+			if (enabled.GetValueOrDefault () && IdeApp.Workspace.IsOpen && Runtime.SystemAssemblyService.GetTargetRuntimes ().Count () > 1) {
 				foreach (var tr in Runtime.SystemAssemblyService.GetTargetRuntimes ()) {
 					var item = info.Add (tr.DisplayName, tr);
 					if (tr == IdeApp.Workspace.ActiveRuntime)
@@ -553,6 +599,25 @@ namespace MonoDevelop.Ide.Commands
 			var context = new ProjectOperationContext ();
 			context.GlobalProperties.SetValue ("RunCodeAnalysisOnce", "true");
 			IdeApp.ProjectOperations.Rebuild (IdeApp.ProjectOperations.CurrentSelectedProject, context);
+		}
+	}
+
+	internal class ToggleFileNestingHandler : CommandHandler
+	{
+		const string PropertyName = "MonoDevelop.Ide.FileNesting.Enabled";
+		protected override void Update (CommandInfo info)
+		{
+			var solution = IdeApp.ProjectOperations.CurrentSelectedSolution;
+			info.Visible = solution != null && solution.GetAllProjects ().Any (FileNestingService.AppliesToProject);
+			if (info.Visible) {
+				info.Checked = IdeApp.ProjectOperations.CurrentSelectedSolution.UserProperties.GetValue<bool> (PropertyName, true);
+			}
+		}
+
+		protected override void Run ()
+		{
+			bool enabled = IdeApp.ProjectOperations.CurrentSelectedSolution.UserProperties.GetValue<bool> (PropertyName, true);
+			IdeApp.ProjectOperations.CurrentSelectedSolution.UserProperties.SetValue (PropertyName, !enabled);
 		}
 	}
 }

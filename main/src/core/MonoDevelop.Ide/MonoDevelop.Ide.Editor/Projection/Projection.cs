@@ -1,4 +1,4 @@
-﻿//
+//
 // Projection.cs
 //
 // Author:
@@ -30,10 +30,12 @@ using MonoDevelop.Core.Text;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Ide.TypeSystem;
 using System.Collections.Generic;
+using MonoDevelop.Core;
 
 namespace MonoDevelop.Ide.Editor.Projection
 {
-	public sealed class Projection
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
+	public sealed class Projection : IDisposable
 	{
 		public ITextDocument Document { get; private set; }
 
@@ -117,10 +119,17 @@ namespace MonoDevelop.Ide.Editor.Projection
 
 		void HandleTextChanging (object sender, TextChangeEventArgs e)
 		{
-			foreach (var segment in originalProjections) {
-				if (segment.Contains (e.Offset)) {
-					var projectedOffset = e.Offset - segment.Offset + segment.LinkedTo.Offset;
-					projectedEditor.ReplaceText (projectedOffset, e.RemovalLength, e.InsertedText);
+			for (int i = 0; i < e.TextChanges.Count; ++i) {
+				var change = e.TextChanges[i];
+				foreach (var segment in originalProjections) {
+					if (segment.Contains (change.Offset)) {
+						var projectedOffset = change.Offset - segment.Offset + segment.LinkedTo.Offset;
+						try {
+							projectedEditor.ReplaceText (projectedOffset, change.RemovalLength, change.InsertedText);
+						} catch (Exception ex) {
+							LoggingService.LogError ($"Error while replacing in projected editor at {projectedOffset} with length {projectedEditor.Length} change: {change}", ex);
+						}
+					}
 				}
 			}
 
@@ -149,6 +158,14 @@ namespace MonoDevelop.Ide.Editor.Projection
 			}
 			projectedOffset = -1;
 			return false;
+		}
+
+		public void Dispose ()
+		{
+			if (projectedEditor != null) {
+				projectedEditor.Dispose ();
+				projectedEditor = null;
+			}
 		}
 	}
 }

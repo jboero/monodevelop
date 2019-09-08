@@ -126,9 +126,12 @@ namespace MonoDevelop.Core.Assemblies
 		}
 
 		public bool UserDefined { get; internal set; }
-		
+
+		[Obsolete("Use DotNetProject.GetAssemblyDebugInfoFile()")]
 		public override string GetAssemblyDebugInfoFile (string assemblyPath)
 		{
+			if (monoRuntimeInfo.RuntimeVersion != null && monoRuntimeInfo.RuntimeVersion >= new Version (4,9,0))
+				return Path.ChangeExtension (assemblyPath, ".pdb");
 			return assemblyPath + ".mdb";
 		}
 		
@@ -154,7 +157,9 @@ namespace MonoDevelop.Core.Assemblies
 
 		public override string GetToolPath (TargetFramework fx, string toolName)
 		{
+#pragma warning disable CS0618 // Type or member is obsolete
 			if (fx.ClrVersion == ClrVersion.Net_2_0 && toolName == "al")
+#pragma warning restore CS0618 // Type or member is obsolete
 				toolName = "al2";
 			return base.GetToolPath (fx, toolName);
 		}
@@ -174,52 +179,30 @@ namespace MonoDevelop.Core.Assemblies
 		
 		public override string GetMSBuildBinPath (string toolsVersion)
 		{
-			bool monoUseMSBuild = Runtime.Preferences.BuildWithMSBuild || System.Version.Parse (toolsVersion) >= new System.Version(15, 0);
-
-			if (monoUseMSBuild) {
-				var path = Path.Combine (monoDir, "msbuild", toolsVersion, "bin");
-				if (File.Exists (Path.Combine (path, "MSBuild.exe")) ||
-				    File.Exists (Path.Combine (path, "MSBuild.dll"))) {
+			if (toolsVersion != "Current") {
+				var path = GetMSBuildBinPathInternal ("Current");
+				if (path != null)
 					return path;
-				}
-
-				// ToolsVersion >= 15.0 is supported only by msbuild, so, just
-				// return null here
-				return null;
 			}
+			return GetMSBuildBinPathInternal (toolsVersion);
+		}
 
-			var xbpath = Path.Combine (monoDir, "xbuild", toolsVersion, "bin");
-			if (File.Exists (Path.Combine (xbpath, "xbuild.exe")))
-				return xbpath;
-
-			if (toolsVersion == "4.0")
-				//HACK: Mono puts xbuild 4.0 in 4.5 directory, even though there is no such thing as ToolsVersion 4.5
-				return GetMSBuildBinPath ("4.5");
+		string GetMSBuildBinPathInternal (string toolsVersion)
+		{
+			var path = Path.Combine (monoDir, "msbuild", toolsVersion, "bin");
+			if (File.Exists (Path.Combine (path, "MSBuild.exe")) ||
+			    File.Exists (Path.Combine (path, "MSBuild.dll"))) {
+				return path;
+			}
 
 			return null;
 		}
 		
 		public override string GetMSBuildToolsPath (string toolsVersion)
 		{
-			bool monoUseMSBuild = Runtime.Preferences.BuildWithMSBuild || System.Version.Parse (toolsVersion) >= new System.Version (15, 0);
-
-			if (monoUseMSBuild) {
-				var path = Path.Combine (monoDir, "msbuild", toolsVersion, "bin");
-				if (Directory.Exists (path))
-					return path;
-
-				// ToolsVersion >= 15.0 is supported only by msbuild, so, just
-				// return null here
-				return null;
-			}
-
-			var xbpath = Path.Combine (monoDir, "xbuild", toolsVersion, "bin");
-			if (Directory.Exists (xbpath))
-				return xbpath;
-
-			if (toolsVersion == "4.0")
-				//HACK: Mono puts xbuild 4.0 in 4.5 directory, even though there is no such thing as ToolsVersion 4.5
-				return GetMSBuildToolsPath ("4.5");
+			var path = Path.Combine (monoDir, "msbuild", toolsVersion, "bin");
+			if (Directory.Exists (path))
+				return path;
 
 			return null;
 		}
@@ -329,36 +312,30 @@ namespace MonoDevelop.Core.Assemblies
 		/// <param name="assemblyPath">Assembly path.</param>
 		public string GetMonoExecutableForAssembly (string assemblyPath)
 		{
-			IKVM.Reflection.PortableExecutableKinds peKind;
-			IKVM.Reflection.ImageFileMachine machine;
+			return GetMonoExecutable (AssemblyUtilities.GetProcessExecutionArchitectureForAssembly (assemblyPath));
+		}
 
-			using (var universe = new IKVM.Reflection.Universe ()) {
-				IKVM.Reflection.Assembly assembly;
-				try {
-					assembly = universe.LoadFile (assemblyPath);
-					assembly.ManifestModule.GetPEKind (out peKind, out machine);
-				} catch {
-					peKind = IKVM.Reflection.PortableExecutableKinds.ILOnly;
-					machine = IKVM.Reflection.ImageFileMachine.I386;
-				}
-			}
-
+		internal string GetMonoExecutable (ProcessExecutionArchitecture use64Bit)
+		{
 			string monoPath;
-
-			if ((peKind & (IKVM.Reflection.PortableExecutableKinds.Required32Bit | IKVM.Reflection.PortableExecutableKinds.Preferred32Bit)) != 0) {
-				monoPath = Path.Combine (MonoRuntimeInfo.Prefix, "bin", "mono32");
-				if (File.Exists (monoPath))
-					return monoPath;
-			} else if ((peKind & IKVM.Reflection.PortableExecutableKinds.PE32Plus) != 0) {
+			switch (use64Bit) {
+			case ProcessExecutionArchitecture.X64:
 				monoPath = Path.Combine (MonoRuntimeInfo.Prefix, "bin", "mono64");
 				if (File.Exists (monoPath))
 					return monoPath;
+				break;
+			case ProcessExecutionArchitecture.X86:
+				monoPath = Path.Combine (MonoRuntimeInfo.Prefix, "bin", "mono32");
+				if (File.Exists (monoPath))
+					return monoPath;
+				break;
 			}
 
 			return monoPath = Path.Combine (MonoRuntimeInfo.Prefix, "bin", "mono");
 		}
+
 	}
-	
+
 	class PcFileCacheContext: Mono.PkgConfig.IPcFileCacheContext<LibraryPackageInfo>
 	{
 		public void ReportError (string message, System.Exception ex)

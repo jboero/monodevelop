@@ -29,7 +29,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using MonoDevelop.Core;
-using NuGet;
+using NuGet.PackageManagement;
 using NuGet.ProjectManagement;
 
 namespace MonoDevelop.PackageManagement
@@ -62,14 +62,12 @@ namespace MonoDevelop.PackageManagement
 
 			packageManagementEvents.PackageOperationMessageLogged += PackageOperationMessageLogged;
 			packageManagementEvents.ResolveFileConflict += ResolveFileConflict;
-			packageManagementEvents.FileChanged += FileChanged;
 			packageManagementEvents.ImportRemoved += ImportRemoved;
 		}
 
 		public void Dispose ()
 		{
 			packageManagementEvents.ImportRemoved -= ImportRemoved;
-			packageManagementEvents.FileChanged -= FileChanged;
 			packageManagementEvents.ResolveFileConflict -= ResolveFileConflict;
 			packageManagementEvents.PackageOperationMessageLogged -= PackageOperationMessageLogged;
 
@@ -77,7 +75,6 @@ namespace MonoDevelop.PackageManagement
 				PackageManagementMSBuildExtension.PackageRestoreTask = null;
 			}
 
-			NotifyFilesChanged ();
 			UnloadMSBuildHost ();
 		}
 
@@ -107,7 +104,7 @@ namespace MonoDevelop.PackageManagement
 
 		void PackageOperationMessageLogged (object sender, PackageOperationMessageLoggedEventArgs e)
 		{
-			if (e.Message.Level == NuGet.MessageLevel.Warning) {
+			if (e.Message.Level == MessageLevel.Warning) {
 				ReportWarning (e.Message.ToString ());
 			} else {
 				LogMessage (e.Message.ToString ());
@@ -142,34 +139,15 @@ namespace MonoDevelop.PackageManagement
 			}
 		}
 
-		void FileChanged (object sender, FileEventArgs e)
+		public void ReportError (ProgressMonitorStatusMessage progressMessage, Exception ex, bool showPackageConsole = true)
 		{
-			fileChangedEvents.Add (e);
-		}
+			if (!ex.IsOperationCanceledException ())
+				LoggingService.LogError (progressMessage.Error, ex);
 
-		void NotifyFilesChanged ()
-		{
-			GuiSyncDispatch (() => {
-				FilePath[] files = fileChangedEvents
-					.SelectMany (Enumerable.ToArray)
-					.Select (fileInfo => fileInfo.FileName)
-					.ToArray ();
-
-				NotifyFilesChanged (files);
-			});
-		}
-
-		protected virtual void NotifyFilesChanged (FilePath[] files)
-		{
-			FileService.NotifyFilesChanged (files);
-		}
-
-		public void ReportError (ProgressMonitorStatusMessage progressMessage, Exception ex)
-		{
-			LoggingService.LogError (progressMessage.Error, ex);
 			progressMonitor.Log.WriteLine (GetErrorMessageForPackageConsole (ex));
 			progressMonitor.ReportError (progressMessage.Error, null);
-			ShowPackageConsole (progressMonitor);
+			if (showPackageConsole)
+				ShowPackageConsole (progressMonitor);
 			packageManagementEvents.OnPackageOperationError (ex);
 
 			if (taskCompletionSource != null) {

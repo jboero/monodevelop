@@ -27,21 +27,17 @@
 //
 
 using System;
-using MonoDevelop.Core;
 using Gtk;
-using MonoDevelop.Ide.CodeCompletion;
 using MonoDevelop.Ide.Gui;
-using System.Collections.Generic;
 using MonoDevelop.Components.Docking;
-using MonoDevelop.Ide.Gui.Dialogs;
 using MonoDevelop.Components;
-using MonoDevelop.Components.MainToolbar;
+using MonoDevelop.Components.AtkCocoaHelper;
+using MonoDevelop.Ide.Gui.Shell;
 
 namespace MonoDevelop.Ide
 {
 	class MonoDevelopStatusBar : Gtk.HBox
 	{
-		MiniButton feedbackButton;
 		Gtk.EventBox resizeGrip = new Gtk.EventBox ();
 
 		const int ResizeGripWidth = 14;
@@ -52,53 +48,27 @@ namespace MonoDevelop.Ide
 			Spacing = 0;
 			HasResizeGrip = true;
 
+			Accessible.Role = Atk.Role.Filler;
+
 			HeaderBox hb = new HeaderBox (1, 0, 0, 0);
+			hb.Accessible.Role = Atk.Role.Filler;
 			hb.StyleSet += (o, args) => {
 				hb.BorderColor = Styles.DockSeparatorColor.ToGdkColor ();
 				hb.BackgroundColor = Styles.DockBarBackground.ToGdkColor ();
 			};
 			var mainBox = new HBox ();
-			mainBox.PackStart (new Label (""), true, true, 0);
+			mainBox.Accessible.Role = Atk.Role.Filler;
+			var alignment = new Alignment (0f, 0f, 0f, 0f);
+			alignment.Accessible.Role = Atk.Role.Filler;
+			mainBox.PackStart (alignment, true, true, 0);
 			hb.Add (mainBox);
 			hb.ShowAll ();
 			PackStart (hb, true, true, 0);
 			
-			// Feedback button
-			
-			if (FeedbackService.Enabled) {
-				CustomFrame fr = new CustomFrame (0, 0, 1, 0);
-				var px = Xwt.Drawing.Image.FromResource ("feedback-16.png");
-				HBox b = new HBox (false, 3);
-				b.PackStart (new Xwt.ImageView (px).ToGtkWidget ());
-				b.PackStart (new Gtk.Label ("Feedback"));
-				Gtk.Alignment al = new Gtk.Alignment (0f, 0f, 1f, 1f);
-				al.RightPadding = 5;
-				al.LeftPadding = 3;
-				al.Add (b);
-				feedbackButton = new MiniButton (al);
-				//feedbackButton.BackroundColor = new Gdk.Color (200, 200, 255);
-				fr.Add (feedbackButton);
-				mainBox.PackStart (fr, false, false, 0);
-				feedbackButton.Clicked += HandleFeedbackButtonClicked;
-				feedbackButton.ButtonPressEvent += HandleFeedbackButtonButtonPressEvent;
-				;
-				feedbackButton.ClickOnRelease = true;
-				FeedbackService.FeedbackPositionGetter = delegate {
-					int x, y;
-					if (feedbackButton.GdkWindow != null) {
-						feedbackButton.GdkWindow.GetOrigin (out x, out y);
-						x += feedbackButton.Allocation.Width;
-						y -= 6;
-					} else {
-						x = y = -1;
-					}
-					return new Gdk.Point (x, y);
-				};
-			}
-			
 			// Dock area
 			
 			CustomFrame dfr = new CustomFrame (0, 0, 1, 0);
+			dfr.Accessible.Role = Atk.Role.Filler;
 			dfr.StyleSet += (o, args) => {
 				dfr.BorderColor = Styles.DockSeparatorColor.ToGdkColor ();
 			};
@@ -113,6 +83,7 @@ namespace MonoDevelop.Ide
 
 			// Resize grip
 
+			resizeGrip.Accessible.SetRole (AtkCocoa.Roles.AXGrowArea);
 			resizeGrip.WidthRequest = ResizeGripWidth;
 			resizeGrip.HeightRequest = 0;
 			resizeGrip.VisibleWindow = false;
@@ -136,39 +107,6 @@ namespace MonoDevelop.Ide
 //					completionStatus.ShowMessage (string.Format (GettextCatalog.GetString ("To toggle categorized completion mode press {0}."), IdeApp.CommandService.GetCommandInfo (Commands.TextEditorCommands.ShowCompletionWindow).AccelKey));
 //				}
 //			};
-		}
-		
-		[System.Runtime.InteropServices.DllImport ("libc")]
-		static extern void abort ();
-		
-		static readonly bool FeedbackButtonThrowsException = Environment.GetEnvironmentVariable ("MONODEVELOP_TEST_CRASH_REPORTING") != null;
-		void HandleFeedbackButtonButtonPressEvent (object o, ButtonPressEventArgs args)
-		{
-			if (FeedbackService.IsFeedbackWindowVisible)
-				ignoreFeedbackButtonClick = true;
-
-			if (FeedbackButtonThrowsException) {
-				// Control == hard crash
-				if ((args.Event.State & Gdk.ModifierType.ControlMask) != 0) {
-					abort ();
-				}
-				//Alt = terminating exception
-				var ex = new Exception ("Feedback Button is throwing an exception", new Exception (Environment.StackTrace));
-				if ((args.Event.State & Gdk.ModifierType.Mod1Mask) != 0) {
-					throw ex;
-				}
-				// None: Nonterminating exception
-				GLib.ExceptionManager.RaiseUnhandledException (new Exception ("Feedback Button is throwing an exception", new Exception (Environment.StackTrace)), false);
-				ignoreFeedbackButtonClick = true;
-			}
-		}
-
-		bool ignoreFeedbackButtonClick;
-		void HandleFeedbackButtonClicked (object sender, EventArgs e)
-		{
-			if (!ignoreFeedbackButtonClick)
-				FeedbackService.ShowFeedbackWindow ();
-			ignoreFeedbackButtonClick = false;
 		}
 
 		[Obsolete]

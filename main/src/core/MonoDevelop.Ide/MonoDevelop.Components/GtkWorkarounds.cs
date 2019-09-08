@@ -1,4 +1,4 @@
-//
+﻿//
 // GtkWorkarounds.cs
 //
 // Authors: Jeffrey Stedfast <jeff@xamarin.com>
@@ -38,6 +38,7 @@ using System.Text.RegularExpressions;
 #if MAC
 using AppKit;
 using MonoDevelop.Components.Mac;
+using CoreGraphics;
 #endif
 #if WIN32
 using System.Windows.Input;
@@ -45,111 +46,42 @@ using System.Windows.Input;
 
 namespace MonoDevelop.Components
 {
-	public static class GtkWorkarounds
+	public static partial class GtkWorkarounds
 	{
-		const string LIBOBJC ="/usr/lib/libobjc.dylib";
 		const string USER32DLL = "User32.dll";
-
-		[DllImport (LIBOBJC, EntryPoint = "sel_registerName")]
-		static extern IntPtr sel_registerName (string selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_getClass")]
-		static extern IntPtr objc_getClass (string klass);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern IntPtr objc_msgSend_IntPtr (IntPtr klass, IntPtr selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern void objc_msgSend_void_bool (IntPtr klass, IntPtr selector, bool arg);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern bool objc_msgSend_bool (IntPtr klass, IntPtr selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern int objc_msgSend_NSInt32_NSInt32 (IntPtr klass, IntPtr selector, int arg);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern long objc_msgSend_NSInt64_NSInt64 (IntPtr klass, IntPtr selector, long arg);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern uint objc_msgSend_NSUInt32 (IntPtr klass, IntPtr selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend")]
-		static extern ulong objc_msgSend_NSUInt64 (IntPtr klass, IntPtr selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend_stret")]
-		static extern void objc_msgSend_CGRect32 (out CGRect32 rect, IntPtr klass, IntPtr selector);
-
-		[DllImport (LIBOBJC, EntryPoint = "objc_msgSend_stret")]
-		static extern void objc_msgSend_CGRect64 (out CGRect64 rect, IntPtr klass, IntPtr selector);
-
-		[DllImport (PangoUtil.LIBQUARTZ)]
-		static extern IntPtr gdk_quartz_window_get_nswindow (IntPtr window);
-
-		struct CGRect32
-		{
-			public float X, Y, Width, Height;
-		}
-
-		struct CGRect64
-		{
-			public double X, Y, Width, Height;
-
-			public CGRect64 (CGRect32 rect32)
-			{
-				X = rect32.X;
-				Y = rect32.Y;
-				Width = rect32.Width;
-				Height = rect32.Height;
-			}
-		}
-
-		static IntPtr cls_NSScreen;
-		static IntPtr sel_screens, sel_objectEnumerator, sel_nextObject, sel_frame, sel_visibleFrame,
-		sel_requestUserAttention, sel_setHasShadow, sel_invalidateShadow;
-		static IntPtr sharedApp;
-		static IntPtr cls_NSEvent;
-		static IntPtr sel_modifierFlags;
-
-		const int NSCriticalRequest = 0;
-		const int NSInformationalRequest = 10;
 
 		static System.Reflection.MethodInfo glibObjectGetProp, glibObjectSetProp;
 
 		public static int GtkMinorVersion = 12, GtkMicroVersion = 0;
-		static bool oldMacKeyHacks = false;
 
 		static GtkWorkarounds ()
 		{
-			if (Platform.IsMac) {
-				InitMac ();
-			}
-
-			var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+			var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
 			glibObjectSetProp = typeof (GLib.Object).GetMethod ("SetProperty", flags);
 			glibObjectGetProp = typeof (GLib.Object).GetMethod ("GetProperty", flags);
 
-			foreach (int i in new [] { 24, 22, 20, 18, 16, 14 }) {
-				if (Gtk.Global.CheckVersion (2, (uint)i, 0) == null) {
+			// Gtk2 stopped at 24, most likely to be installed
+			for (int i = 24; i >= 14; i -= 2) {
+				if (Global.CheckVersion (2, (uint)i, 0) == null) {
 					GtkMinorVersion = i;
 					break;
 				}
 			}
 
-			for (int i = 1; i < 20; i++) {
-				if (Gtk.Global.CheckVersion (2, (uint)GtkMinorVersion, (uint)i) == null) {
+			for (int i = 1; i < 99; i++) {
+				if (Global.CheckVersion (2, (uint)GtkMinorVersion, (uint)i) == null) {
 					GtkMicroVersion = i;
 				} else {
 					break;
 				}
 			}
 
-			//opt into the fixes on GTK+ >= 2.24.8
-			if (Platform.IsMac) {
+			// opt into the fixes on GTK+ >= 2.24.8
+			if (Platform.IsMac && GtkMinorVersion >= 24 && GtkMicroVersion >= 8) {
 				try {
 					gdk_quartz_set_fix_modifiers (true);
 				} catch (EntryPointNotFoundException) {
-					oldMacKeyHacks = true;
+					// Do nothing, we removed the code which had backwards compat as we depend on a mono with the fix
 				}
 			}
 
@@ -158,49 +90,19 @@ namespace MonoDevelop.Components
 			};
 		}
 
-		static void InitMac ()
-		{
-			cls_NSScreen = objc_getClass ("NSScreen");
-			cls_NSEvent = objc_getClass ("NSEvent");
-			sel_screens = sel_registerName ("screens");
-			sel_objectEnumerator = sel_registerName ("objectEnumerator");
-			sel_nextObject = sel_registerName ("nextObject");
-			sel_visibleFrame = sel_registerName ("visibleFrame");
-			sel_frame = sel_registerName ("frame");
-			sel_requestUserAttention = sel_registerName ("requestUserAttention:");
-			sel_modifierFlags = sel_registerName ("modifierFlags");
-			sel_setHasShadow = sel_registerName ("setHasShadow:");
-			sel_invalidateShadow = sel_registerName ("invalidateShadow");
-			sharedApp = objc_msgSend_IntPtr (objc_getClass ("NSApplication"), sel_registerName ("sharedApplication"));
-		}
-
+#if MAC
 		static Gdk.Rectangle MacGetUsableMonitorGeometry (Gdk.Screen screen, int monitor)
 		{
-			IntPtr array = objc_msgSend_IntPtr (cls_NSScreen, sel_screens);
-			IntPtr iter = objc_msgSend_IntPtr (array, sel_objectEnumerator);
-			Gdk.Rectangle ygeometry = screen.GetMonitorGeometry (monitor);
-			Gdk.Rectangle xgeometry = screen.GetMonitorGeometry (0);
-			IntPtr scrn;
-			int i = 0;
-
-			while ((scrn = objc_msgSend_IntPtr (iter, sel_nextObject)) != IntPtr.Zero && i < monitor)
-				i++;
-
-			if (scrn == IntPtr.Zero)
+			var screens = NSScreen.Screens;
+			if ((uint)monitor >= screens.Length)
 				return screen.GetMonitorGeometry (monitor);
 
-			CGRect64 visible, frame;
+			var macScreen = screens [monitor];
+			CGRect visible = macScreen.VisibleFrame;
+			CGRect frame = macScreen.Frame;
 
-			if (IntPtr.Size == 8) {
-				objc_msgSend_CGRect64 (out visible, scrn, sel_visibleFrame);
-				objc_msgSend_CGRect64 (out frame, scrn, sel_frame);
-			} else {
-				CGRect32 visible32, frame32;
-				objc_msgSend_CGRect32 (out visible32, scrn, sel_visibleFrame);
-				objc_msgSend_CGRect32 (out frame32, scrn, sel_frame);
-				visible = new CGRect64 (visible32);
-				frame = new CGRect64 (frame32);
-			}
+			Gdk.Rectangle ygeometry = screen.GetMonitorGeometry (monitor);
+			Gdk.Rectangle xgeometry = screen.GetMonitorGeometry (0);
 
 			// Note: Frame and VisibleFrame rectangles are relative to monitor 0, but we need absolute
 			// coordinates.
@@ -235,13 +137,10 @@ namespace MonoDevelop.Components
 
 		static void MacRequestAttention (bool critical)
 		{
-			int kind = critical?  NSCriticalRequest : NSInformationalRequest;
-			if (IntPtr.Size == 8) {
-				objc_msgSend_NSInt64_NSInt64 (sharedApp, sel_requestUserAttention, kind);
-			} else {
-				objc_msgSend_NSInt32_NSInt32 (sharedApp, sel_requestUserAttention, kind);
-			}
+			NSRequestUserAttentionType kind = critical ? NSRequestUserAttentionType.CriticalRequest : NSRequestUserAttentionType.InformationalRequest;
+			NSApplication.SharedApplication.RequestUserAttention (kind);
 		}
+#endif
 
 		// Note: we can't reuse RectangleF because the layout is different...
 		[StructLayout (LayoutKind.Sequential)]
@@ -316,19 +215,20 @@ namespace MonoDevelop.Components
 
 		public static Gdk.Rectangle GetUsableMonitorGeometry (this Gdk.Screen screen, int monitor)
 		{
-			if (Platform.IsWindows)
-				return WindowsGetUsableMonitorGeometry (screen, monitor);
-
-			if (Platform.IsMac)
-				return MacGetUsableMonitorGeometry (screen, monitor);
-
+#if WIN32
+			return WindowsGetUsableMonitorGeometry (screen, monitor);
+#elif MAC
+			return MacGetUsableMonitorGeometry (screen, monitor);
+#else
 			return screen.GetMonitorGeometry (monitor);
+#endif
 		}
 
 		public static int RunDialogWithNotification (Gtk.Dialog dialog)
 		{
-			if (Platform.IsMac)
-				MacRequestAttention (dialog.Modal);
+#if MAC
+			MacRequestAttention (dialog.Modal);
+#endif
 
 			return dialog.Run ();
 		}
@@ -337,10 +237,9 @@ namespace MonoDevelop.Components
 		{
 			window.Present ();
 
-			if (Platform.IsMac) {
-				var dialog = window as Gtk.Dialog;
-				MacRequestAttention (dialog == null? false : dialog.Modal);
-			}
+#if MAC
+			MacRequestAttention (window is Gtk.Dialog && window.Modal);
+#endif
 		}
 
 		public static GLib.Value GetProperty (this GLib.Object obj, string name)
@@ -365,8 +264,7 @@ namespace MonoDevelop.Components
 				return true;
 
 			if (Platform.IsMac) {
-				if (!oldMacKeyHacks &&
-					evt.Button == 1 &&
+				if (evt.Button == 1 &&
 					(evt.State & Gdk.ModifierType.ControlMask) != 0 &&
 					(evt.State & (Gdk.ModifierType.Button2Mask | Gdk.ModifierType.Button3Mask)) == 0)
 				{
@@ -379,7 +277,7 @@ namespace MonoDevelop.Components
 
 		public static Gdk.ModifierType GetCurrentKeyModifiers ()
 		{
-			#if WIN32
+#if WIN32
 			Gdk.ModifierType mtype = Gdk.ModifierType.None;
 			ModifierKeys mod = Keyboard.Modifiers;
 			if ((mod & ModifierKeys.Shift) > 0)
@@ -391,31 +289,13 @@ namespace MonoDevelop.Components
 			if ((mod & ModifierKeys.Windows) > 0)
 				mtype |= Gdk.ModifierType.Mod2Mask; // Command key
 			return mtype;
-			#else
-			if (Platform.IsMac) {
-				Gdk.ModifierType mtype = Gdk.ModifierType.None;
-				ulong mod;
-				if (IntPtr.Size == 8) {
-					mod = objc_msgSend_NSUInt64 (cls_NSEvent, sel_modifierFlags);
-				} else {
-					mod = objc_msgSend_NSUInt32 (cls_NSEvent, sel_modifierFlags);
-				}
-				if ((mod & (1 << 17)) != 0)
-					mtype |= Gdk.ModifierType.ShiftMask;
-				if ((mod & (1 << 18)) != 0)
-					mtype |= Gdk.ModifierType.ControlMask;
-				if ((mod & (1 << 19)) != 0)
-					mtype |= Gdk.ModifierType.Mod1Mask; // Alt key
-				if ((mod & (1 << 20)) != 0)
-					mtype |= Gdk.ModifierType.Mod2Mask; // Command key
-				return mtype;
-			}
-			else {
-				Gdk.ModifierType mtype;
-				Gtk.Global.GetCurrentEventState (out mtype);
-				return mtype;
-			}
-			#endif
+#elif MAC
+			return GtkMacInterop.ConvertModifierMask (NSEvent.CurrentModifierFlags);
+#else
+			Gdk.ModifierType mtype;
+			Gtk.Global.GetCurrentEventState (out mtype);
+			return mtype;
+#endif
 		}
 
 		public static void GetPageScrollPixelDeltas (this Gdk.EventScroll evt, double pageSizeX, double pageSizeY,
@@ -588,11 +468,11 @@ namespace MonoDevelop.Components
 
 		//introduced in GTK 2.20
 		[DllImport (PangoUtil.LIBGDK, CallingConvention = CallingConvention.Cdecl)]
-		extern static bool gdk_keymap_add_virtual_modifiers (IntPtr keymap, ref Gdk.ModifierType state);
+		extern static void gdk_keymap_add_virtual_modifiers (IntPtr keymap, ref Gdk.ModifierType state);
 
 		//Custom patch in Mono Mac w/GTK+ 2.24.8+
 		[DllImport (PangoUtil.LIBGDK, CallingConvention = CallingConvention.Cdecl)]
-		extern static bool gdk_quartz_set_fix_modifiers (bool fix);
+		extern static void gdk_quartz_set_fix_modifiers (bool fix);
 
 		static Gdk.Keymap keymap = Gdk.Keymap.Default;
 		static Dictionary<ulong,MappedKeys> mappedKeys = new Dictionary<ulong,MappedKeys> ();
@@ -642,7 +522,7 @@ namespace MonoDevelop.Components
 			TranslateKeyboardState (evt, modifier, grp, out keyval, out effectiveGroup,
 				out level, out consumedModifiers);
 			mapped.Key = (Gdk.Key)keyval;
-			mapped.State = FixMacModifiers (evt.State & ~consumedModifiers, grp);
+			mapped.State = evt.State & ~consumedModifiers;
 
 			//decompose the key into accel combinations
 			var accelList = new List<KeyboardShortcut> ();
@@ -656,7 +536,7 @@ namespace MonoDevelop.Components
 			//fully decomposed
 			TranslateKeyboardState (evt, Gdk.ModifierType.None, 0,
 				out keyval, out effectiveGroup, out level, out consumedModifiers);
-			accelList.Add (new KeyboardShortcut ((Gdk.Key)keyval, FixMacModifiers (modifier, grp) & accelMods));
+			accelList.Add (new KeyboardShortcut ((Gdk.Key)keyval, modifier & accelMods));
 
 			//with shift composed
 			if ((modifier & Gdk.ModifierType.ShiftMask) != 0) {
@@ -670,7 +550,7 @@ namespace MonoDevelop.Components
 				// Prevent consumption of non-Shift modifiers (that we didn't even provide!)
 				consumedModifiers &= Gdk.ModifierType.ShiftMask;
 
-				var m = FixMacModifiers ((modifier & ~consumedModifiers), grp) & accelMods;
+				var m = (modifier & ~consumedModifiers) & accelMods;
 				AddIfNotDuplicate (accelList, new KeyboardShortcut ((Gdk.Key)keyval, m));
 			}
 
@@ -682,7 +562,7 @@ namespace MonoDevelop.Components
 				// Prevent consumption of Shift modifier (that we didn't even provide!)
 				consumedModifiers &= ~Gdk.ModifierType.ShiftMask;
 
-				var m = FixMacModifiers ((modifier & ~consumedModifiers), 0) & accelMods;
+				var m = (modifier & ~consumedModifiers) & accelMods;
 				AddIfNotDuplicate (accelList, new KeyboardShortcut ((Gdk.Key)keyval, m));
 			}
 
@@ -690,7 +570,7 @@ namespace MonoDevelop.Components
 			if (grp == 1 && (modifier & Gdk.ModifierType.ShiftMask) != 0) {
 				TranslateKeyboardState (evt, modifier, 1,
 					out keyval, out effectiveGroup, out level, out consumedModifiers);
-				var m = FixMacModifiers ((modifier & ~consumedModifiers), 0) & accelMods;
+				var m = (modifier & ~consumedModifiers) & accelMods;
 				AddIfNotDuplicate (accelList, new KeyboardShortcut ((Gdk.Key)keyval, m));
 			}
 
@@ -729,36 +609,6 @@ namespace MonoDevelop.Components
 			}
 		}
 
-		static Gdk.ModifierType FixMacModifiers (Gdk.ModifierType mod, byte grp)
-		{
-			if (!oldMacKeyHacks)
-				return mod;
-
-			// Mac GTK+ maps the command key to the Mod1 modifier, which usually means alt/
-			// We map this instead to meta, because the Mac GTK+ has mapped the cmd key
-			// to the meta key (yay inconsistency!). IMO super would have been saner.
-			if ((mod & Gdk.ModifierType.Mod1Mask) != 0) {
-				mod ^= Gdk.ModifierType.Mod1Mask;
-				mod |= Gdk.ModifierType.MetaMask;
-			}
-
-			//some versions of GTK map opt as mod5, which converts to the virtual super modifier
-			if ((mod & (Gdk.ModifierType.Mod5Mask | Gdk.ModifierType.SuperMask)) != 0) {
-				mod ^= (Gdk.ModifierType.Mod5Mask | Gdk.ModifierType.SuperMask);
-				mod |= Gdk.ModifierType.Mod1Mask;
-			}
-
-			// When opt modifier is active, we need to decompose this to make the command appear correct for Mac.
-			// In addition, we can only inspect whether the opt/alt key is pressed by examining
-			// the key's "group", because the Mac GTK+ treats opt as a group modifier and does
-			// not expose it as an actual GDK modifier.
-			if (grp == (byte) 1) {
-				mod |= Gdk.ModifierType.Mod1Mask;
-			}
-
-			return mod;
-		}
-
 		public static Gdk.Key[] KeysForMod (Gdk.ModifierType mod)
 		{
 			switch (mod) {
@@ -769,6 +619,8 @@ namespace MonoDevelop.Components
 			case Gdk.ModifierType.ShiftMask:
 				return new Gdk.Key [] { Gdk.Key.Shift_R, Gdk.Key.Shift_L };
 			case Gdk.ModifierType.MetaMask:
+				// Just in case we get both of the modifiers
+			case Gdk.ModifierType.Mod2Mask | Gdk.ModifierType.MetaMask:
 				return new Gdk.Key [] { Gdk.Key.Meta_R, Gdk.Key.Meta_L };
 			}
 			return new Gdk.Key [0];
@@ -776,11 +628,8 @@ namespace MonoDevelop.Components
 
 		static void AddIfNotDuplicate<T> (List<T> list, T item) where T : IEquatable<T>
 		{
-			for (int i = 0; i < list.Count; i++) {
-				if (list[i].Equals (item))
-					return;
-			}
-			list.Add (item);
+			if (!list.Contains (item))
+				list.Add (item);
 		}
 
 		[System.Runtime.InteropServices.DllImport (PangoUtil.LIBGDK, CallingConvention = CallingConvention.Cdecl)]
@@ -865,19 +714,20 @@ namespace MonoDevelop.Components
 		/// </summary>
 		public static void ShowNativeShadow (Gtk.Window window, bool show)
 		{
-			if (Platform.IsMac) {
-				var ptr = gdk_quartz_window_get_nswindow (window.GdkWindow.Handle);
-				objc_msgSend_void_bool (ptr, sel_setHasShadow, show);
-			}
+#if MAC
+			var nsWindow = GtkMacInterop.GetNSWindow (window);
+			if (nsWindow != null)
+				nsWindow.HasShadow = show;
+#endif
 		}
 
 		public static void UpdateNativeShadow (Gtk.Window window)
 		{
-			if (!Platform.IsMac)
-				return;
-
-			var ptr = gdk_quartz_window_get_nswindow (window.GdkWindow.Handle);
-			objc_msgSend_IntPtr (ptr, sel_invalidateShadow);
+#if MAC
+			var nsWindow = GtkMacInterop.GetNSWindow (window);
+			if (nsWindow != null)
+				nsWindow.InvalidateShadow ();
+#endif
 		}
 
 		[DllImport (PangoUtil.LIBGTKGLUE, CallingConvention = CallingConvention.Cdecl)]
@@ -1096,6 +946,12 @@ namespace MonoDevelop.Components
 
 		public static void SetOverlayScrollbarPolicy (Gtk.ScrolledWindow sw, Gtk.PolicyType hpolicy, Gtk.PolicyType vpolicy)
 		{
+			// we know the .dll isn't there on Windows, so don't even try (avoids a first-chance DllNotFoundException)
+			if (Platform.IsWindows) {
+				canSetOverlayScrollbarPolicy = false;
+				return;
+			}
+
 			if (!canSetOverlayScrollbarPolicy) {
 				return;
 			}
@@ -1105,6 +961,7 @@ namespace MonoDevelop.Components
 			} catch (DllNotFoundException) {
 			} catch (EntryPointNotFoundException) {
 			}
+			canSetOverlayScrollbarPolicy = false;
 		}
 
 		public static void GetOverlayScrollbarPolicy (Gtk.ScrolledWindow sw, out Gtk.PolicyType hpolicy, out Gtk.PolicyType vpolicy)
@@ -1158,8 +1015,21 @@ namespace MonoDevelop.Components
 		[DllImport (PangoUtil.LIBGOBJECT, CallingConvention = CallingConvention.Cdecl)]
 		static extern IntPtr g_object_get_data (IntPtr source, string name);
 
+		[DllImport (PangoUtil.LIBGOBJECT, CallingConvention = CallingConvention.Cdecl)]
+		static extern void g_object_set_data (IntPtr source, string name, IntPtr dataHandle);
+
 		[DllImport (PangoUtil.LIBGTK, CallingConvention = CallingConvention.Cdecl)]
 		static extern IntPtr gtk_icon_set_render_icon_scaled (IntPtr handle, IntPtr style, int direction, int state, int size, IntPtr widget, IntPtr intPtr, ref double scale);
+
+		public static IntPtr GetData (GLib.Object o, string name)
+		{
+			return g_object_get_data (o.Handle, name);
+		}
+
+		public static void SetData (GLib.Object o, string name, IntPtr dataHandle)
+		{
+			g_object_set_data (o.Handle, name, dataHandle);
+		}
 
 		public static bool SetSourceScale (Gtk.IconSource source, double scale)
 		{
@@ -1301,6 +1171,9 @@ namespace MonoDevelop.Components
 				buffer.Clear ();
 				var mark = buffer.CreateMark (null, iter, false);
 				var attrIter = attrList.Iterator;
+				//HACK: the parsed attribute indexes are byte based and need to be converted
+				//      to char indexes. Otherwise they won't match multibyte characters.
+				var indexer = new TextIndexer (text);
 
 				do {
 					int start, end;
@@ -1308,14 +1181,19 @@ namespace MonoDevelop.Components
 					attrIter.Range (out start, out end);
 
 					if (end == int.MaxValue) // last chunk
-						end = text.Length - 1;
+						end = indexer.IndexToByteIndex (text.Length - 1);
 					if (end <= start)
 						break;
 
+					start = indexer.ByteIndexToIndex (start);
+					end = indexer.ByteIndexToIndex (end);
+
 					TextTag tag;
 					if (attrIter.GetTagForAttributes (null, out tag)) {
-						buffer.TagTable.Add (tag);
-						buffer.InsertWithTags (ref iter, text.Substring (start, end - start), tag);
+						using (tag) {
+							buffer.TagTable.Add (tag);
+							buffer.InsertWithTags (ref iter, text.Substring (start, end - start), tag);
+						}
 					} else
 						buffer.Insert (ref iter, text.Substring (start, end - start));
 
@@ -1451,6 +1329,8 @@ namespace MonoDevelop.Components
 			// minimize/maximize buttons. This may be because on Cocoa these are set at window creation and can only
 			// be changed afterwards by directly accessing the window button and disabling it like so.
 			NSWindow nsWindow = GtkMacInterop.GetNSWindow (window);
+			if (nsWindow == null)
+				return;
 
 			nsWindow.StandardWindowButton (NSWindowButton.MiniaturizeButton).Enabled = false;
 			nsWindow.StandardWindowButton (NSWindowButton.ZoomButton).Enabled = false;
@@ -1468,28 +1348,73 @@ namespace MonoDevelop.Components
 			window.Mapped += OnMappedDisableButtons;
 #endif
 		}
+
+
+		public static void EmitAddSignal(Container container, Widget child)
+		{
+#if MAC
+			// On Mac if we add a widget to a parent by hand, we need to inform the accessibility system of the fact
+			// If this is called from Linux or Windows custom Gtk then it will trigger warnings because we've protected
+			// for the situation in the Mac version of Gtk
+			GLib.Signal.Emit(container, "add", child);
+#endif
+		}
+
+		public static void EmitRemoveSignal(Container container, Widget child)
+		{
+#if MAC
+			GLib.Signal.Emit(container, "remove", child);
+#endif
+		}
+
+		internal static bool IsRunFromBundle ()
+		{
+			bool result = false;
+#if MAC
+			IntPtr mainBundle = GetMainBundle ();
+			var sel_bundleIdentifier = ObjCRuntime.Selector.GetHandle ("bundleIdentifier");
+
+			result = Messaging.IntPtr_objc_msgSend (mainBundle, sel_bundleIdentifier) != IntPtr.Zero;
+
+			static IntPtr GetMainBundle ()
+			{
+				var class_runningApplication = ObjCRuntime.Class.GetHandle ("NSBundle");
+				var sel_mainBundle = ObjCRuntime.Selector.GetHandle ("mainBundle");
+
+				return Messaging.IntPtr_objc_msgSend (class_runningApplication, sel_mainBundle);
+			}
+#endif
+			return result;
+		}
+
+		[DllImport ("libgtk-win32-2.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr gtk_get_current_event ();
+
+		public static IntPtr GetCurrentEventHandle () => gtk_get_current_event ();
+
+		[DllImport ("libgdk-win32-2.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gdk_event_free (IntPtr raw);
+
+		public static void FreeEvent (IntPtr raw)
+		{
+			if (raw != IntPtr.Zero)
+				gdk_event_free (raw);
+		}
 	}
 
-	public struct KeyboardShortcut : IEquatable<KeyboardShortcut>
+	public readonly struct KeyboardShortcut : IEquatable<KeyboardShortcut>
 	{
 		public static readonly KeyboardShortcut Empty = new KeyboardShortcut ((Gdk.Key) 0, (Gdk.ModifierType) 0);
 
-		Gdk.ModifierType modifier;
-		Gdk.Key key;
-
 		public KeyboardShortcut (Gdk.Key key, Gdk.ModifierType modifier)
 		{
-			this.modifier = modifier;
-			this.key = key;
+			this.Modifier = modifier;
+			this.Key = key;
 		}
 
-		public Gdk.Key Key {
-			get { return key; }
-		}
+		public Gdk.Key Key { get; }
 
-		public Gdk.ModifierType Modifier {
-			get { return modifier; }
-		}
+		public Gdk.ModifierType Modifier { get; }
 
 		public bool IsEmpty {
 			get { return Key == (Gdk.Key) 0; }

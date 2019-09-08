@@ -1,4 +1,4 @@
-﻿//
+//
 // TextFileUtility.cs
 //
 // Author:
@@ -41,6 +41,8 @@ namespace MonoDevelop.Core.Text
 		readonly static int maxBomLength = 0;
 		readonly static Encoding[] encodingsWithBom;
 
+		public readonly static Encoding DefaultEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
 		static TextFileUtility ()
 		{
 			var encodings = new List<Encoding> ();
@@ -58,6 +60,7 @@ namespace MonoDevelop.Core.Text
 				maxBomLength = System.Math.Max (maxBomLength, bom.Length);
 				encodings.Add (encoding);
 			}
+
 			encodingsWithBom = encodings.ToArray ();
 
 			// Encoding verifiers
@@ -83,35 +86,22 @@ namespace MonoDevelop.Core.Text
 		#region stream reader methods
 		public static StreamReader OpenStream (string fileName)
 		{
-			bool hadBom;
-			return OpenStream (File.ReadAllBytes (fileName), out hadBom);
-		}
-
-		public static StreamReader OpenStream (string fileName, out bool hadBom)
-		{
-			return OpenStream (File.ReadAllBytes (fileName), out hadBom);
+			return OpenStream (File.ReadAllBytes (fileName));
 		}
 
 		public static StreamReader OpenStream (byte[] bytes)
 		{
-			bool hadBom;
-			return OpenStream (bytes, out hadBom);
-		}
-
-		public static StreamReader OpenStream (byte[] bytes, out bool hadBom)
-		{
 			if (bytes == null)
 				throw new ArgumentNullException ("bytes");
-			return OpenStream (new MemoryStream (bytes, false), out hadBom);
+			return OpenStream (new MemoryStream (bytes, false));
 		}
 
 		public static StreamReader OpenStream (Stream stream)
 		{
-			bool hadBom;
-			return OpenStream (stream, out hadBom);
+			return OpenStream (stream, out _);
 		}
 
-		public static StreamReader OpenStream (Stream stream, out bool hadBom)
+		public static StreamReader OpenStream (Stream stream, out bool hasBom)
 		{
 			if (stream == null)
 				throw new ArgumentNullException ("stream");
@@ -129,13 +119,13 @@ namespace MonoDevelop.Core.Text
 				}
 
 				if (!invalid) {
-					hadBom = true;
 					stream.Position = bom.Length;
+					hasBom = true;
 					return new StreamReader (stream, encoding);
 				}
 			}
 			stream.Position = 0;
-			hadBom = false;
+			hasBom = false;
 			return new StreamReader (stream, AutoDetectEncoding (stream));
 		}
 		#endregion
@@ -144,17 +134,22 @@ namespace MonoDevelop.Core.Text
 		public static string GetText (byte[] bytes)
 		{
 			Encoding encoding;
-			bool hadBom;
-			return GetText (bytes, out encoding, out hadBom);
+			return GetText (bytes, out encoding);
 		}
 
-		public static string GetText (byte[] bytes, out Encoding encoding, out bool hadBom)
+		public static string GetText (byte [] bytes, out Encoding encoding)
+		{
+			return GetText (bytes, out encoding, out _);
+		}
+
+		public static string GetText (byte[] bytes, out Encoding encoding, out bool hasBom)
 		{
 			if (bytes == null)
 				throw new ArgumentNullException ("bytes");
 			encoding = null;
-			hadBom = false;
 			int start = 0;
+			hasBom = false;
+
 			foreach (var enc in encodingsWithBom) {
 				var bom = enc.GetPreamble ();
 				bool invalid = false;
@@ -169,8 +164,8 @@ namespace MonoDevelop.Core.Text
 
 				if (!invalid) {
 					encoding = enc;
-					hadBom = true;
 					start = bom.Length;
+					hasBom = true;
 					break;
 				}
 			}
@@ -181,25 +176,6 @@ namespace MonoDevelop.Core.Text
 			return encoding.GetString (bytes, start, bytes.Length - start);
 		}
 
-		public static string GetText (byte[] bytes, Encoding encoding, out bool hadBom)
-		{
-			byte[] bom = encoding.GetPreamble ();
-			if (bom != null && bom.Length > 0 && bom.Length <= bytes.Length) {
-				hadBom = true;
-				for (int i = 0; i < bom.Length; i++) {
-					if (bytes [i] != bom [i]) {
-						hadBom = false;
-						break;
-					}
-				}
-			} else {
-				hadBom = false;
-			}
-			if (hadBom) 
-				return encoding.GetString (bytes, bom.Length, bytes.Length - bom.Length);
-			return encoding.GetString (bytes);
-		}
-
 		public static string GetText (Stream inputStream)
 		{
 			using (var stream = OpenStream (inputStream)) {
@@ -207,11 +183,11 @@ namespace MonoDevelop.Core.Text
 			}
 		}
 
-		public static string GetText (Stream inputStream, out Encoding encoding, out bool hadBom)
+		public static string GetText (Stream inputStream, out Encoding encoding)
 		{
 			if (inputStream == null)
 				throw new ArgumentNullException ("inputStream");
-			using (var stream = OpenStream (inputStream, out hadBom)) {
+			using (var stream = OpenStream (inputStream)) {
 				encoding = stream.CurrentEncoding;
 				return stream.ReadToEnd ();
 			}
@@ -222,11 +198,10 @@ namespace MonoDevelop.Core.Text
 			if (inputStream == null)
 				throw new ArgumentNullException ("inputStream");
 			var tc = new TextContent ();
-			bool hadBom;
-			using (var stream = OpenStream (inputStream, out hadBom)) {
+			using (var stream = OpenStream (inputStream, out var hasBom)) {
 				tc.Encoding = stream.CurrentEncoding;
 				tc.Text = await stream.ReadToEndAsync ().ConfigureAwait (false);
-				tc.HasBom = hadBom;
+				tc.HasByteOrderMark = hasBom;
 			}
 			return tc;
 		}
@@ -236,32 +211,63 @@ namespace MonoDevelop.Core.Text
 			return GetText (File.ReadAllBytes (fileName));
 		}
 
-		public static async Task<string> GetTextAsync (string fileName, CancellationToken token)
+		public static async Task<TextContent> GetTextAsync (string fileName, CancellationToken token)
 		{
-			return GetText (await ReadAllBytesAsync (fileName, token).ConfigureAwait (false));
+			var res = new TextContent ();
+			res.Text = GetText (await ReadAllBytesAsync (fileName, token).ConfigureAwait (false), out var encoding, out var hasBom);
+			res.Encoding = encoding;
+			res.HasByteOrderMark = hasBom;
+			return res;
 		}
 
-		public static string GetText (string fileName, out Encoding encoding, out bool hadBom)
+		public static string GetText (string fileName, out Encoding encoding)
 		{
 			if (fileName == null)
 				throw new ArgumentNullException ("fileName");
-			return GetText (File.ReadAllBytes (fileName), out encoding, out hadBom);
+			return GetText (File.ReadAllBytes (fileName), out encoding);
 		}
 
 		#endregion
 
 		#region file methods
-		static string WriteTextInit (string fileName, string text, Encoding encoding)
+		static void ArgumentCheck (string fileName)
 		{
 			if (fileName == null)
-			throw new ArgumentNullException ("fileName");
+				throw new ArgumentNullException ("fileName");
+		}
+
+		static void ArgumentCheck (string fileName, string text, Encoding encoding)
+		{
+			if (fileName == null)
+				throw new ArgumentNullException ("fileName");
 			if (text == null)
 				throw new ArgumentNullException ("text");
 			if (encoding == null)
 				throw new ArgumentNullException ("encoding");
+		}
+
+		static FilePath WriteTextInit (string fileName)
+		{
 			// atomic rename only works in the same directory on linux. The tmp files may be on another partition -> breaks save.
-			string tmpPath = Path.Combine (Path.GetDirectoryName (fileName), ".#" + Path.GetFileName (fileName));
-			return tmpPath;
+			var directory = Path.GetDirectoryName (fileName);
+			EnsureDirectoryExists (directory);
+			FilePath tmpPath = Path.Combine (directory, ".#" + Path.GetFileName (fileName));
+			int i = 0;
+			while (i < 1000) {
+				var curName = CombineFileName (tmpPath, i);
+				if (!File.Exists (curName)) {
+					return curName;
+				}
+				i++;
+			}
+			throw new IOException (GettextCatalog.GetString("Can't create temporary file {0} for writing.", fileName));
+		}
+
+		static string CombineFileName (FilePath path, int i)
+		{
+			if (i <= 0)
+				return path;
+			return path.ChangeName (path.FileNameWithoutExtension + "~" + i);
 		}
 
 		static void WriteTextFinal (string tmpPath, string fileName)
@@ -278,35 +284,83 @@ namespace MonoDevelop.Core.Text
 			}
 		}
 
-		public static void WriteText (string fileName, string text, Encoding encoding, bool hadBom)
+		[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
+		public static void WriteText (string fileName, ITextSource source)
 		{
-			var tmpPath = WriteTextInit (fileName, text, encoding);
-			using (var stream = new FileStream (tmpPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Write)) {
-				if (hadBom) {
-					var bom = encoding.GetPreamble ();
-					if (bom != null && bom.Length > 0)
-						stream.Write (bom, 0, bom.Length);
+			ArgumentCheck (fileName);
+			var tmpPath = WriteTextInit (fileName);
+			using (var stream = CreateStream (tmpPath)) {
+				using (var sw = new StreamWriter (stream, source.Encoding)) {
+					source.WriteTextTo (sw);
 				}
-				byte[] bytes = encoding.GetBytes (text);
-				stream.Write (bytes, 0, bytes.Length);
+			}
+
+			WriteTextFinal (tmpPath, fileName);
+		}
+
+		static Stream CreateStream (FilePath tmpPath)
+		{
+			if (!Platform.IsWindows)
+				return new Mono.Unix.StdioFileStream (tmpPath, FileMode.CreateNew, FileAccess.Write);
+			return new FileStream (tmpPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Write);
+		}
+
+		public static void WriteText (string fileName, string text, Encoding encoding)
+		{
+			WriteText (fileName, text, encoding, false);
+		}
+
+		public static void WriteText (string fileName, string text, Encoding encoding, bool writeBom)
+		{
+			ArgumentCheck (fileName, text, encoding);
+			var tmpPath = WriteTextInit (fileName);
+			using (var stream = CreateStream (tmpPath))
+				WriteText (stream, text, encoding, writeBom);
+			WriteTextFinal (tmpPath, fileName);
+		}
+
+		public static void WriteText (Stream stream, string text, Encoding encoding, bool writeBom)
+		{
+			if (writeBom) {
+				var bom = encoding.GetPreamble ();
+				if (bom != null && bom.Length > 0)
+					stream.Write (bom, 0, bom.Length);
+			}
+			using (var sw = new StreamWriter (stream, encoding, 1024, true)) {
+				sw.Write (text);
+				sw.Flush ();
+			}
+		}
+
+		static void EnsureDirectoryExists (FilePath directoryName)
+		{
+			if (directoryName.IsNullOrEmpty)
+				return;
+			if (!Directory.Exists (directoryName))
+				Directory.CreateDirectory (directoryName);
+		}
+
+		const int DefaultBufferSize = 4096;
+
+		public static async Task WriteTextAsync (string fileName, string text, Encoding encoding, bool writeBom)
+		{
+			ArgumentCheck (fileName, text, encoding);
+			var tmpPath = WriteTextInit (fileName);
+			using (var stream = new FileStream (tmpPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Write, bufferSize: DefaultBufferSize, options: FileOptions.Asynchronous)) {
+				await WriteTextAsync (stream, text, encoding, writeBom);
 			}
 			WriteTextFinal (tmpPath, fileName);
 		}
 
-		const int DefaultBufferSize = 4096;
-		public static async Task WriteTextAsync (string fileName, string text, Encoding encoding, bool hadBom)
+		public static async Task WriteTextAsync (Stream stream, string text, Encoding encoding, bool writeBom)
 		{
-			var tmpPath = WriteTextInit (fileName, text, encoding);
-			using (var stream = new FileStream (tmpPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Write, bufferSize: DefaultBufferSize, options: FileOptions.Asynchronous)) {
-				if (hadBom) {
-					var bom = encoding.GetPreamble ();
-					if (bom != null && bom.Length > 0)
-						await stream.WriteAsync (bom, 0, bom.Length).ConfigureAwait (false);
-				}
-				byte[] bytes = encoding.GetBytes (text);
-				await stream.WriteAsync (bytes, 0, bytes.Length).ConfigureAwait (false);
+			if (writeBom) {
+				var bom = encoding.GetPreamble ();
+				if (bom != null && bom.Length > 0)
+					await stream.WriteAsync (bom, 0, bom.Length).ConfigureAwait (false);
 			}
-			WriteTextFinal (tmpPath, fileName);
+			byte[] bytes = encoding.GetBytes (text);
+			await stream.WriteAsync (bytes, 0, bytes.Length).ConfigureAwait (false);
 		}
 
 		/// <summary>
@@ -331,17 +385,16 @@ namespace MonoDevelop.Core.Text
 
 		public static string ReadAllText (string fileName)
 		{
-			bool hadBom;
 			Encoding encoding;
-			return ReadAllText (fileName, out hadBom, out encoding);
+			return ReadAllText (fileName, out encoding);
 		}
 
-		public static string ReadAllText (string fileName, out bool hadBom, out Encoding encoding)
+		public static string ReadAllText (string fileName, out Encoding encoding)
 		{
 			if (fileName == null)
 				throw new ArgumentNullException ("fileName");
 			byte[] content = File.ReadAllBytes (fileName);
-			return GetText (content, out encoding, out hadBom);
+			return GetText (content, out encoding);
 		}
 
 		public static async Task<TextContent> ReadAllTextAsync (string fileName)
@@ -350,25 +403,24 @@ namespace MonoDevelop.Core.Text
 				throw new ArgumentNullException ("fileName");
 			byte[] content = await ReadAllBytesAsync (fileName).ConfigureAwait (false);
 
-			bool hadBom;
 			Encoding encoding;
-			var txt = GetText (content, out encoding, out hadBom);
+			var txt = GetText (content, out encoding, out var bom);
 			return new TextContent {
 				Text = txt,
-				HasBom = hadBom,
-				Encoding = encoding
+				Encoding = encoding,
+				HasByteOrderMark = bom
 			};
 		}
 
-		public static string ReadAllText (string fileName, Encoding encoding, out bool hadBom)
+		public static string ReadAllText (string fileName, Encoding encoding)
 		{
 			if (fileName == null)
 				throw new ArgumentNullException ("fileName");
 			if (encoding == null)
 				throw new ArgumentNullException ("encoding");
-
-			byte[] content = File.ReadAllBytes (fileName);
-			return GetText (content, encoding, out hadBom); 
+			using (var reader = new StreamReader (fileName, encoding)) {
+				return reader.ReadToEnd ();
+			}
 		}
 
 		public static async Task<TextContent> ReadAllTextAsync (string fileName, Encoding encoding)
@@ -378,15 +430,12 @@ namespace MonoDevelop.Core.Text
 			if (encoding == null)
 				throw new ArgumentNullException ("encoding");
 
-			byte[] content = await ReadAllBytesAsync (fileName).ConfigureAwait (false);
-
-			bool hadBom;
-			var txt = GetText (content, encoding, out hadBom); 
-			return new TextContent {
-				Text = txt,
-				HasBom = hadBom,
-				Encoding = encoding
-			};
+			using (var reader = new StreamReader (fileName, encoding)) {
+				return new TextContent {
+					Text = await reader.ReadToEndAsync ().ConfigureAwait (false),
+					Encoding = encoding
+				};
+			}
 		}
 
 		public static Task<byte []> ReadAllBytesAsync (string file)
@@ -620,7 +669,8 @@ namespace MonoDevelop.Core.Text
 
 			public override byte InitalState { get { return UTF1; } }
 
-			public override Encoding Encoding { get { return Encoding.UTF8; } }
+			static Encoding utf8WithoutBom = new UTF8Encoding (false);
+			public override Encoding Encoding { get { return utf8WithoutBom; } }
 
 			public override byte[][] StateTable { get { return table; } }
 		}
@@ -659,7 +709,8 @@ namespace MonoDevelop.Core.Text
 
 			public override byte InitalState { get { return Even; } }
 
-			public override Encoding Encoding { get { return Encoding.Unicode; } }
+			static Encoding unicodeWithoutBom = new UnicodeEncoding (false, false);
+			public override Encoding Encoding { get { return unicodeWithoutBom; } }
 
 			public override byte[][] StateTable { get { return table; } }
 
@@ -689,7 +740,8 @@ namespace MonoDevelop.Core.Text
 
 			public override byte InitalState { get { return Even; } }
 
-			public override Encoding Encoding { get { return Encoding.BigEndianUnicode; } }
+			static Encoding unicodeWithoutBom = new UnicodeEncoding (true, false);
+			public override Encoding Encoding { get { return unicodeWithoutBom; } }
 
 			public override byte[][] StateTable { get { return table; } }
 
@@ -920,7 +972,7 @@ namespace MonoDevelop.Core.Text
 	public class TextContent
 	{
 		public string Text { get; internal set; }
-		public bool HasBom { get; internal set; }
 		public Encoding Encoding { get; internal set; }
+		public bool HasByteOrderMark { get; internal set; }
 	}
 }

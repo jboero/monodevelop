@@ -1,4 +1,4 @@
-// 
+﻿// 
 // MainToolbar.cs
 //  
 // Author:
@@ -23,6 +23,8 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+#if !MAC
+
 using System;
 using Gtk;
 using MonoDevelop.Components.Commands;
@@ -42,6 +44,8 @@ using MonoDevelop.Ide.TypeSystem;
 using System.Threading;
 using MonoDevelop.Ide.Editor;
 using System.Text;
+using MonoDevelop.Components.AtkCocoaHelper;
+using System.Diagnostics;
 
 namespace MonoDevelop.Components.MainToolbar
 {
@@ -87,10 +91,6 @@ namespace MonoDevelop.Components.MainToolbar
 			get {
 				return statusArea;
 			}
-		}
-
-		internal static object LastCommandTarget {
-			get { return lastCommandTarget != null ? lastCommandTarget.Target : null; }
 		}
 
 		static bool RuntimeIsSeparator (TreeModel model, TreeIter iter)
@@ -144,6 +144,7 @@ namespace MonoDevelop.Components.MainToolbar
 			runConfigurationCombo.Model = runConfigurationStore;
 			runConfigurationCombo.PackStart (ctx, true);
 			runConfigurationCombo.AddAttribute (ctx, "text", 0);
+			runConfigurationCombo.TooltipText = GettextCatalog.GetString ("A project or named set of projects and execution options that should be launched when running or debugging the solution.");
 
 			var runConfigurationComboVBox = new VBox ();
 			runConfigurationComboVBox.PackStart (runConfigurationCombo, true, false, 0);
@@ -153,7 +154,8 @@ namespace MonoDevelop.Components.MainToolbar
 			configurationCombo.Model = configurationStore;
 			configurationCombo.PackStart (ctx, true);
 			configurationCombo.AddAttribute (ctx, "text", 0);
-		
+			configurationCombo.TooltipText = GettextCatalog.GetString ("A named set of projects and their configurations to be built when building the solution.");
+
 			var configurationComboVBox = new VBox ();
 			configurationComboVBox.PackStart (configurationCombo, true, false, 0);
 			configurationCombosBox.PackStart (configurationComboVBox, false, false, 0);
@@ -169,6 +171,7 @@ namespace MonoDevelop.Components.MainToolbar
 			runtimeCombo.PackStart (ctx, true);
 			runtimeCombo.SetCellDataFunc (ctx, RuntimeRenderCell);
 			runtimeCombo.RowSeparatorFunc = RuntimeIsSeparator;
+			runtimeCombo.TooltipText = GettextCatalog.GetString ("The device on which to deploy and launch the projects when running or debugging.");
 
 			var runtimeComboVBox = new VBox ();
 			runtimeComboVBox.PackStart (runtimeCombo, true, false, 0);
@@ -267,10 +270,6 @@ namespace MonoDevelop.Components.MainToolbar
 
 			button.Clicked += HandleStartButtonClicked;
 
-			IdeApp.CommandService.ActiveWidgetChanged += (sender, e) => {
-				lastCommandTarget = new WeakReference (e.OldActiveWidget);
-			};
-
 			this.ShowAll ();
 			this.statusArea.statusIconBox.HideAll ();
 		}
@@ -279,7 +278,7 @@ namespace MonoDevelop.Components.MainToolbar
 		{
 			if (evnt.Button == 1 && evnt.Window == GdkWindow) {
 				var window = (Gtk.Window)Toplevel;
-				if (!DesktopService.GetIsFullscreen (window)) {
+				if (!IdeServices.DesktopService.GetIsFullscreen (window)) {
 					window.BeginMoveDrag (1, (int)evnt.XRoot, (int)evnt.YRoot, evnt.Time);
 					return true;
 				}
@@ -319,21 +318,54 @@ namespace MonoDevelop.Components.MainToolbar
 
 		void HandleSearchEntryKeyPressed (object sender, KeyPressEventArgs e)
 		{
-			if (SearchEntryKeyPressed != null) {
-				// TODO: Refactor this in Xwt as an extension method.
-				var k = (Xwt.Key)e.Event.KeyValue;
-				var m = Xwt.ModifierKeys.None;
-				if ((e.Event.State & Gdk.ModifierType.ShiftMask) != 0)
-					m |= Xwt.ModifierKeys.Shift;
-				if ((e.Event.State & Gdk.ModifierType.ControlMask) != 0)
-					m |= Xwt.ModifierKeys.Control;
-				if ((e.Event.State & Gdk.ModifierType.Mod1Mask) != 0)
-					m |= Xwt.ModifierKeys.Alt;
-				// TODO: Backport this one.
-				if ((e.Event.State & Gdk.ModifierType.Mod2Mask) != 0)
-					m |= Xwt.ModifierKeys.Command;
-				var kargs = new Xwt.KeyEventArgs (k, m, false, (long)e.Event.Time);
-				SearchEntryKeyPressed (sender, kargs);
+			if (PerformCommand != null) {
+				bool cmdPressed = (e.Event.State & Gdk.ModifierType.Mod2Mask) != 0;
+				SearchPopupCommand command;
+
+				switch ((Gdk.Key)e.Event.KeyValue) {
+				case Gdk.Key.Down:
+				case Gdk.Key.downarrow:
+					if (cmdPressed) {
+						goto case Gdk.Key.Page_Down;
+					}
+
+					command = SearchPopupCommand.NextItem;
+					break;
+
+				case Gdk.Key.Up:
+				case Gdk.Key.uparrow:
+					if (cmdPressed) {
+						goto case Gdk.Key.Page_Up;
+					}
+
+					command = SearchPopupCommand.PreviousItem;
+					break;
+
+				case Gdk.Key.KP_Page_Down:
+				case Gdk.Key.Page_Down:
+					command = SearchPopupCommand.NextCategory;
+					break;
+
+				case Gdk.Key.KP_Page_Up:
+				case Gdk.Key.Page_Up:
+					command = SearchPopupCommand.PreviousCategory;
+					break;
+
+				case Gdk.Key.Escape:
+					command = SearchPopupCommand.Cancel;
+					break;
+
+				case Gdk.Key.Return:
+				case Gdk.Key.KP_Enter:
+					command = SearchPopupCommand.Activate;
+					break;
+
+				default:
+					return;
+				}
+
+				var kargs = new SearchEntryCommandArgs (command);
+				PerformCommand?.Invoke (sender, kargs);
 				e.RetVal = kargs.Handled;
 			}
 		}
@@ -404,7 +436,23 @@ namespace MonoDevelop.Components.MainToolbar
 		}
 
 		public OperationIcon RunButtonIcon {
-			set { button.Icon = value; }
+			set {
+				button.Icon = value;
+				switch (value) {
+				case OperationIcon.Stop:
+					button.TooltipText = GettextCatalog.GetString ("Stop the executing solution");
+					break;
+				case OperationIcon.Run:
+					button.TooltipText = GettextCatalog.GetString ("Run the project or projects in the active run configuration. Builds the projects in the active solution build configuration if necessary.");
+					break;
+				case OperationIcon.Build:
+					button.TooltipText = GettextCatalog.GetString ("Build the projects in the active solution build configuration.");
+					break;
+				default:
+					button.TooltipText = string.Empty;
+					break;
+				}
+			}
 		}
 
 		public bool ConfigurationPlatformSensitivity {
@@ -562,6 +610,7 @@ namespace MonoDevelop.Components.MainToolbar
 		public event EventHandler SearchEntryChanged;
 		public event EventHandler SearchEntryActivated;
 		public event EventHandler<Xwt.KeyEventArgs> SearchEntryKeyPressed;
+		public event EventHandler<SearchEntryCommandArgs> PerformCommand;
 		public event EventHandler SearchEntryResized;
 		public event EventHandler SearchEntryLostFocus;
 
@@ -578,17 +627,19 @@ namespace MonoDevelop.Components.MainToolbar
 			set { matchEntry.EmptyMessage = value; }
 		}
 
-		public void RebuildToolbar (IEnumerable<IButtonBarButton> buttons)
+		public void RebuildToolbar (IEnumerable<ButtonBarGroup> groups)
 		{
-			if (!buttons.Any ()) {
+			if (!groups.Any ()) {
 				buttonBarBox.Hide ();
 				return;
 			}
 
 			buttonBarBox.Show ();
 			buttonBar.ShowAll ();
-			buttonBar.Buttons = buttons;
+			buttonBar.Groups = groups;
 		}
+
+		public void Focus (DirectionType direction, Action<DirectionType> exitAction) {}
 
 		public bool ButtonBarSensitivity {
 			set { buttonBar.Sensitive = value; }
@@ -598,7 +649,12 @@ namespace MonoDevelop.Components.MainToolbar
 		public event EventHandler RunConfigurationChanged;
 		public event EventHandler<HandledEventArgs> RuntimeChanged;
 
+		public void ShowAccessibilityAnnouncement (string message)
+		{
+			this.Accessible.MakeAccessibilityAnnouncement (message);
+		}
 		#endregion
 	}
 }
 
+#endif

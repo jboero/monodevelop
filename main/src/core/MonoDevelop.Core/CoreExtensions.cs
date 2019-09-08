@@ -23,93 +23,28 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
+using System.Threading.Tasks;
+using MonoDevelop.Core;
 
 namespace System
 {
-	public static class CoreExtensions
+	public static partial class CoreExtensions
 	{
-		public static IEnumerable<T> Concat<T> (this IEnumerable<T> e, T item)
-		{
-			return e.Concat (Enumerable.Repeat (item, 1));
-		}
-
-		public static int FindIndex<T> (this IEnumerable<T> e, Func<T, bool> predicate)
-		{
-			bool found = false;
-			int index = e.TakeWhile (i => {
-				found = predicate(i);
-				return !found;
-			}).Count ();
-
-			return found ? index : -1;
-		}
-
-		public static int IndexOf<T> (this IEnumerable<T> e, T item)
-		{
-			bool found = false;
-			int index = e.TakeWhile (i => {
-				found = EqualityComparer<T>.Default.Equals (i, item);
-				return !found;
-			}).Count ();
-
-			return found ? index : -1;
-		}
-
 		public static Exception FlattenAggregate (this Exception ex)
 		{
 			return (ex as AggregateException)?.Flatten () ?? ex;
 		}
 
-		public static Func<R> Memoize<R> (this Func<R> f)
+		/// <summary>
+		/// Use this method to explicitly indicate that you don't care
+		/// about the result of an async call
+		/// </summary>
+		/// <param name="task">The task to forget</param>
+		public static void Ignore (this Task task)
 		{
-			R value = default (R);
-			bool hasValue = false;
-
-			return () => {
-				if (!hasValue) {
-					hasValue = true;
-					value = f ();
-				}
-				return value;
-			};
-		}
-
-		public static Func<T1, R> Memoize<T1, R> (this Func<T1, R> f)
-		{
-			var map = new Dictionary<T1, R> ();
-			return a => {
-				R value;
-				if (map.TryGetValue (a, out value))
-					return value;
-				value = f (a);
-				map.Add (a, value);
-				return value;
-			};
-		}
-
-		public static Func<T1, T2, R> Memoize<T1, T2, R> (this Func<T1, T2, R> f)
-		{
-			var map = new Dictionary<Tuple<T1, T2>, R> ();
-			return (a, b) => {
-				R value;
-				var key = Tuple.Create (a, b);
-				if (map.TryGetValue (key, out value))
-					return value;
-				value = f (a, b);
-				map.Add (key, value);
-				return value;
-			};
-		}
-
-		static class MemoizeUtil<Value>
-		{
-			public static Dictionary<Key, Value> Create<Key> (Key justForFancyTypeInference)
-			{
-				return new Dictionary<Key, Value> ();
-			}
+			_ = task.ContinueWith (t => {
+				LoggingService.LogError ("Async operation failed", t.Exception);
+			}, default, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Current);
 		}
 	}
 }

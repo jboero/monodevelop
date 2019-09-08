@@ -29,6 +29,8 @@
 using System;
 using Gtk;
 
+using MonoDevelop.Components.AtkCocoaHelper;
+
 namespace MonoDevelop.Components
 {
 	
@@ -37,7 +39,6 @@ namespace MonoDevelop.Components
 	[System.ComponentModel.ToolboxItem(true)]
 	public class MenuButton : Button
 	{
-		MenuCreator creator;
 		ContextMenuCreator contextMenuCreator;
 		Label label;
 		ImageView image;
@@ -47,15 +48,20 @@ namespace MonoDevelop.Components
 		public MenuButton ()
 			: base ()
 		{
+			Accessible.SetRole (AtkCocoa.Roles.AXMenuButton);
+
 			HBox box = new HBox ();
 			box.Spacing = 6;
 			Add (box);
 			
 			image = new ImageView ();
+			image.Accessible.Role = Atk.Role.Filler;
 			image.NoShowAll = true;
 			box.PackStart (image, false, false, 0);
 			label = new Label ();
 			label.NoShowAll = true;
+			label.Accessible.SetShouldIgnore (true);
+
 			box.PackStart (label, false, false, 0);
 			ArrowType = Gtk.ArrowType.Down;
 			base.Label = null;
@@ -65,12 +71,6 @@ namespace MonoDevelop.Components
 			: base (raw)
 		{
 			
-		}
-
-		[Obsolete ("Use ContextMenuRequested")]
-		public MenuCreator MenuCreator {
-			get { return creator; }
-			set { creator = value; }
 		}
 
 		public ContextMenuCreator ContextMenuRequested {
@@ -106,30 +106,7 @@ namespace MonoDevelop.Components
 				this.GrabFocus ();
 				// Offset the menu by the height of the rect
 				menu.Show (this, 0, rect.Height, () => MenuClosed (oldRelief)); 
-				return;
 			}
-
-			if (creator != null) {
-				Menu menu = creator (this);
-				
-				if (menu != null) {
-					var oldRelief = MenuOpened ();
-
-					//clean up after the menu's done
-					menu.Hidden += delegate {
-						MenuClosed (oldRelief);
-						
-						//FIXME: for some reason the menu's children don't get activated if we destroy 
-						//directly here, so use a timeout to delay it
-						GLib.Timeout.Add (100, delegate {
-							menu.Destroy ();
-							return false;
-						});
-					};
-					menu.Popup (null, null, PositionFunc, 0, Gtk.Global.CurrentEventTime);
-				}
-			}
-			
 		}
 		
 		protected override void OnStateChanged(StateType previous_state)
@@ -170,17 +147,17 @@ namespace MonoDevelop.Components
 				} else {
 					if (arrow == null ) {
 						arrow = new Arrow (Gtk.ArrowType.Down, ShadowType.Out);
+						arrow.Accessible.Role = Atk.Role.Filler;
 						arrow.Show ();
 						((HBox)label.Parent).PackEnd (arrow, false, false, 0);
 					}
-					arrow.ArrowType = value?? Gtk.ArrowType.Down;
+					arrow.ArrowType = value.Value;
 				}
 			}
 		}
 		
 		protected override void OnDestroyed ()
 		{
-			creator = null;
 			contextMenuCreator = null;
 
 			base.OnDestroyed ();
@@ -191,6 +168,8 @@ namespace MonoDevelop.Components
 			set {
 				label.Text = value;
 				label.Visible = !string.IsNullOrEmpty (value);
+
+				Accessible.Name = value;
 			}
 		}
 		
@@ -217,6 +196,5 @@ namespace MonoDevelop.Components
 		}
 	}
 
-	public delegate Menu MenuCreator (MenuButton button);
 	public delegate ContextMenu ContextMenuCreator (MenuButton button);
 }

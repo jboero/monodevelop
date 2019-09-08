@@ -39,7 +39,6 @@ namespace MonoDevelop.UnitTesting
 {
 	public class UnitTestProjectServiceExtension: ProjectExtension
 	{
-		bool checkingCanExecute;
 		object canExecuteCheckLock = new object ();
 
 		bool unitTestChecked;
@@ -98,8 +97,7 @@ namespace MonoDevelop.UnitTesting
 				// The user selected to run the tests
 				UnitTest test = FindRootTest ();
 				if (test != null) {
-					var cs = new CancellationTokenSource ();
-					using (monitor.CancellationToken.Register (cs.Cancel))
+					using (var cs = CancellationTokenSource.CreateLinkedTokenSource (monitor.CancellationToken))
 						await UnitTestService.RunTest (test, context, false, false, cs);
 				}
 			} else

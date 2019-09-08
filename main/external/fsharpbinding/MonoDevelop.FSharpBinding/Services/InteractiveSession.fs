@@ -1,7 +1,6 @@
 ﻿namespace MonoDevelop.FSharp
 
 open System
-open System.Reflection
 open System.IO
 open System.Diagnostics
 open MonoDevelop.Core
@@ -12,15 +11,15 @@ type CompletionData = {
     completionText: string
     category: string
     icon: string
-    overloads: CompletionData list
+    overloads: CompletionData array
     description: string
 }
 
-type InteractiveSession() =
+type InteractiveSession(pathToExe) =
     let (|Completion|_|) (command: string) =
         if command.StartsWith("completion ") then
             let payload = command.[11..]
-            Some (JsonConvert.DeserializeObject<CompletionData list> payload)
+            Some (JsonConvert.DeserializeObject<CompletionData array> payload)
         else
             None
 
@@ -34,9 +33,10 @@ type InteractiveSession() =
     let (|ParameterHints|_|) (command: string) =
         if command.StartsWith("parameter-hints ") then
             let payload = command.[16..]
-            Some (JsonConvert.DeserializeObject<MonoDevelop.FSharp.Shared.ParameterTooltip list> payload)
+            Some (JsonConvert.DeserializeObject<MonoDevelop.FSharp.Shared.ParameterTooltip array> payload)
         else
             None
+
     let (|Image|_|) (command: string) =
         if command.StartsWith("image ") then
             let base64image = command.[6..command.Length - 1]
@@ -52,17 +52,16 @@ type InteractiveSession() =
         else
             None
 
-    let path = "\"" + Path.Combine(Reflection.Assembly.GetExecutingAssembly().Location |> Path.GetDirectoryName, "MonoDevelop.FSharpInteractive.Service.exe") + "\""
     let mutable waitingForResponse = false
 
     let fsiProcess =
         let processPid = sprintf " %d" (Process.GetCurrentProcess().Id)
 
         let processName = 
-            if Environment.runningOnMono then Environment.getMonoPath() else path
+            if Environment.runningOnMono then Environment.getMonoPath() else pathToExe
 
         let arguments = 
-            if Environment.runningOnMono then path + processPid else processPid
+            if Environment.runningOnMono then pathToExe + processPid else processPid
 
         let startInfo =
             new ProcessStartInfo
@@ -87,10 +86,10 @@ type InteractiveSession() =
         stream.Write(bytes,0,bytes.Length)
         stream.Flush()
 
-    let completionsReceivedEvent = new Event<CompletionData list>()
+    let completionsReceivedEvent = new Event<CompletionData array>()
     let imageReceivedEvent = new Event<Xwt.Drawing.Image>()
     let tooltipReceivedEvent = new Event<MonoDevelop.FSharp.Shared.ToolTips>()
-    let parameterHintReceivedEvent = new Event<MonoDevelop.FSharp.Shared.ParameterTooltip list>()
+    let parameterHintReceivedEvent = new Event<MonoDevelop.FSharp.Shared.ParameterTooltip array>()
     do
         fsiProcess.OutputDataReceived
           |> Event.filter (fun de -> de.Data <> null)
@@ -115,10 +114,10 @@ type InteractiveSession() =
                     | ParameterHints hints ->
                         parameterHintReceivedEvent.Trigger hints
                     | _ -> LoggingService.logDebug "[fsharpi] don't know how to process command %s" de.Data
-                    
+
                 with 
-                | :? JsonException ->
-                    LoggingService.logError "[fsharpi] - error deserializing error stream - %s" de.Data
+                | :? JsonException as e ->
+                    LoggingService.logError "[fsharpi] - error deserializing error stream - %s\\n %s" e.Message de.Data
                     ) |> ignore
 
         fsiProcess.EnableRaisingEvents <- true
@@ -137,9 +136,11 @@ type InteractiveSession() =
     member x.TextReceived = textReceived.Publish
     member x.PromptReady = promptReady.Publish
 
+    member x.HasExited() = fsiProcess.HasExited
+
     member x.Kill() =
         if not fsiProcess.HasExited then
-            x.SendInput "#q;;"
+            x.SendInput "#q;;" None
             for i in 0 .. 10 do
                 if not fsiProcess.HasExited then
                     LoggingService.logDebug "Interactive: waiting for process exit after #q... %d" (i*200)
@@ -152,10 +153,16 @@ type InteractiveSession() =
                     LoggingService.logDebug "Interactive: waiting for process exit after kill... %d" (i*200)
                     fsiProcess.WaitForExit(200) |> ignore
 
-    member x.SendInput input =
+    member x.KillNow() = fsiProcess.Kill()
+
+    member x.SendInput input documentName =
+        documentName
+        |> Option.iter(fun fileName ->
+            sendCommand (sprintf "input # 0 @\"%s\"" fileName))
+
         for line in String.getLines input do
             sendCommand ("input " + line)
-    
+
     member x.SendCompletionRequest input column =
         sendCommand (sprintf "completion %d %s" column input)
 

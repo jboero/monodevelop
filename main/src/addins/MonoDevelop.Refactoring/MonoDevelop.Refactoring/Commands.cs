@@ -32,12 +32,15 @@ namespace MonoDevelop.Refactoring
 	{
 		CurrentRefactoryOperations,
 		GotoDeclaration, // in 'referenced' in IdeViMode.cs as string
+		GotoImplementation,
+		SortAndRemoveUnnecessaryImports,
 		FindReferences,
 		FindAllReferences,
 		FindDerivedClasses,
 		DeclareLocal,
 		ImportSymbol,
-		QuickFix
+		QuickFix,
+		QuickFixMenu
 	}
 
 }

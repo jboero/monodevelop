@@ -31,6 +31,9 @@ using System;
 using MonoDevelop.Core;
 using System.Runtime.InteropServices;
 using System.Collections;
+using System.Runtime.ExceptionServices;
+using System.Runtime.CompilerServices;
+using System.Diagnostics;
 
 namespace MonoDevelop.Ide.Gui
 {
@@ -38,10 +41,10 @@ namespace MonoDevelop.Ide.Gui
 	{
 		#region Begin Workaround
 
-	public delegate void LogFunc (string log_domain, LogLevelFlags log_level, string message);
+		public delegate void LogFunc (IntPtr log_domain, LogLevelFlags log_level, IntPtr message);
 
 	[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
-	internal delegate void LogFunc2 (string log_domain, LogLevelFlags log_level, string message, LogFunc user_data);
+		internal delegate void LogFunc2 (IntPtr log_domain, LogLevelFlags log_level, IntPtr message, LogFunc user_data);
 
 	[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
 	public delegate void PrintFunc (string message);
@@ -96,15 +99,13 @@ namespace MonoDevelop.Ide.Gui
 		[DllImport (LIBGLIB, CallingConvention = CallingConvention.Cdecl)]
 		static extern uint g_log_set_handler (IntPtr log_domain, LogLevelFlags flags, LogFunc2 log_func, LogFunc user_data);
 
-		static readonly LogFunc2 LogFuncTrampoline = (string domain, LogLevelFlags level, string message, LogFunc user_data) => {
+			static readonly LogFunc2 LogFuncTrampoline = (IntPtr domain, LogLevelFlags level, IntPtr message, LogFunc user_data) => {
 			user_data (domain, level, message);
 		};
 
-		public static uint SetLogHandler (string logDomain, LogLevelFlags flags, LogFunc logFunc)
+			public static uint SetLogHandler (IntPtr logDomain, LogLevelFlags flags, LogFunc logFunc)
 		{
-			IntPtr ndom = GLib.Marshaller.StringToPtrGStrdup (logDomain);
-			uint result = g_log_set_handler (ndom, flags, LogFuncTrampoline, logFunc);
-			GLib.Marshaller.Free (ndom);
+				uint result = g_log_set_handler (logDomain, flags, LogFuncTrampoline, logFunc);
 			EnsureHash ();
 			handlers[result] = logFunc;
 
@@ -222,8 +223,11 @@ namespace MonoDevelop.Ide.Gui
 				
 				if (value) {
 					handles = new uint[domains.Length];
-					for (int i = 0; i < domains.Length; i++)
-						handles[i] = GLibLogging.Log.SetLogHandler (domains[i], GLibLogging.LogLevelFlags.All, LoggerMethod);
+					for (int i = 0; i < domains.Length; i++) {
+						IntPtr domain = GLib.Marshaller.StringToPtrGStrdup (domains [i]);
+						handles [i] = GLibLogging.Log.SetLogHandler (domain, GLibLogging.LogLevelFlags.All, LoggerMethod);
+						GLib.Marshaller.Free (domain);
+					}
 				} else {
 					for (int i = 0; i < domains.Length; i++)
 						GLib.Log.RemoveLogHandler (domains[i], handles[i]);
@@ -232,14 +236,27 @@ namespace MonoDevelop.Ide.Gui
 			}
 		}
 		
-		static void LoggerMethod (string logDomain, LogLevelFlags logLevel, string message)
+		static void LoggerMethod (IntPtr logDomainPtr, LogLevelFlags logLevel, IntPtr messagePtr)
 		{
 			if (RemainingBytes < 0)
 				return;
 
-			System.Diagnostics.StackTrace trace = new System.Diagnostics.StackTrace (2, true);
-			string msg = string.Format ("{0}-{1}: {2}\nStack trace: \n{3}", 
-			    logDomain, logLevel, message, trace.ToString ());
+			string logDomain = GLib.Marshaller.Utf8PtrToString (logDomainPtr);
+			string message;
+
+			try {
+				// Marshal message manually, because the text can contain invalid UTF-8.
+				// Specifically, with zh_CN, pango fails to render some characters and
+				// pango's error message contains the broken UTF-8, thus on marshalling
+				// we need to catch the exception, otherwise we end up in a recursive
+				// glib exception handling.
+				message = GLib.Marshaller.Utf8PtrToString (messagePtr);
+			} catch (Exception e) {
+				message = "Failed to convert message";
+				LoggingService.LogError (message, e);
+			}
+
+			string msg = string.Format ("{0}-{1}: {2}\n{3}", logDomain, logLevel, message, GetStacktraceIfNeeded (logLevel));
 
 			switch (logLevel) {
 			case LogLevelFlags.Debug:
@@ -254,13 +271,59 @@ namespace MonoDevelop.Ide.Gui
 			case LogLevelFlags.Error:
 			case LogLevelFlags.Critical:
 			default:
-				LoggingService.LogError (msg);
+				try {
+					throw new CriticalGtkException (msg);
+				} catch (CriticalGtkException e) {
+					if (logLevel.HasFlag (LogLevelFlags.FlagFatal))
+						LoggingService.LogFatalError ($"Fatal {logDomain} error", e);
+					else
+						LoggingService.LogInternalError ($"Critical {logDomain} error", e);
+				}
 				break;
 			}
 			
 			RemainingBytes -= msg.Length;
 			if (RemainingBytes < 0)
 				LoggingService.LogError ("Disabling glib logging for the rest of the session");
+		}
+
+		static bool IsMono = Type.GetType ("Mono.Runtime") != null;
+
+		static string GetStacktraceIfNeeded (LogLevelFlags flags)
+		{
+			// If it's an Error or a Critical message, we're going to add the stacktrace via the logged exception property,
+			// we don't need to append it to the message in the log. But we are only doing so on Mono, nowhere else.
+			if (IsMono && flags.HasFlag (LogLevelFlags.Error | LogLevelFlags.Critical))
+				return string.Empty;
+
+			return "Stack trace: \n" + new StackTrace (1, true);
+		}
+
+		sealed class CriticalGtkException : Exception
+		{
+			readonly StackTrace trace = new StackTrace (1, true);
+
+			public CriticalGtkException (string message) : base (message)
+			{
+				const System.Reflection.BindingFlags flags =
+					 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.SetField;
+
+				// HACK: We need to somehow inject our stacktrace, and this is the only way we can
+				// This is not to transform every glib error into a managed exception
+				if (IsMono) {
+					typeof (Exception)
+						.GetField ("captured_traces", flags)
+						?.SetValue (this, new StackTrace [] { trace });
+				}
+			}
+
+			public override string StackTrace => trace.ToString ();
+
+			public override string ToString ()
+			{
+				// Matches normal exception format:
+				return GetType () + ": " + Message + Environment.NewLine + trace;
+			}
 		}
 	}
 }

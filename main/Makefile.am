@@ -1,6 +1,10 @@
 include $(top_srcdir)/xbuild.include
 
-SUBDIRS = external . contrib src po man theme-icons build tests
+if ENABLE_MACPLATFORM
+SUBDIRS = external po theme-icons tests build/MacOSX
+else
+SUBDIRS = external po theme-icons tests
+endif
 
 MD_CONFIGURE=$(top_srcdir)/../scripts/configure.sh
 
@@ -22,12 +26,14 @@ clean-local: sln_clean
 	cd build && $(MAKE) clean
 
 NUGET_FOUND = $$(echo $$(which nuget))
-NUGET_RESTORE = mono external/nuget-binary/nuget.exe restore;
+NUGET_RESTORE = mono external/nuget-binary/nuget.exe restore -DisableParallelProcessing;
 
 #FIXME: move the restore logic into MSBuild (Before.sln.targets),
 #       see: https://github.com/kzu/NuGet.Restore
 restore-packages:
 	@$(NUGET_RESTORE)
+	mono external/fsharpbinding/.paket/paket.bootstrapper.exe -v 5.201.1
+	pushd . && cd external/fsharpbinding && mono .paket/paket.exe restore && popd
 
 vcrevision:
 	touch vcrevision
@@ -54,69 +60,6 @@ appdata_DATA = monodevelop.appdata.xml
 xdgmimedir = $(datadir)/mime/packages
 xdgmime_DATA = monodevelop.xml
 
-pkgconfig_in_files = monodevelop.pc.in monodevelop-core-addins.pc.in
-
-pkgconfigdir= $(prefix)/lib/pkgconfig
-pkgconfig_DATA = $(pkgconfig_in_files:.pc.in=.pc)
-
-if ENABLE_UPDATE_MIMEDB
-
-install-data-hook:
-	$(UPDATE_MIME_DB) $(DESTDIR)$(datadir)/mime
-
-uninstall-hook:
-	$(UPDATE_MIME_DB) $(DESTDIR)$(datadir)/mime
-
-endif # ENABLE_UPDATE_MIMEDB
-
-PACKAGES = \
-	build/bin/MonoDevelop.Core.Gui.addin.xml \
-	build/AddIns/MonoDevelop.Documentation.addin.xml \
-	build/bin/MonoDevelop.Ide.addin.xml \
-	build/bin/MonoDevelop.Projects.addin.xml \
-	build/bin/MonoDevelop.Projects.Gui.addin.xml \
-	build/AddIns/MonoDevelop.SourceEditor.addin.xml \
-	build/AddIns/BackendBindings/BooBinding.addin.xml \
-	build/AddIns/BackendBindings/CSharpBinding.addin.xml \
-	external/fsharpbinding/MonoDevelop.FSharpBinding/FSharpBinding.addin.xml \
-	build/AddIns/BackendBindings/ILAsmBinding.addin.xml \
-	build/AddIns/BackendBindings/JavaBinding.addin.xml \
-	build/AddIns/BackendBindings/VBNetBinding.addin.xml \
-	build/AddIns/MonoQuery/MonoQuery.addin.xml \
-	build/AddIns/NUnit/MonoDevelopNUnit.addin.xml \
-	build/AddIns/MonoDeveloperExtensions/MonoDeveloperExtensions.addin.xml \
-	build/AddIns/prj2makesharp/prj2make-sharp-lib.addin.xml \
-	build/AddIns/MonoDevelop.GtkCore/MonoDevelop.GtkCore.addin.xml \
-	build/AddIns/ChangeLogAddIn/ChangeLogAddIn.addin.xml \
-	build/AddIns/WelcomePage/WelcomePage.addin.xml \
-	build/AddIns/MonoDevelop.Autotools/MonoDevelop.Autotools.addin.xml \
-	build/AddIns/MonoDevelop.DesignerSupport/MonoDevelop.DesignerSupport.addin.xml \
-	build/AddIns/AspNetAddIn/AspNetAddIn.addin.xml \
-	build/AddIns/AspNetAddIn/AspNetEdit.addin.xml
-
-DOCFILES = \
-	build/bin/MonoDevelop.Core.dll \
-	build/bin/MonoDevelop.Components.dll \
-	build/bin/MonoDevelop.Core.Gui.dll \
-	build/AddIns/MonoDevelop.Documentation.dll \
-	build/bin/MonoDevelop.Ide.dll \
-	build/bin/MonoDevelop.Projects.dll \
-	build/bin/MonoDevelop.Projects.Gui.dll
-
-mpacks: $(PACKAGES)
-	test -z "packages" || mkdir -p packages
-	$(MDTOOL_RUN) setup p $(PACKAGES:%=%) -d:packages
-	$(MDTOOL_RUN) setup rb packages
-
-apidocs:
-	monodocer $(DOCFILES:%=--assembly:%) -delete --path docs/api
-	mkdir -p docs/sources
-	mdassembler --out docs/sources/monodevelop-reference --ecma docs/api
-	mautil -reg build/bin reg-build
-	mautil -reg build/bin -p build/bin info --all --xml > docs/extension-model.xml
-	mdassembler --out docs/sources/monodevelop-extension-guide --addins docs/extension-model.xml
-#	cd docs/apiguide && mdassembler --out monodevelop-api-guide --xhtml toc.xhtml && mv monodevelop-api-guide.zip ../web/sources
-
 MD_LAUNCH=$(MD_LAUNCH_SETUP) $(MD_LAUNCH_EXTRA_ENV) UBUNTU_MENUPROXY=0 LIBOVERLAY_SCROLLBAR=0 exec -a "monodevelop" $(RUNTIME)
 
 if ENABLE_MACPLATFORM
@@ -127,6 +70,19 @@ endif
 
 run-bundle: $(PROGRAM)
 	LANG= LC_ALL= $(MD_LAUNCH_SETUP) $(MD_LAUNCH_EXTRA_ENV) $(MD_BIN_PATH)/MonoDevelop --no-redirect
+
+run-leaks: $(PROGRAM)
+	@if [ -a `pwd`/build/bin/libgobject-tracker.dylib ]; then \
+		DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=`pwd`/build/bin/libgobject-tracker.dylib LANG= LC_ALL= $(MD_LAUNCH_SETUP) $(MD_LAUNCH_EXTRA_ENV) $(MD_BIN_PATH)/MonoDevelop --no-redirect; \
+	else \
+		echo '\033[0;31m' \
+		&& echo "You need to compile and install libgobject-tracker.dylib from https://github.com/alanmcgovern/gobject-tracker to run gobject leak checking" \
+		&& echo '\033[0m'; \
+	fi
+
+run-no-accessibility: $(PROGRAM)
+	DISABLE_ATKCOCOA=yes LANG= LC_ALL= $(MD_LAUNCH_SETUP) $(MD_LAUNCH_EXTRA_ENV) $(MD_BIN_PATH)/MonoDevelop --no-redirect
+
 run-64: run-sgen-64
 
 run-boehm: runmd
@@ -174,43 +130,21 @@ check-addins:
 test:
 	cd tests && $(MAKE) test assembly=$(assembly)
 
+deploy-tests:
+	cd tests && $(MAKE) deploy-tests
+
 uitest:
 	cd tests && $(MAKE) uitest assembly=$(assembly) categories=$(categories) tests=$(tests)
+
+performance-tests:
+	cd tests && $(MAKE) performance-tests
 
 coverage:
 	cd tests && $(MAKE) coverage
 
 app-dir: all
-	cd build && make app-dir
-#mkdir -p $(MAC_APP_DIR)/Contents/{MacOS,Resources}
-#mkdir -p $(MAC_APP_LIB_DIR)
-#cp -a build/AddIns $(MAC_APP_LIB_DIR)
-#cp -a build/data $(MAC_APP_LIB_DIR)
-#cp -a build/bin $(MAC_APP_LIB_DIR)
-
-# we can't use the variables that are conditionally defined
-EXTRA_DIST = $(bin_SCRIPTS) $(desktop_DATA) $(appdata_DATA) $(pixmap_DATA) \
-	monodevelop.xml $(pkgconfig_in_files) external/Makefile.in \
-	Main.sln \
-	md.targets
-
-DISTCLEANFILES = monodevelop intltool-extract intltool-merge intltool-update \
-	$(pkgconfig_DATA) 
+	cd build/MacOSX && make app-dir
 
 include $(top_srcdir)/Makefile.include
-
-#
-# Force distuninstallcheck to ignore files created by cache-rebuilding commands (update-mime-database etc)
-#
-# From BEAST (LGPL license): http://svn.gnome.org/viewvc/beast/trunk/Makefile.am
-filter_stale_uninstalled = \
-    | egrep -v '^.*/share/mime/.*$$' \
-    | egrep -v '^.*./share/icons/hicolor/icon-theme\.cache$$'
-
-filter_stale_buildfiles       = | egrep -v '^./report.out$$'
-distuninstallcheck_listfiles  = find . -type f -print 		# automake-1.9 setting
-distuninstallcheck_listfiles += $(filter_stale_uninstalled)	# amend by required filtering
-distcleancheck_listfiles      = find . -type f -print		# automake-1.9 setting
-distcleancheck_listfiles     += $(filter_stale_buildfiles)	# amend by required filtering
 
 .PHONY: vcrevision buildinfo

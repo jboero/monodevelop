@@ -30,6 +30,7 @@ using Gtk;
 using MonoDevelop.Ide.Gui;
 using MonoDevelop.Ide;
 using System.Linq;
+using MonoDevelop.Ide.Gui.Shell;
 
 namespace MonoDevelop.Components.DockNotebook
 {
@@ -89,7 +90,16 @@ namespace MonoDevelop.Components.DockNotebook
 		protected override void OnSizeAllocated (Gdk.Rectangle allocation)
 		{
 			base.OnSizeAllocated (allocation);
-			if (!splitsInitialized) {
+
+			// When showing the dock frame for the first time, the dock container is assigned a size of 1x1 before
+			// it gets the real size. This causes the splits to be initialized with position set to 0, which
+			// means the first widget of the split is not visible. To avoid this problem, we now initialize
+			// the splits only when the size is > 1.
+			// This didn't happen before, and it is not clear why is it happening now.
+			// Maybe the accessibility changes are causing the dock container to be realized earlier, or maybe
+			// it is due to some change in gtk.
+
+			if (!splitsInitialized && allocation.Width > 1 && allocation.Height > 1) {
 				splitsInitialized = true;
 				if (Child is HPaned) {
 					var p = (HPaned)Child;

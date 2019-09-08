@@ -33,6 +33,7 @@ using NUnit.Framework;
 using System.IO;
 using System.Linq;
 using System;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.VersionControl.Git.Tests
 {
@@ -40,7 +41,7 @@ namespace MonoDevelop.VersionControl.Git.Tests
 	sealed class BaseGitUtilsTest : BaseRepoUtilsTest
 	{
 		[SetUp]
-		public override void Setup ()
+		public override async Task Setup ()
 		{
 			// Generate directories and a svn util.
 			RemotePath = new FilePath (FileService.CreateTempDirectory () + Path.DirectorySeparatorChar);
@@ -51,13 +52,13 @@ namespace MonoDevelop.VersionControl.Git.Tests
 			LibGit2Sharp.Repository.Init (RemotePath.FullPath + "repo.git", true);
 
 			// Check out the repository.
-			Checkout (LocalPath, RemoteUrl);
+			await CheckoutAsync (LocalPath, RemoteUrl);
 			Repo = GetRepo (LocalPath, RemoteUrl);
-			((GitRepository)Repo).RootRepository.Config.Set ("core.ignorecase", false);
+			await ((GitRepository)Repo).RunOperationAsync (() => ((GitRepository)Repo).RootRepository.Config.Set ("core.ignorecase", false));
 			ModifyPath (Repo, ref LocalPath);
 			DotDir = ".git";
 
-			base.Setup ();
+			await base.Setup ();
 		}
 
 		protected override NUnit.Framework.Constraints.IResolveConstraint IsCorrectType ()
@@ -73,7 +74,7 @@ namespace MonoDevelop.VersionControl.Git.Tests
 			get { return 10; }
 		}
 
-		protected override void TestDiff ()
+		protected override async Task TestDiff ()
 		{
 			string difftext = @"--- a/testfile
 +++ b/testfile
@@ -83,48 +84,52 @@ namespace MonoDevelop.VersionControl.Git.Tests
 ";
 			if (Platform.IsWindows)
 				difftext = difftext.Replace ("\r\n", "\n");
-			Assert.AreEqual (difftext, Repo.GenerateDiff (LocalPath + "testfile", Repo.GetVersionInfo (LocalPath + "testfile", VersionInfoQueryFlags.IgnoreCache)).Content);
+			Assert.AreEqual (difftext, (await Repo.GenerateDiffAsync (LocalPath + "testfile", await Repo.GetVersionInfoAsync (LocalPath + "testfile", VersionInfoQueryFlags.IgnoreCache))).Content);
 		}
 
 		protected override void ModifyPath (Repository repo, ref FilePath old)
 		{
 			var repo2 = (GitRepository)repo;
 			old = repo2.RootRepository.Info.WorkingDirectory;
-			repo2.RootRepository.Config.Set<string> ("user.name", Author);
-			repo2.RootRepository.Config.Set<string> ("user.email", Email);
+			repo2.SetUserInfo (Author, Email);
 		}
 
-		protected override void CheckLog (Repository repo)
+		protected override async Task CheckLog (Repository repo)
 		{
 			int index = 2;
-			foreach (Revision rev in Repo.GetHistory (LocalPath, null))
+			var history = await Repo.GetHistoryAsync (LocalPath, null);
+			Assert.AreEqual (index + 1, history.Length);
+			foreach (Revision rev in history)
 				Assert.AreEqual (String.Format ("Commit #{0}\n", index--), rev.Message);
 		}
 
 		[Test]
 		[Ignore ("Not implemented in GitRepository.")]
-		public override void LocksEntities ()
+		public override Task LocksEntities ()
 		{
-			base.LocksEntities ();
+			return base.LocksEntities ();
 		}
 
 		[Test]
 		[Ignore ("Not implemented in GitRepository.")]
-		public override void UnlocksEntities ()
+		public override Task UnlocksEntities ()
 		{
-			base.UnlocksEntities ();
+			return base.UnlocksEntities ();
 		}
 
 		protected override Revision GetHeadRevision ()
 		{
 			var repo2 = (GitRepository)Repo;
-			return new GitRevision (Repo, repo2.RootRepository, repo2.RootRepository.Head.Tip);
+			return new GitRevision (Repo, repo2.RootPath, repo2.RootRepository.Head.Tip);
 		}
 
-		protected override void PostCommit (Repository repo)
+		protected override async Task PostCommit (Repository repo)
 		{
 			var repo2 = (GitRepository)repo;
-			repo2.Push (new ProgressMonitor (), repo2.GetCurrentRemote (), repo2.GetCurrentBranch ());
+			var monitor = new ProgressMonitor ();
+			await Task.Run (async () => {
+				repo2.Push (monitor, await repo2.GetCurrentRemoteAsync (), repo2.GetCurrentBranch ());
+			});
 		}
 
 		protected override void BlameExtraInternals (Annotation [] annotations)
@@ -138,129 +143,261 @@ namespace MonoDevelop.VersionControl.Git.Tests
 		}
 
 		[Test]
-		public void TestGitStash ()
+		public async Task TestGitStash ()
 		{
+			var monitor = new ProgressMonitor ();
 			LibGit2Sharp.Stash stash;
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file2", "nothing", true, true);
-			AddFile ("file1", "text", true, false);
-			AddFile ("file3", "unstaged", false, false);
-			AddFile ("file4", "noconflict", true, false);
-			repo2.TryCreateStash (new ProgressMonitor (), "meh", out stash);
+			await AddFileAsync ("file2", "nothing", true, true);
+			await AddFileAsync ("file1", "text", true, false);
+			await AddFileAsync ("file3", "unstaged", false, false);
+			await AddFileAsync ("file4", "noconflict", true, false);
+			repo2.TryCreateStash (monitor, "meh", out stash);
 			Assert.IsTrue (!File.Exists (LocalPath + "file1"), "Stash creation failure");
-			AddFile ("file4", "conflict", true, true);
-			repo2.PopStash (new ProgressMonitor (), 0);
+			await AddFileAsync ("file4", "conflict", true, true);
+			await Task.Run (() => repo2.PopStash (monitor, 0));
 
-			VersionInfo vi = repo2.GetVersionInfo (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
+			VersionInfo vi = await repo2.GetVersionInfoAsync (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
 			Assert.IsTrue (File.Exists (LocalPath + "file1"), "Stash pop staged failure");
 			Assert.AreEqual (VersionStatus.ScheduledAdd, vi.Status & VersionStatus.ScheduledAdd, "Stash pop failure");
 
-			vi = repo2.GetVersionInfo (LocalPath + "file3", VersionInfoQueryFlags.IgnoreCache);
+			vi = await repo2.GetVersionInfoAsync (LocalPath + "file3", VersionInfoQueryFlags.IgnoreCache);
 			Assert.IsTrue (File.Exists (LocalPath + "file3"), "Stash pop untracked failure");
 			Assert.AreEqual (VersionStatus.Unversioned, vi.Status, "Stash pop failure");
 
-			vi = repo2.GetVersionInfo (LocalPath + "file4", VersionInfoQueryFlags.IgnoreCache);
+			vi = await repo2.GetVersionInfoAsync (LocalPath + "file4", VersionInfoQueryFlags.IgnoreCache);
 			Assert.IsTrue (File.Exists (LocalPath + "file4"), "Stash pop conflict failure");
 			Assert.AreEqual (VersionStatus.Conflicted, vi.Status & VersionStatus.Conflicted, "Stash pop failure");
 		}
 
 		[Test]
-		public void TestStashNoExtraCommit ()
+		public async Task TestStashNoExtraCommit ()
 		{
+			var monitor = new ProgressMonitor ();
 			LibGit2Sharp.Stash stash;
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file1", null, true, true);
-			AddFile ("file2", null, true, false);
-			AddFile ("file3", null, false, false);
+			await AddFileAsync ("file1", null, true, true);
+			await AddFileAsync ("file2", null, true, false);
+			await AddFileAsync ("file3", null, false, false);
 
-			int commitCount = repo2.GetHistory (repo2.RootPath, null).Length;
-			repo2.TryCreateStash (new ProgressMonitor (), "stash1", out stash);
-			repo2.PopStash (new ProgressMonitor (), 0);
-			Assert.AreEqual (commitCount, repo2.GetHistory (repo2.RootPath, null).Length, "stash1 added extra commit.");
+			int commitCount = (await repo2.GetHistoryAsync (repo2.RootPath, null)).Length;
+			await Task.Run (() => repo2.TryCreateStash (monitor, "stash1", out stash));
+			await Task.Run (() => repo2.PopStash (monitor, 0));
+			Assert.AreEqual (commitCount, (await repo2.GetHistoryAsync (repo2.RootPath, null)).Length, "stash1 added extra commit.");
 
-			repo2.TryCreateStash (new ProgressMonitor (), "stash2", out stash);
+			await Task.Run (() => repo2.TryCreateStash (monitor, "stash2", out stash));
 
-			AddFile ("file4", null, true, true);
-			commitCount = repo2.GetHistory (repo2.RootPath, null).Length;
+			await AddFileAsync ("file4", null, true, true);
+			commitCount = (await repo2.GetHistoryAsync (repo2.RootPath, null)).Length;
 
-			repo2.PopStash (new ProgressMonitor (), 0);
-			Assert.AreEqual (commitCount, repo2.GetHistory (repo2.RootPath, null).Length, "stash2 added extra commit.");
+			await Task.Run (() => repo2.PopStash (monitor, 0));
+			Assert.AreEqual (commitCount, (await repo2.GetHistoryAsync (repo2.RootPath, null)).Length, "stash2 added extra commit.");
+		}
+
+		[TestCase (true)]
+		[TestCase (false)]
+		public async Task TestGitStagedModifiedStatus (bool withDiff)
+		{
+			var repo2 = (GitRepository)Repo;
+			var testFile = "file1";
+			var testPath = LocalPath.Combine ("file1");
+			string difftext = string.Empty;
+			await AddFileAsync (testFile, "test 1\n", true, true);
+
+			// new file added and committed
+			var status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsFalse (status.HasLocalChanges);
+			Assert.AreEqual (VersionStatus.Versioned, status.Status);
+			if (withDiff)
+				Assert.IsTrue (string.IsNullOrEmpty ((await repo2.GenerateDiffAsync (testPath, status)).Content));
+
+			// modify the file without staging
+			File.AppendAllText (testPath, "test 2\n");
+			status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsTrue (status.HasLocalChanges);
+			Assert.AreEqual (VersionStatus.Modified | VersionStatus.Versioned, status.Status);
+
+			if (withDiff) {
+				difftext = @"--- a/file1
++++ b/file1
+@@ -1 +1,2 @@
+ test 1
++test 2
+".Replace ("file1", testFile);
+				var diff = await repo2.GenerateDiffAsync (testPath, status);
+				Assert.AreEqual (difftext, diff.Content);
+			}
+
+			// stage changes
+			LibGit2Sharp.Commands.Stage (repo2.RootRepository, testPath);
+			Assert.IsTrue (status.Equals (await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache)));
+
+			if (withDiff) {
+				var diff = await repo2.GenerateDiffAsync (testPath, status);
+				Assert.AreEqual (difftext, diff.Content);
+			}
+
+			// modify the file again
+			File.AppendAllText (testPath, "test 3\n");
+			Assert.IsTrue (status.Equals (await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache)));
+
+
+			if (withDiff) {
+				difftext = @"--- a/file1
++++ b/file1
+@@ -1 +1,3 @@
+ test 1
++test 2
++test 3
+".Replace ("file1", testFile);
+				var diff = await repo2.GenerateDiffAsync (testPath, status);
+				Assert.AreEqual (difftext, diff.Content);
+			}
+
+		}
+
+		[TestCase (false)]
+		[TestCase (true, Ignore = true, IgnoreReason = "Needs to be fixed")]
+		public async Task TestGitStagedNewFileStatus (bool testUnstagedRemove)
+		{
+			var repo2 = (GitRepository)Repo;
+			var testFile = "file1";
+			var testPath = LocalPath.Combine ("file1");
+			await AddFileAsync ("file", null, true, true);
+			await AddFileAsync (testFile, "test 1\n", false, false);
+
+			// new file added but not staged
+			var status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsFalse (status.HasLocalChanges);
+			Assert.AreEqual (VersionStatus.Unversioned, status.Status);
+
+			// stage added file
+			LibGit2Sharp.Commands.Stage (repo2.RootRepository, testPath);
+			status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsTrue (status.HasLocalChanges);
+			Assert.AreEqual (VersionStatus.ScheduledAdd | VersionStatus.Versioned, status.Status);
+
+			// modify the file without staging
+			File.AppendAllText (testPath, "test 2\n");
+			status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsTrue (status.Equals (await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache)));
+
+			// remove the staged file
+			File.Delete (testPath);
+			// TODO: at this point the file still exists in the index, but should be detected as Unversioned
+			if (testUnstagedRemove) {
+				status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+				Assert.IsFalse (status.HasLocalChanges);
+				Assert.AreEqual (VersionStatus.Unversioned, status.Status);
+			}
+
+			// stage removed file
+			LibGit2Sharp.Commands.Stage (repo2.RootRepository, testPath);
+			status = await Repo.GetVersionInfoAsync (testPath, VersionInfoQueryFlags.IgnoreCache);
+			Assert.IsFalse (status.HasLocalChanges);
+			Assert.AreEqual (VersionStatus.Unversioned, status.Status);
 		}
 
 		static string GetStashMessageForBranch (string branch)
 		{
 			return string.Format ("On {0}: __MD_{0}\n\n", branch);
 		}
-		[Test]
-		public void TestGitBranchCreation ()
+
+		[TestCase (false)]
+		[TestCase (true, Ignore = true, IgnoreReason = "We stash now only if there are conflicts, this needs to be updated")]
+		public async Task TestGitBranchCreation (bool automaticStashCreation)
 		{
-			var repo2 = (GitRepository)Repo;
+			var autoStashDefault = GitService.StashUnstashWhenSwitchingBranches.Value;
+			GitService.StashUnstashWhenSwitchingBranches.Value = automaticStashCreation;
+			try {
+				var repo2 = (GitRepository)Repo;
+				var monitor = new ProgressMonitor ();
 
-			AddFile ("file1", "text", true, true);
-			repo2.CreateBranch ("branch1", null, null);
+				await AddFileAsync ("file1", "text", true, true);
 
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch1");
-			// Nothing could be stashed for master. Branch1 should be popped in any case if it exists.
-			Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("master")));
-			Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
+				await repo2.CreateBranchAsync ("branch1", null, null);
 
-			Assert.AreEqual ("branch1", repo2.GetCurrentBranch ());
-			Assert.IsTrue (File.Exists (LocalPath + "file1"), "Branch not inheriting from current.");
+				await repo2.SwitchToBranchAsync (monitor, "branch1");
+				// Nothing could be stashed for master. Branch1 should be popped in any case if it exists.
+				Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("master")));
+				Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
 
-			AddFile ("file2", "text", true, false);
-			repo2.CreateBranch ("branch2", null, null);
+				Assert.AreEqual ("branch1", repo2.GetCurrentBranch ());
+				Assert.IsTrue (File.Exists (LocalPath + "file1"), "Branch not inheriting from current.");
 
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch2");
-			// Branch1 has a stash created and assert clean workdir. Branch2 should be popped in any case.
-			Assert.IsTrue (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
-			Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch2")));
-			Assert.IsTrue (!File.Exists (LocalPath + "file2"), "Uncommitted changes were not stashed");
+				await AddFileAsync ("file2", "text", true, false);
+				await repo2.CreateBranchAsync ("branch2", null, null);
 
-			AddFile ("file2", "text", true, false);
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch1");
-			// Branch2 has a stash created. Branch1 should be popped with file2 reinstated.
-			Assert.True (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch2")));
-			Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
-			Assert.IsTrue (File.Exists (LocalPath + "file2"), "Uncommitted changes were not stashed correctly");
+				await repo2.SwitchToBranchAsync (monitor, "branch2");
+				if (automaticStashCreation) {
+					// Branch1 has a stash created and assert clean workdir. Branch2 should be popped in any case.
+					Assert.IsTrue (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch2")));
+					Assert.IsTrue (!File.Exists (LocalPath + "file2"), "Uncommitted changes were not stashed");
+				} else {
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("master")));
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
+					Assert.IsTrue (File.Exists (LocalPath + "file2"), "Uncommitted changes were stashed");
+				}
 
-			repo2.SwitchToBranch (new ProgressMonitor (), "master");
-			repo2.RemoveBranch ("branch1");
-			Assert.IsFalse (repo2.GetBranches ().Any (b => b.FriendlyName == "branch1"), "Failed to delete branch");
+				await AddFileAsync ("file2", "text", true, false);
+				await repo2.SwitchToBranchAsync (monitor, "branch1");
+				// Branch2 has a stash created. Branch1 should be popped with file2 reinstated.
 
-			repo2.RenameBranch ("branch2", "branch3");
-			Assert.IsTrue (repo2.GetBranches ().Any (b => b.FriendlyName == "branch3") && repo2.GetBranches ().All (b => b.FriendlyName != "branch2"), "Failed to rename branch");
+				if (automaticStashCreation) {
+					Assert.True (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch2")));
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
+					Assert.IsTrue (File.Exists (LocalPath + "file2"), "Uncommitted changes were not stashed correctly");
+				} else {
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch2")));
+					Assert.IsFalse (repo2.GetStashes ().Any (s => s.Message == GetStashMessageForBranch ("branch1")));
+					Assert.IsTrue (File.Exists (LocalPath + "file2"), "Uncommitted changes were stashed");
+				}
+
+				await repo2.SwitchToBranchAsync (monitor, "master");
+				await repo2.RemoveBranchAsync ("branch1");
+				Assert.IsFalse ((await repo2.GetBranchesAsync ()).Any (b => b.FriendlyName == "branch1"), "Failed to delete branch");
+
+				await repo2.RenameBranchAsync ("branch2", "branch3");
+				var branches = await repo2.GetBranchesAsync ();
+				Assert.IsTrue (branches.Any (b => b.FriendlyName == "branch3") && branches.All (b => b.FriendlyName != "branch2"), "Failed to rename branch");
+			} finally {
+				GitService.StashUnstashWhenSwitchingBranches.Value = autoStashDefault;
+			}
 
 			// TODO: Add CreateBranchFromCommit tests.
 		}
 
 		[Test]
-		public void TestGitSyncBranches ()
+		public async Task TestGitSyncBranches ()
 		{
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file1", "text", true, true);
-			PostCommit (repo2);
+			await AddFileAsync ("file1", "text", true, true);
+			await PostCommit (repo2);
 
-			repo2.CreateBranch ("branch3", null, null);
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch3");
-			AddFile ("file2", "asdf", true, true);
-			repo2.Push (new ProgressMonitor (), "origin", "branch3");
+			var monitor = new ProgressMonitor ();
 
-			repo2.SwitchToBranch (new ProgressMonitor (), "master");
+			await repo2.CreateBranchAsync ("branch3", null, null);
+			await repo2.SwitchToBranchAsync (monitor, "branch3");
+			await AddFileAsync ("file2", "asdf", true, true);
+			await Task.Run (() => repo2.Push (monitor, "origin", "branch3"));
 
-			repo2.CreateBranch ("branch4", "origin/branch3", "refs/remotes/origin/branch3");
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch4");
+			await repo2.SwitchToBranchAsync (monitor, "master");
+
+			await repo2.CreateBranchAsync ("branch4", "origin/branch3", "refs/remotes/origin/branch3");
+			await repo2.SwitchToBranchAsync (monitor, "branch4");
 			Assert.IsTrue (File.Exists (LocalPath + "file2"), "Tracking remote is not grabbing correct commits");
 		}
 
 		[Test]
-		public void TestPushChangeset ()
+		public async Task TestPushChangeset ()
 		{
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file", "meh", true, true);
-			PostCommit (repo2);
+			await AddFileAsync ("file", "meh", true, true);
+			await PostCommit (repo2);
 
-			AddFile ("file1", "text", true, true);
-			AddFile ("file2", "text2", true, true);
+			await AddFileAsync ("file1", "text", true, true);
+			await AddFileAsync ("file2", "text2", true, true);
 
 			ChangeSet diff = repo2.GetPushChangeSet ("origin", "master");
 			Assert.AreEqual (2, diff.Items.Count ());
@@ -275,16 +412,16 @@ namespace MonoDevelop.VersionControl.Git.Tests
 		}
 
 		[Test]
-		public void TestPushDiff ()
+		public async Task TestPushDiff ()
 		{
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file", "meh", true, true);
-			PostCommit (repo2);
+			await AddFileAsync ("file", "meh", true, true);
+			await PostCommit (repo2);
 
-			AddFile ("file1", "text", true, true);
-			AddFile ("file2", "text2", true, true);
+			await AddFileAsync ("file1", "text", true, true);
+			await AddFileAsync ("file2", "text2", true, true);
 
-			DiffInfo[] diff = repo2.GetPushDiff ("origin", "master");
+			DiffInfo [] diff = repo2.GetPushDiff ("origin", "master");
 			Assert.AreEqual (2, diff.Length);
 
 			DiffInfo item = diff [0];
@@ -334,56 +471,59 @@ namespace MonoDevelop.VersionControl.Git.Tests
 		}
 
 		[Test]
-		public void TestRemote ()
+		public async Task TestRemote ()
 		{
 			var repo2 = (GitRepository)Repo;
+			var monitor = new ProgressMonitor ();
 
-			Assert.AreEqual ("origin", repo2.GetCurrentRemote ());
+			Assert.AreEqual ("origin", await repo2.GetCurrentRemoteAsync ());
 
-			AddFile ("file1", "text", true, true);
-			PostCommit (repo2);
-			repo2.CreateBranch ("branch1", null, null);
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch1");
-			AddFile ("file2", "text", true, true);
-			PostCommit (repo2);
-			Assert.AreEqual (2, repo2.GetBranches ().Count ());
-			Assert.AreEqual (1, repo2.GetRemotes ().Count ());
+			await AddFileAsync ("file1", "text", true, true);
+			await PostCommit (repo2);
+			await repo2.CreateBranchAsync ("branch1", null, null);
+			await repo2.SwitchToBranchAsync (monitor, "branch1");
+			await AddFileAsync ("file2", "text", true, true);
+			await PostCommit (repo2);
+			Assert.AreEqual (2, (await repo2.GetBranchesAsync ()).Count ());
+			Assert.AreEqual (1, (await repo2.GetRemotesAsync ()).Count ());
 
-			repo2.RenameRemote ("origin", "other");
-			Assert.AreEqual ("other", repo2.GetCurrentRemote ());
+			await repo2.RenameRemoteAsync ("origin", "other");
+			Assert.AreEqual ("other", await repo2.GetCurrentRemoteAsync ());
 
-			repo2.RemoveRemote ("other");
-			Assert.IsFalse (repo2.GetRemotes ().Any ());
+			await repo2.RemoveRemoteAsync ("other");
+			Assert.IsFalse ((await repo2.GetRemotesAsync ()).Any ());
 		}
 
 		[Test]
-		public void TestIsMerged ()
+		public async Task TestIsMerged ()
 		{
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file1", "text", true, true);
+			var monitor = new ProgressMonitor ();
+			await AddFileAsync ("file1", "text", true, true);
 
-			Assert.IsTrue (repo2.IsBranchMerged ("master"));
+			Assert.IsTrue (await repo2.IsBranchMergedAsync ("master"));
 
-			repo2.CreateBranch ("branch1", null, null);
-			repo2.SwitchToBranch (new ProgressMonitor (), "branch1");
-			AddFile ("file2", "text", true, true);
+			await repo2.CreateBranchAsync ("branch1", null, null);
+			await repo2.SwitchToBranchAsync (monitor, "branch1");
+			await AddFileAsync ("file2", "text", true, true);
 
-			repo2.SwitchToBranch (new ProgressMonitor (), "master");
-			Assert.IsFalse (repo2.IsBranchMerged ("branch1"));
-			repo2.Merge ("branch1", GitUpdateOptions.NormalUpdate, new ProgressMonitor ());
-			Assert.IsTrue (repo2.IsBranchMerged ("branch1"));
+			await repo2.SwitchToBranchAsync (monitor, "master");
+			Assert.IsFalse (await repo2.IsBranchMergedAsync ("branch1"));
+			await repo2.MergeAsync ("branch1", GitUpdateOptions.NormalUpdate, monitor);
+			Assert.IsTrue (await repo2.IsBranchMergedAsync ("branch1"));
 		}
 
 		[Test]
-		public void TestTags ()
+		public async Task TestTags ()
 		{
 			var repo2 = (GitRepository)Repo;
-			AddFile ("file1", "text", true, true);
-			repo2.AddTag ("tag1", GetHeadRevision (), "my-tag");
-			Assert.AreEqual (1, repo2.GetTags ().Count ());
-			Assert.AreEqual ("tag1", repo2.GetTags ().First ());
-			repo2.RemoveTag ("tag1");
-			Assert.AreEqual (0, repo2.GetTags ().Count ());
+			await AddFileAsync ("file1", "text", true, true);
+			await repo2.AddTagAsync ("tag1", GetHeadRevision (), "my-tag");
+			var tags = await repo2.GetTagsAsync ();
+			Assert.AreEqual (1, tags.Count);
+			Assert.AreEqual ("tag1", tags.First ());
+			await repo2.RemoveTagAsync ("tag1");
+			Assert.AreEqual (0, (await repo2.GetTagsAsync ()).Count);
 		}
 
 		// TODO: Test rebase and merge - This is broken on Windows
@@ -400,54 +540,55 @@ namespace MonoDevelop.VersionControl.Git.Tests
 
 		// This test is for a memory usage improvement on status.
 		[Test]
-		public void TestSameGitRevision ()
+		public async Task TestSameGitRevision ()
 		{
 			// Test that we have the same Revision on subsequent calls when HEAD doesn't change.
-			AddFile ("file1", null, true, true);
-			var info1 = Repo.GetVersionInfo (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
-			var info2 = Repo.GetVersionInfo (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
+			await AddFileAsync ("file1", null, true, true);
+			var info1 = await Repo.GetVersionInfoAsync (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
+			var info2 = await Repo.GetVersionInfoAsync (LocalPath + "file1", VersionInfoQueryFlags.IgnoreCache);
 			Assert.IsTrue (object.ReferenceEquals (info1.Revision, info2.Revision));
 
 			// Test that we have the same Revision between two files on a HEAD bump.
-			AddFile ("file2", null, true, true);
-			var infos = Repo.GetVersionInfo (
-				new FilePath[] { LocalPath + "file1", LocalPath + "file2" },
+			await AddFileAsync ("file2", null, true, true);
+			var infos = (await Repo.GetVersionInfoAsync (
+				new FilePath [] { LocalPath + "file1", LocalPath + "file2" },
 				VersionInfoQueryFlags.IgnoreCache
-			).ToArray ();
+			)).ToArray ();
 			Assert.IsTrue (object.ReferenceEquals (infos [0].Revision, infos [1].Revision));
 
 			// Test that the new Revision and the old one are different instances.
 			Assert.IsFalse (object.ReferenceEquals (info1.Revision, infos [0].Revision));
 
 			// Write the first test so it also covers directories.
-			AddDirectory ("meh", true, false);
-			AddFile ("meh/file3", null, true, true);
-			var info3 = Repo.GetVersionInfo (LocalPath + "meh", VersionInfoQueryFlags.IgnoreCache);
-			var info4 = Repo.GetVersionInfo (LocalPath + "meh", VersionInfoQueryFlags.IgnoreCache);
+			await AddDirectoryAsync ("meh", true, false);
+			await AddFileAsync ("meh/file3", null, true, true);
+			var info4 = await Repo.GetVersionInfoAsync (LocalPath + "meh", VersionInfoQueryFlags.IgnoreCache);
+			var info3 = await Repo.GetVersionInfoAsync (LocalPath + "meh", VersionInfoQueryFlags.IgnoreCache);
 			Assert.IsTrue (object.ReferenceEquals (info3.Revision, info4.Revision));
 		}
 
 		[Test]
 		// Tests bug #23274
-		public void DeleteWithStagedChanges ()
+		public async Task DeleteWithStagedChanges ()
 		{
+			var monitor = new ProgressMonitor ();
 			string added = LocalPath.Combine ("testfile");
-			AddFile ("testfile", "test", true, true);
+			await AddFileAsync ("testfile", "test", true, true);
 
 			// Test with VCS Remove.
 			File.WriteAllText ("testfile", "t");
-			Repo.Add (added, false, new ProgressMonitor ());
-			Repo.DeleteFile (added, false, new ProgressMonitor (), true);
-			Assert.AreEqual (VersionStatus.Versioned | VersionStatus.ScheduledDelete, Repo.GetVersionInfo (added, VersionInfoQueryFlags.IgnoreCache).Status);
+			await Repo.AddAsync (added, false, monitor);
+			await Repo.DeleteFileAsync (added, false, monitor, true);
+			Assert.AreEqual (VersionStatus.Versioned | VersionStatus.ScheduledDelete, (await Repo.GetVersionInfoAsync (added, VersionInfoQueryFlags.IgnoreCache)).Status);
 
 			// Reset state.
-			Repo.Revert (added, false, new ProgressMonitor ());
+			await Repo.RevertAsync (added, false, monitor);
 
 			// Test with Project Remove.
 			File.WriteAllText ("testfile", "t");
-			Repo.Add (added, false, new ProgressMonitor ());
-			Repo.DeleteFile (added, false, new ProgressMonitor (), false);
-			Assert.AreEqual (VersionStatus.Versioned | VersionStatus.ScheduledDelete, Repo.GetVersionInfo (added, VersionInfoQueryFlags.IgnoreCache).Status);
+			await Repo.AddAsync (added, false, monitor);
+			await Repo.DeleteFileAsync (added, false, monitor, false);
+			Assert.AreEqual (VersionStatus.Versioned | VersionStatus.ScheduledDelete, (await Repo.GetVersionInfoAsync (added, VersionInfoQueryFlags.IgnoreCache)).Status);
 		}
 
 		[TestCase(null, "origin/master", "refs/remotes/origin/master")]
@@ -455,35 +596,43 @@ namespace MonoDevelop.VersionControl.Git.Tests
 		[TestCase(typeof(LibGit2Sharp.NotFoundException), "noremote/master", "refs/remotes/noremote/master")]
 		[TestCase(typeof(ArgumentException), "origin/master", "refs/remote/origin/master")]
 		// Tests bug #30347
-		public void CreateBranchWithRemoteSource (Type exceptionType, string trackSource, string trackRef)
+		public async Task CreateBranchWithRemoteSource (Type exceptionType, string trackSource, string trackRef)
 		{
+			var monitor = new ProgressMonitor ();
 			var repo2 = (GitRepository)Repo;
-			AddFile ("init", "init", true, true);
-			repo2.Push (new ProgressMonitor (), "origin", "master");
-			repo2.CreateBranch ("testBranch", "origin/master", "refs/remotes/origin/master");
+			await AddFileAsync ("init", "init", true, true);
+			await Task.Run (() => repo2.Push (new ProgressMonitor (), "origin", "master"));
+			await repo2.CreateBranchAsync ("testBranch", "origin/master", "refs/remotes/origin/master");
 
-			if (exceptionType != null)
-				Assert.Throws (exceptionType, () => repo2.CreateBranch ("testBranch2", trackSource, trackRef));
-			else {
-				repo2.CreateBranch ("testBranch2", trackSource, trackRef);
-				Assert.True (repo2.GetBranches ().Any (b => b.FriendlyName == "testBranch2" && b.TrackedBranch.FriendlyName == trackSource));
+			if (exceptionType != null) {
+				try {
+					await repo2.CreateBranchAsync ("testBranch2", trackSource, trackRef);
+				} catch (Exception ex) {
+					Assert.IsInstanceOfType (exceptionType, ex);
+				}
+			} else {
+				await repo2.CreateBranchAsync ("testBranch2", trackSource, trackRef);
+				Assert.True ((await repo2.GetBranchesAsync ()).Any (b => b.FriendlyName == "testBranch2" && b.TrackedBranch.FriendlyName == trackSource));
 			}
+			repo2.Dispose ();
 		}
 
-		public void CanSetBranchTrackRef (string trackSource, string trackRef)
+		public async Task CanSetBranchTrackRef (string trackSource, string trackRef)
 		{
+			var monitor = new ProgressMonitor ();
 			var repo2 = (GitRepository)Repo;
-			AddFile ("init", "init", true, true);
+			await AddFileAsync ("init", "init", true, true);
 			repo2.Push (new ProgressMonitor (), "origin", "master");
 
-			repo2.SetBranchTrackRef ("testBranch", "origin/master", "refs/remotes/origin/master");
-			Assert.True (repo2.GetBranches ().Any (
+			await repo2.SetBranchTrackRefAsync ("testBranch", "origin/master", "refs/remotes/origin/master");
+			var branches = await repo2.GetBranchesAsync ();
+			Assert.True (branches.Any (
 				b => b.FriendlyName == "testBranch" &&
-				b.TrackedBranch == repo2.GetBranches ().Single (rb => rb.FriendlyName == "origin/master")
+				b.TrackedBranch == branches.Single (rb => rb.FriendlyName == "origin/master")
 			));
 
-			repo2.SetBranchTrackRef ("testBranch", null, null);
-			Assert.True (repo2.GetBranches ().Any (
+			await repo2.SetBranchTrackRefAsync ("testBranch", null, null);
+			Assert.True ((await repo2.GetBranchesAsync ()).Any (
 				b => b.FriendlyName == "testBranch" &&
 				b.TrackedBranch == null)
 			);
@@ -492,45 +641,74 @@ namespace MonoDevelop.VersionControl.Git.Tests
 		// teests bug #30415
 		[TestCase(false, false)]
 		[TestCase(true, false)]
-		public void BlameDiffWithNotCommitedItem (bool toVcs, bool commit)
+		public async Task BlameDiffWithNotCommitedItem (bool toVcs, bool commit)
 		{
 			string added = LocalPath.Combine ("init");
 
-			AddFile ("init", "init", toVcs, commit);
+			await AddFileAsync ("init", "init", toVcs, commit);
 
-			Assert.AreEqual (string.Empty, Repo.GetBaseText (added));
-			var revisions = Repo.GetAnnotations (added, null).Select (a => a.Revision);
+			Assert.AreEqual (string.Empty, await Repo.GetBaseTextAsync (added));
+			var revisions = (await Repo.GetAnnotationsAsync (added, null)).Select (a => a.Revision);
 			foreach (var rev in revisions)
 				Assert.AreEqual (GettextCatalog.GetString ("working copy"), rev);
 		}
 
 		[Test]
-		public void TestGitRebaseCommitOrdering ()
+		public async Task TestGitRebaseCommitOrdering ()
 		{
+			var monitor = new ProgressMonitor ();
 			var gitRepo = (GitRepository)Repo;
 
-			AddFile ("init", "init", toVcs: true, commit: true);
+			await AddFileAsync ("init", "init", toVcs: true, commit: true);
 
 			// Create a branch from initial commit.
-			gitRepo.CreateBranch ("test", null, null);
+			await gitRepo.CreateBranchAsync ("test", null, null);
 
 			// Create two commits in master.
-			AddFile ("init2", "init", toVcs: true, commit: true);
-			AddFile ("init3", "init", toVcs: true, commit: true);
+			await AddFileAsync ("init2", "init", toVcs: true, commit: true);
+			await AddFileAsync ("init3", "init", toVcs: true, commit: true);
 
 			// Create two commits in test.
-			gitRepo.SwitchToBranch (new ProgressMonitor (), "test");
-			AddFile ("init4", "init", toVcs: true, commit: true);
-			AddFile ("init5", "init", toVcs: true, commit: true);
+			await gitRepo.SwitchToBranchAsync (monitor, "test");
+			await AddFileAsync ("init4", "init", toVcs: true, commit: true);
+			await AddFileAsync ("init5", "init", toVcs: true, commit: true);
 
-			gitRepo.Rebase ("master", GitUpdateOptions.None, new ProgressMonitor ());
+			await gitRepo.RebaseAsync ("master", GitUpdateOptions.None, monitor);
 
 			// Commits come in reverse (recent to old).
-			var history = gitRepo.GetHistory (LocalPath, null).Reverse ().ToArray ();
+			var history = (await gitRepo.GetHistoryAsync (LocalPath, null)).Reverse ().ToArray ();
 			Assert.AreEqual (5, history.Length);
 			for (int i = 0; i < 5; ++i) {
 				Assert.AreEqual (string.Format ("Commit #{0}\n", i), history [i].Message);
 			}
+		}
+
+		// If this starts passing, either the git backend was fixed or the repository has changed
+		// a submodule whose loose object cannot be found.
+		[Test]
+		[Ignore("Fixed in another PR.")]
+		public async Task TestGitRecursiveCloneFailsAndDoesntCrash ()
+		{
+			var toCheckout = new GitRepository {
+				Url = "git://github.com/xamarin/xamarin-android.git",
+			};
+			var monitor = new ProgressMonitor ();
+
+			var directory = FileService.CreateTempDirectory ();
+			try {
+				await toCheckout.CheckoutAsync (directory, true, monitor);
+			} catch (Exception e) {
+				var exception = e.InnerException;
+				// libgit2 < 0.26 will throw NotFoundException (result -3)
+				// libgit2 >= 0.26 will throw generic LibGit2SharpException (result -1), assert the expected message
+				Assert.That (exception, Is.InstanceOf<LibGit2Sharp.NotFoundException> ().Or.InstanceOf<LibGit2Sharp.NameConflictException> ().Or.Message.EqualTo ("reference 'refs/heads/master' not found"));
+				return;
+			} finally {
+				toCheckout.Dispose ();
+				Directory.Delete (directory, true);
+			}
+
+			Assert.Fail ("Repository is not reporting loose object cannot be found. Consider removing test.");
 		}
 	}
 }

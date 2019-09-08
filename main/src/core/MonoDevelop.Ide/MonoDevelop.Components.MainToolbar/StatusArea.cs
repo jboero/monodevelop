@@ -1,4 +1,4 @@
-//
+﻿//
 // StatusArea.cs
 //
 // Author:
@@ -39,10 +39,11 @@ using StockIcons = MonoDevelop.Ide.Gui.Stock;
 using Xwt.Motion;
 using MonoDevelop.Ide.Fonts;
 using System.Threading;
+using System.Linq;
 
 namespace MonoDevelop.Components.MainToolbar
 {
-	class StatusArea : EventBox, StatusBar, Xwt.Motion.IAnimatable
+	class StatusArea : EventBox, ITestableStatusBar, Xwt.Motion.IAnimatable
 	{
 		struct Message
 		{
@@ -318,7 +319,7 @@ namespace MonoDevelop.Components.MainToolbar
 			TaskEventHandler updateHandler = delegate {
 				int ec=0, wc=0;
 
-				foreach (TaskListEntry t in TaskService.Errors) {
+				foreach (TaskListEntry t in IdeServices.TaskService.Errors) {
 					if (t.Severity == TaskSeverity.Error)
 						ec++;
 					else if (t.Severity == TaskSeverity.Warning)
@@ -326,7 +327,7 @@ namespace MonoDevelop.Components.MainToolbar
 				}
 
 
-				using (var font = FontService.SansFont.CopyModified (MonoDevelop.Ide.Gui.Styles.FontScale11)) {
+				using (var font = IdeServices.FontService.SansFont.CopyModified (MonoDevelop.Ide.Gui.Styles.FontScale11)) {
 					errors.Visible = ec > 0;
 					errors.ModifyFont (font);
 					errors.Text = ec.ToString ();
@@ -345,15 +346,15 @@ namespace MonoDevelop.Components.MainToolbar
 
 			updateHandler (null, null);
 
-			TaskService.Errors.TasksAdded += updateHandler;
-			TaskService.Errors.TasksRemoved += updateHandler;
+			IdeServices.TaskService.Errors.TasksAdded += updateHandler;
+			IdeServices.TaskService.Errors.TasksRemoved += updateHandler;
 
 			currentApplicationName = BrandingService.ApplicationLongName;
 			BrandingService.ApplicationNameChanged += ApplicationNameChanged;
 			
 			box.Destroyed += delegate {
-				TaskService.Errors.TasksAdded -= updateHandler;
-				TaskService.Errors.TasksRemoved -= updateHandler;
+				IdeServices.TaskService.Errors.TasksAdded -= updateHandler;
+				IdeServices.TaskService.Errors.TasksRemoved -= updateHandler;
 				BrandingService.ApplicationNameChanged -= ApplicationNameChanged;
 			};
 
@@ -412,17 +413,21 @@ namespace MonoDevelop.Components.MainToolbar
 
 		#region StatusBar implementation
 
+		List<StatusIcon> icons = new List<StatusIcon> ();
+
 		public StatusBarIcon ShowStatusIcon (Xwt.Drawing.Image pixbuf)
 		{
 			Runtime.AssertMainThread ();
 			StatusIcon icon = new StatusIcon (this, pixbuf);
 			statusIconBox.PackEnd (icon.box);
 			statusIconBox.ShowAll ();
+			icons.Add (icon);
 			return icon;
 		}
 
 		void HideStatusIcon (StatusIcon icon)
 		{
+			icons.Remove (icon);
 			statusIconBox.Remove (icon.EventBox);
 			if (statusIconBox.Children.Length == 0)
 				statusIconBox.Hide ();
@@ -495,7 +500,7 @@ namespace MonoDevelop.Components.MainToolbar
 					if ((e.Event.State & Gdk.ModifierType.Mod2Mask) != 0)
 						m |= Xwt.ModifierKeys.Command;
 
-					Clicked (o, new StatusBarIconClickedEventArgs {
+					Clicked?.Invoke (o, new StatusBarIconClickedEventArgs {
 						Button = (Xwt.PointerButton)e.Event.Button,
 						Modifiers = m,
 					});
@@ -539,7 +544,7 @@ namespace MonoDevelop.Components.MainToolbar
 
 				if (!string.IsNullOrEmpty (tip)) {
 					HideTooltip ();
-					tooltipWindow = new TooltipPopoverWindow ();
+					tooltipWindow = TooltipPopoverWindow.Create ();
 					tooltipWindow.ShowArrow = true;
 					tooltipWindow.Text = tip;
 					tooltipWindow.ShowPopup (box, PopupPosition.Top);
@@ -582,6 +587,16 @@ namespace MonoDevelop.Components.MainToolbar
 					} else if (!string.IsNullOrEmpty (tip) && mouseOver)
 						ShowTooltip ();
 				}
+			}
+
+			public string Title {
+				get;
+				set;
+			}
+
+			public string Help {
+				get;
+				set;
 			}
 
 			public EventBox EventBox {
@@ -877,6 +892,9 @@ namespace MonoDevelop.Components.MainToolbar
 		{
 		}
 		#endregion
+
+		string ITestableStatusBar.CurrentText => messageQueue.Count > 0 ? "" : renderArg.CurrentText;
+		string [] ITestableStatusBar.CurrentIcons => icons.Select (x => x.ToolTip).ToArray ();
 	}
 
 	class StatusAreaSeparator: HBox

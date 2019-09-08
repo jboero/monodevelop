@@ -42,23 +42,23 @@ namespace MonoDevelop.Components.Mac
 	{
 		static readonly string servicesID = "MonoDevelop.MacIntegration.MacIntegrationCommands.Services";
 
-		EventHandler CloseHandler;
-
 		public MDMenu (CommandManager manager, CommandEntrySet ces, CommandSource commandSource, object initialCommandTarget) : this (manager, ces, commandSource, initialCommandTarget, null)
 		{
 		}
 
 		public MDMenu (CommandManager manager, CommandEntrySet ces, CommandSource commandSource, object initialCommandTarget, EventHandler closeHandler)
 		{
-			CloseHandler = closeHandler;
-			this.WeakDelegate = this;
+			Delegate = new MenuDelegate (closeHandler);
 
 			AutoEnablesItems = false;
 
-			Title = (ces.Name ?? "").Replace ("_", "");
+			var label = ces.Name ?? "";
+			Title = ContextMenuItem.SanitizeMnemonics (label);
 			foreach (CommandEntry ce in ces) {
 				if (ce.CommandId == Command.Separator) {
 					AddItem (NSMenuItem.SeparatorItem);
+					if (!string.IsNullOrEmpty (ce.OverrideLabel))
+						AddItem (new MDMenuHeaderItem (ce));
 					continue;
 				}
 
@@ -79,7 +79,7 @@ namespace MonoDevelop.Components.Mac
 					continue;
 				}
 
-				Command cmd = manager.GetCommand (ce.CommandId);
+				Command cmd = ce.GetCommand (manager);
 				if (cmd == null) {
 					LoggingService.LogError ("MacMenu: '{0}' maps to null command", ce.CommandId);
 					continue;
@@ -101,25 +101,30 @@ namespace MonoDevelop.Components.Mac
 		}
 
 		// http://lists.apple.com/archives/cocoa-dev/2008/Apr/msg01696.html
-		void FlashMenu ()
+		NSMenuItem blink;
+		void FlashMenu (MDMenuItem item)
 		{
 			var f35 = ((char)0xF726).ToString ();
-			var blink = new NSMenuItem ("* blink *") {
+			if (blink != null) {
+				RemoveItem(blink);
+			}
+			blink = new NSMenuItem(item.CommandEntry.GetCommand(item.Manager).DisplayName) {
 				KeyEquivalent = f35,
 			};
+
+			AddItem(blink);
+
 			var f35Event = NSEvent.KeyEvent (
 				NSEventType.KeyDown, CGPoint.Empty, NSEventModifierMask.CommandKeyMask, 0, 0,
 				NSGraphicsContext.CurrentContext, f35, f35, false, 0);
-			AddItem (blink);
 			PerformKeyEquivalent (f35Event);
-			RemoveItem (blink);
 		}
 
 		public bool FlashIfContainsCommand (object command)
 		{
 			foreach (var item in ItemArray ().OfType<MDMenuItem> ()) {
 				if (item.CommandEntry.CommandId == command) {
-					FlashMenu ();
+					FlashMenu (item);
 					return true;
 				}
 				var submenu = item.Submenu as MDMenu;
@@ -146,36 +151,34 @@ namespace MonoDevelop.Components.Mac
 
 				var mdItem = item as IUpdatableMenuItem;
 				if (mdItem != null) {
-					mdItem.Update (this, ref lastSeparator, ref i);
+					mdItem.Update (this, ref i);
 					continue;
 				}
 
 				//hide unknown builtins
 				item.Hidden = true;
 			}
+			UpdateSeparators ();
 		}
 
-		[Export ("menuNeedsUpdate:")]
-		void MenuNeedsUpdate (NSMenu menu)
+		public void UpdateSeparators ()
 		{
-			Debug.Assert (menu == this);
+			bool previousWasSeparator = true;
+			NSMenuItem lastSeparator = null;
 
-			// MacOS calls this for each menu when it's about to open, but also for every menu on every keystroke.
-			// We only want to do the update when the menu's about to open, since it's expensive. Checking whether
-			// NSMenuProperty.Image needs to be updated is the only way to distinguish between these cases.
-			//
-			// http://www.cocoabuilder.com/archive/cocoa/285859-reason-for-menuneedsupdate-notification.html
-			//
-			if (PropertiesToUpdate ().HasFlag (NSMenuProperty.Image))
-				UpdateCommands ();
-		}
+			for (int i = 0; i < Count; i++) {
+				var item = this.ItemAt (i);
 
-		[Export ("menuDidClose:")]
-		void MenuDidClose (NSMenu menu)
-		{
-			if (CloseHandler != null) {
-				CloseHandler (this, null);
+				if (item.IsSeparatorItem) {
+					item.Hidden = previousWasSeparator;
+					previousWasSeparator = true;
+					lastSeparator = item;
+				} else if (!item.Hidden) {
+					previousWasSeparator = false;
+				}
 			}
+			if (previousWasSeparator && lastSeparator != null)
+				lastSeparator.Hidden = true;
 		}
 
 		public static void ShowLastSeparator (ref NSMenuItem lastSeparator)
@@ -185,11 +188,74 @@ namespace MonoDevelop.Components.Mac
 				lastSeparator = null;
 			}
 		}
+
+		class MenuDelegate : NSMenuDelegate
+		{
+			EventHandler CloseHandler;
+
+			public MenuDelegate (EventHandler closeHandler)
+			{
+				CloseHandler = closeHandler;
+			}
+
+			public override void MenuWillOpen (NSMenu menu)
+			{
+				Ide.IdeApp.DisableIdleActions ();
+				StartBumpingGtkLoop ();
+			}
+
+			public override void MenuDidClose (NSMenu menu)
+			{
+				Ide.IdeApp.EnableIdleActions ();
+				EndBumpingGtkLoop ();
+				CloseHandler?.Invoke (this, null);
+				CloseHandler = null;
+			}
+
+			public override void NeedsUpdate (NSMenu menu)
+			{
+				// MacOS calls this for each menu when it's about to open, but also for every menu on every keystroke.
+				// We only want to do the update when the menu's about to open, since it's expensive. Checking whether
+				// NSMenuProperty.Image needs to be updated is the only way to distinguish between these cases.
+				//
+				// http://www.cocoabuilder.com/archive/cocoa/285859-reason-for-menuneedsupdate-notification.html
+				//
+				if (menu is MDMenu mdMenu && menu.PropertiesToUpdate ().HasFlag (NSMenuProperty.Image))
+					mdMenu.UpdateCommands ();
+			}
+
+			public override void MenuWillHighlightItem (NSMenu menu, NSMenuItem item)
+			{
+			}
+
+			static int bumperCount;
+			static NSTimer bumperTimer;
+
+			static void StartBumpingGtkLoop ()
+			{
+				if (bumperCount++ == 0) {
+					var runLoop = NSRunLoop.Current;
+					bumperTimer = NSTimer.CreateRepeatingTimer (0.1d, delegate {
+						Gtk.Application.RunIteration (false);
+					});
+					runLoop.AddTimer (bumperTimer, NSRunLoop.NSRunLoopCommonModes);
+				}
+			}
+
+			static void EndBumpingGtkLoop ()
+			{
+				if (--bumperCount == 0) {
+					bumperTimer.Invalidate ();
+					bumperTimer.Dispose ();
+					bumperTimer = null;
+				}
+			}
+		}
 	}
 
 	interface IUpdatableMenuItem
 	{
-		void Update (MDMenu parent, ref NSMenuItem lastSeparator, ref int index);
+		void Update (MDMenu parent, ref int index);
 	}
 }
 #endif

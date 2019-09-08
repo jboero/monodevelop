@@ -24,7 +24,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
+using System; 
 using System.Linq;
 using System.Threading;
 using System.Text;
@@ -35,6 +35,9 @@ using Gtk;
 using System.Collections.Generic;
 using MonoDevelop.Ide.Gui.Content;
 using System.Threading.Tasks;
+using MonoDevelop.Components.AtkCocoaHelper;
+using Microsoft.VisualStudio.Text.Editor;
+using Microsoft.VisualStudio.Text;
 
 namespace MonoDevelop.Ide.FindInFiles
 {
@@ -204,9 +207,9 @@ namespace MonoDevelop.Ide.FindInFiles
 				toggleFindInFiles.Toggle ();
 
 			if (IdeApp.Workbench.ActiveDocument != null) {
-				var view = IdeApp.Workbench.ActiveDocument.Editor;
+				var view = IdeApp.Workbench.ActiveDocument.GetContent<ITextView>(true);
 				if (view != null) {
-					string selectedText = FormatPatternToSelectionOption (view.SelectedText, properties.Get ("RegexSearch", false));
+					string selectedText = FormatPatternToSelectionOption (view.Selection.SelectedSpans.FirstOrDefault ().GetText(), properties.Get ("RegexSearch", false));
 					if (!string.IsNullOrEmpty (selectedText)) {
 						if (selectedText.Any (c => c == '\n' || c == '\r')) {
 //							comboboxScope.Active = ScopeSelection; 
@@ -235,8 +238,45 @@ namespace MonoDevelop.Ide.FindInFiles
 				UpdateSensitivity ();
 				return true;
 			});
+			SetupAccessibility ();
 		}
-		
+
+		void SetupAccessibility ()
+		{
+			comboboxentryFind.SetCommonAccessibilityAttributes ("FindInFilesDialog.comboboxentryFind",
+												labelFind,
+												GettextCatalog.GetString ("Enter string to find"));
+
+			comboboxScope.SetCommonAccessibilityAttributes ("FindInFilesDialog.comboboxScope",
+				labelScope,
+				GettextCatalog.GetString ("Select where to search"));
+		}
+
+		void SetupAccessibilityForReplace ()
+		{
+			comboboxentryReplace.SetCommonAccessibilityAttributes ("FindInFilesDialog.comboboxentryReplace",
+											labelReplace,
+											GettextCatalog.GetString ("Enter string to replace"));
+		}
+
+		void SetupAccessibilityForPath ()
+		{
+			comboboxentryPath.SetCommonAccessibilityAttributes ("FindInFilesDialog.comboboxentryPath",
+												labelPath,
+												GettextCatalog.GetString ("Enter the Path"));
+
+			buttonBrowsePaths.SetCommonAccessibilityAttributes ("FindInFilesDialog.buttonBrowsePaths",
+				GettextCatalog.GetString ("Browse Path"),
+				GettextCatalog.GetString ("Select a folder"));
+		}
+
+		void SetupAccessibilityForSearch ()
+		{
+			searchentryFileMask.SetEntryAccessibilityAttributes ("FindInFilesDialog.searchentryFileMask",
+				labelFileMask.Text,
+				GettextCatalog.GetString ("Enter the file mask"));
+		}
+
 		static void TableAddRow (Table table, uint row, Widget column1, Widget column2)
 		{
 			uint rows = table.NRows;
@@ -326,7 +366,8 @@ namespace MonoDevelop.Ide.FindInFiles
 			LoadHistory ("MonoDevelop.FindReplaceDialogs.ReplaceHistory", comboboxentryReplace);
 			comboboxentryReplace.Show ();
 			labelReplace.Show ();
-			
+			SetupAccessibilityForReplace ();
+
 			TableAddRow (tableFindAndReplace, 1, labelReplace, comboboxentryReplace);
 			
 			buttonReplace = new Button () {
@@ -396,8 +437,8 @@ namespace MonoDevelop.Ide.FindInFiles
 			hboxPath.PackStart (comboboxentryPath);
 			
 			labelPath.MnemonicWidget = comboboxentryPath;
-			
-			buttonBrowsePaths = new Button { Label = "..." };
+
+			buttonBrowsePaths = new Button { Label = "…" };
 			buttonBrowsePaths.Clicked += ButtonBrowsePathsClicked;
 			buttonBrowsePaths.Show ();
 			hboxPath.PackStart (buttonBrowsePaths, false, false, 0);
@@ -417,6 +458,8 @@ namespace MonoDevelop.Ide.FindInFiles
 			checkbuttonRecursively.Show ();
 			
 			TableAddRow (tableFindAndReplace, row, null, checkbuttonRecursively);
+
+			SetupAccessibilityForPath ();
 		}
 		
 		void HideDirectoryPathUI ()
@@ -463,25 +506,14 @@ namespace MonoDevelop.Ide.FindInFiles
 				Visible = true,
 				Ready = true,
 			};
-			
-			var checkMenuItem = searchentryFileMask.AddFilterOption (0, GettextCatalog.GetString ("Include binary files"));
-			checkMenuItem.DrawAsRadio = false;
-			checkMenuItem.Active = properties.Get ("IncludeBinaryFiles", false);
-			checkMenuItem.Toggled += delegate {
-				properties.Set ("IncludeBinaryFiles", checkMenuItem.Active);
-			};
-			
-			var checkMenuItem1 = searchentryFileMask.AddFilterOption (1, GettextCatalog.GetString ("Include hidden files and directories"));
-			checkMenuItem1.DrawAsRadio = false;
-			checkMenuItem1.Active = properties.Get ("IncludeHiddenFiles", false);
-			checkMenuItem1.Toggled += delegate {
-				properties.Set ("IncludeHiddenFiles", checkMenuItem1.Active);
-			};
+
 			
 			searchentryFileMask.Query = properties.Get ("MonoDevelop.FindReplaceDialogs.FileMask", "");
 			
 			searchentryFileMask.Entry.ActivatesDefault = true;
 			searchentryFileMask.Show ();
+
+			SetupAccessibilityForSearch ();
 			
 			TableAddRow (tableFindAndReplace, row, labelFileMask, searchentryFileMask);
 		}
@@ -754,15 +786,12 @@ namespace MonoDevelop.Ide.FindInFiles
 					return null;
 				}
 				
-				scope = new DirectoryScope (comboboxentryPath.Entry.Text, checkbuttonRecursively.Active) {
-					IncludeHiddenFiles = properties.Get ("IncludeHiddenFiles", false)
-				};
+				scope = new DirectoryScope (comboboxentryPath.Entry.Text, checkbuttonRecursively.Active);
 				break;
 			default:
 				throw new ApplicationException ("Unknown scope:" + comboboxScope.Active);
 			}
 			
-			scope.IncludeBinaryFiles = properties.Get ("IncludeBinaryFiles", false);
 			return scope;
 		}
 
@@ -841,14 +870,14 @@ namespace MonoDevelop.Ide.FindInFiles
 					searchMonitor.PathMode = scope.PathMode;
 
 					if (UpdateResultPad != null) {
-						Application.Invoke (delegate {
+						Application.Invoke ((o, args) => {
 							UpdateResultPad (searchMonitor.ResultPad);
 						});
 					}
 
 					searchMonitor.ReportStatus (scope.GetDescription (options, pattern, null));
 					if (UpdateStopButton != null) {
-						Application.Invoke (delegate {
+						Application.Invoke ((o, args) => {
 							UpdateStopButton ();
 						});
 					}
@@ -884,7 +913,7 @@ namespace MonoDevelop.Ide.FindInFiles
 					searchMonitor.Log.WriteLine (GettextCatalog.GetString ("Search time: {0} seconds."), (DateTime.Now - timer).TotalSeconds);
 				}
 				if (UpdateStopButton != null) {
-					Application.Invoke (delegate {
+					Application.Invoke ((o, args) => {
 						UpdateStopButton ();
 					});
 				}

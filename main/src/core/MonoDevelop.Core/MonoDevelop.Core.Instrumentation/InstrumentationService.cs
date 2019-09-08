@@ -41,30 +41,23 @@ using System.Linq;
 using System.Runtime.Serialization.Formatters.Binary;
 using MonoDevelop.Core.Execution;
 using Mono.Addins;
+using Newtonsoft.Json;
 
 namespace MonoDevelop.Core.Instrumentation
 {
 	public static class InstrumentationService
 	{
-		static Dictionary <string, Counter> counters;
-		static Dictionary <string, Counter> countersByID;
-		static List<CounterCategory> categories;
+		static readonly Dictionary <string, Counter> counters = new Dictionary<string, Counter> ();
+		static readonly Dictionary <string, Counter> countersByID = new Dictionary<string, Counter> ();
+		static readonly List<CounterCategory> categories = new List<CounterCategory> ();
+		static readonly List<InstrumentationConsumer> handlers = new List<InstrumentationConsumer> ();
 		static bool enabled = true;
-		static DateTime startTime;
+		static DateTime startTime = DateTime.Now;
 		static int publicPort = -1;
 		static Thread autoSaveThread;
 		static bool stopping;
 		static int autoSaveInterval;
-		static List<InstrumentationConsumer> handlers = new List<InstrumentationConsumer> ();
 		static bool handlersLoaded;
-		
-		static InstrumentationService ()
-		{
-			counters = new Dictionary <string, Counter> ();
-			countersByID = new Dictionary <string, Counter> ();
-			categories = new List<CounterCategory> ();
-			startTime = DateTime.Now;
-		}
 		
 		internal static void InitializeHandlers ()
 		{
@@ -173,37 +166,59 @@ namespace MonoDevelop.Core.Instrumentation
 		{
 			while (!stopping) {
 				Thread.Sleep (interval);
-				try {
-					lock (counters) {
-						InstrumentationServiceData data = new InstrumentationServiceData ();
-						data.EndTime = DateTime.Now;
-						data.StartTime = StartTime;
-						data.Counters = counters;
-						data.Categories = categories;
-						FilePath path = file + ".tmp";
-						using (Stream fs = File.OpenWrite (path)) {
-							BinaryFormatter f = new BinaryFormatter ();
-							f.Serialize (fs, data);
-						}
-						FileService.SystemRename (path, file);
-					}
-				} catch (Exception ex) {
-					LoggingService.LogError ("Instrumentation service data could not be saved", ex);
+				lock (counters) {
+					Save (file, (fs, data) => new BinaryFormatter ().Serialize (fs, data));
 				}
 			}
 			autoSaveThread = null;
+		}
+
+		internal static void SaveJson (string filePath)
+		{
+			Save (filePath, (fs, data) => {
+				using var writer = new StreamWriter (fs);
+				var serializer = JsonSerializer.Create (new JsonSerializerSettings {
+					ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+					DefaultValueHandling = DefaultValueHandling.Ignore,
+					NullValueHandling = NullValueHandling.Ignore,
+				});
+				serializer.Serialize (writer, data);
+			});
+		}
+
+		static void Save (string filePath, Action<Stream, IInstrumentationService> serializer)
+		{
+			try {
+				FilePath tempPath = filePath + ".tmp";
+				using (Stream fs = File.OpenWrite (tempPath)) {
+					serializer (fs, GetServiceData ());
+				}
+				FileService.SystemRename (tempPath, filePath);
+			} catch (Exception ex) {
+				LoggingService.LogError ("Instrumentation service data could not be saved", ex);
+			}
 		}
 		
 		public static IInstrumentationService GetRemoteService (string hostAndPort)
 		{
 			return (IInstrumentationService) Activator.GetObject (typeof(IInstrumentationService), "tcp://" + hostAndPort + "/InstrumentationService");
 		}
+
+		public static IInstrumentationService GetServiceData ()
+		{
+			return new InstrumentationServiceData {
+				EndTime = DateTime.Now,
+				StartTime = StartTime,
+				Counters = counters,
+				Categories = categories
+			};
+		}
 		
 		public static IInstrumentationService LoadServiceDataFromFile (string file)
 		{
 			using (Stream s = File.OpenRead (file)) {
-				BinaryFormatter f = new BinaryFormatter ();
-				IInstrumentationService data = f.Deserialize (s) as IInstrumentationService;
+				var f = new BinaryFormatter ();
+				var data = f.Deserialize (s) as IInstrumentationService;
 				if (data == null)
 					throw new Exception ("Invalid instrumentation service data file");
 				return data;
@@ -244,7 +259,17 @@ namespace MonoDevelop.Core.Instrumentation
 			return CreateCounter (name, category, logMessages, id, false);
 		}
 
+		public static Counter<T> CreateCounter<T> (string name, string category = null, bool logMessages = false, string id = null) where T : CounterMetadata, new()
+		{
+			return (Counter<T>) CreateCounter<T> (name, category, logMessages, id, false);
+		}
+
 		static Counter CreateCounter (string name, string category, bool logMessages, string id, bool isTimer)
+		{
+			return CreateCounter<CounterMetadata> (name, category, logMessages, id, isTimer);
+		}
+
+		static Counter CreateCounter<T> (string name, string category, bool logMessages, string id, bool isTimer) where T:CounterMetadata, new()
 		{
 			if (name == null)
 				throw new ArgumentNullException ("name", "Counters must have a Name");
@@ -261,7 +286,7 @@ namespace MonoDevelop.Core.Instrumentation
 					categories.Add (cat);
 				}
 				
-				Counter c = isTimer ? new TimerCounter (name, cat) : new Counter (name, cat);
+				var c = isTimer ? new TimerCounter<T> (name, cat) : (Counter) new Counter<T> (name, cat);
 				c.Id = id;
 				c.LogMessages = logMessages;
 				cat.AddCounter (c);
@@ -320,7 +345,14 @@ namespace MonoDevelop.Core.Instrumentation
 		public static TimerCounter CreateTimerCounter (string name, string category = null, double minSeconds = 0, bool logMessages = false, string id = null)
 		{
 			TimerCounter c = (TimerCounter) CreateCounter (name, category, logMessages, id, true);
-			c.DisplayMode = CounterDisplayMode.Line;
+			c.LogMessages = logMessages;
+			c.MinSeconds = minSeconds;
+			return c;
+		}
+		
+		public static TimerCounter<T> CreateTimerCounter<T> (string name, string category = null, double minSeconds = 0, bool logMessages = false, string id = null) where T:CounterMetadata, new()
+		{
+			var c = (TimerCounter<T>) CreateCounter<T> (name, category, logMessages, id, true);
 			c.LogMessages = logMessages;
 			c.MinSeconds = minSeconds;
 			return c;
@@ -336,12 +368,9 @@ namespace MonoDevelop.Core.Instrumentation
 		public static Counter GetCounter (string name)
 		{
 			lock (counters) {
-				Counter c;
-				if (counters.TryGetValue (name, out c))
+				if (counters.TryGetValue (name, out var c))
 					return c;
-				c = new Counter (name, null);
-				counters [name] = c;
-				return c;
+				return counters[name] = new Counter (name, null);
 			}
 		}
 
@@ -507,12 +536,9 @@ namespace MonoDevelop.Core.Instrumentation
 		
 		public Counter GetCounter (string name)
 		{
-			Counter c;
-			if (Counters.TryGetValue (name, out c))
+			if (Counters.TryGetValue (name, out Counter c))
 				return c;
-			c = new Counter (name, null);
-			Counters [name] = c;
-			return c;
+			return Counters [name] = new Counter (name, null);
 		}
 		
 		public CounterCategory GetCategory (string name)

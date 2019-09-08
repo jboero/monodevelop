@@ -24,11 +24,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using MonoDevelop.Core;
 using NuGet.Common;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
@@ -45,17 +45,19 @@ namespace MonoDevelop.PackageManagement
 		CancellationToken cancellationToken;
 		UpdatedNuGetPackagesInProject updatedPackagesInProject;
 		List<PackageIdentity> updatedPackages = new List<PackageIdentity> ();
+		Action<string, Exception> logError;
 
 		public UpdatedNuGetPackagesProvider (
 			IDotNetProject dotNetProject,
-			IMonoDevelopSolutionManager solutionManager,
+			ISourceRepositoryProvider sourceRepositoryProvider,
 			NuGetProject project,
+			Action<string, Exception> logError,
 			CancellationToken cancellationToken = default(CancellationToken))
 		{
 			this.dotNetProject = dotNetProject;
 			this.project = project;
+			this.logError = logError;
 
-			var sourceRepositoryProvider = solutionManager.CreateSourceRepositoryProvider ();
 			this.sourceRepositories = sourceRepositoryProvider.GetRepositories ().ToList ();
 
 			this.cancellationToken = cancellationToken;
@@ -101,8 +103,7 @@ namespace MonoDevelop.PackageManagement
 					.Where (task => task.Exception == null)
 					.Select (task => task.Result)
 					.Where (package => package != null)
-					.OrderByDescending (package => package.Version)
-					.FirstOrDefault ();
+					.MaxValueOrDefault (x => x.Version);
 
 				if (updatedPackage != null) {
 					updatedPackages.Add (updatedPackage);
@@ -112,33 +113,41 @@ namespace MonoDevelop.PackageManagement
 
 		async Task<PackageIdentity> GetUpdates (SourceRepository sourceRepository, PackageReference packageReference)
 		{
+			if (!packageReference.PackageIdentity.HasVersion)
+				return null;
+
 			var metadataResource = await sourceRepository.GetResourceAsync<PackageMetadataResource> (cancellationToken);
 
 			if (metadataResource == null)
 				return null;
 
-			var packages = await metadataResource.GetMetadataAsync (
-				packageReference.PackageIdentity.Id,
-				includePrerelease: packageReference.PackageIdentity.Version.IsPrerelease,
-				includeUnlisted: false,
-				log: NullLogger.Instance,
-				token: cancellationToken);
+			using (var sourceCacheContext = new SourceCacheContext ()) {
+				var packages = await metadataResource.GetMetadataAsync (
+					packageReference.PackageIdentity.Id,
+					includePrerelease: packageReference.PackageIdentity.Version.IsPrerelease,
+					includeUnlisted: false,
+					log: NullLogger.Instance,
+					sourceCacheContext: sourceCacheContext,
+					token: cancellationToken);
 
-			var package = packages
-				.Where (p => IsPackageVersionAllowed (p, packageReference))
-				.OrderByDescending (p => p.Identity.Version).FirstOrDefault ();
-			if (package == null)
+				var package = packages
+					.Where (p => IsPackageVersionAllowed (p, packageReference))
+					.MaxValueOrDefault (x => x.Identity.Version);
+
+				if (package == null)
+					return null;
+
+				if (package.Identity.Version > packageReference.PackageIdentity.Version)
+					return package.Identity;
+
 				return null;
-
-			if (package.Identity.Version > packageReference.PackageIdentity.Version)
-				return package.Identity;
-
-			return null;
+			}
 		}
 
 		void LogError (Task<PackageIdentity> task)
 		{
-			LoggingService.LogError ("Check for updates error.", task.Exception.GetBaseException ());
+			if (!task.Exception.IsOperationCanceledException ())
+				logError ("Check for updates error.", task.Exception.GetBaseException ());
 		}
 
 		bool IsPackageVersionAllowed (IPackageSearchMetadata package, PackageReference packageReference)

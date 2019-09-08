@@ -40,6 +40,10 @@ using MonoDevelop.Ide;
 using MonoDevelop.Components.AutoTest;
 using System.ComponentModel;
 using System.Linq;
+using System.Threading;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Text;
 
 namespace MonoDevelop.Debugger
 {
@@ -67,6 +71,7 @@ namespace MonoDevelop.Debugger
 		TreeStore store;
 		bool needsUpdate;
 		IPadWindow window;
+		Clipboard clipboard;
 
 		enum Columns
 		{
@@ -143,25 +148,56 @@ namespace MonoDevelop.Debugger
 
 			if (!tree.Selection.GetSelected (out selected))
 				return;
-			var process = store.GetValue (selected, (int)Columns.Object) as ProcessInfo;
-			if (process == null)
-				return;//User right-clicked on thread and not process
-			var session = store.GetValue (selected, (int)Columns.Session) as DebuggerSession;
+
 			var context_menu = new ContextMenu ();
-			var continueExecution = new ContextMenuItem (GettextCatalog.GetString ("Resume"));
-			continueExecution.Sensitive = !session.IsRunning;
-			continueExecution.Clicked += delegate {
-				session.Continue ();
-			};
-			context_menu.Items.Add (continueExecution);
-			var pauseExecution = new ContextMenuItem (GettextCatalog.GetString ("Pause"));
-			pauseExecution.Sensitive = session.IsRunning;
-			pauseExecution.Clicked += delegate {
-				session.Stop ();
-			};
-			context_menu.Items.Add (pauseExecution);
+			var copyMenuItem = new ContextMenuItem (GettextCatalog.GetString ("_Copy"));
+			copyMenuItem.Sensitive = true;
+			copyMenuItem.Clicked += CopyExecution_Clicked;
+			context_menu.Items.Add (copyMenuItem);
+
+			var process = store.GetValue (selected, (int)Columns.Object) as ProcessInfo;
+			if (process != null) { //User right-clicked on thread and not process
+				context_menu.Items.Add (new SeparatorContextMenuItem ());
+				var session = store.GetValue (selected, (int)Columns.Session) as DebuggerSession;
+
+				if (session != null) {
+					var continueExecution = new ContextMenuItem (GettextCatalog.GetString ("Resume"));
+					continueExecution.Sensitive = !session.IsRunning;
+					continueExecution.Clicked += delegate {
+						session.Continue ();
+					};
+					context_menu.Items.Add (continueExecution);
+					var pauseExecution = new ContextMenuItem (GettextCatalog.GetString ("Pause"));
+					pauseExecution.Sensitive = session.IsRunning;
+					pauseExecution.Clicked += delegate {
+						session.Stop ();
+					};
+					context_menu.Items.Add (pauseExecution);
+				} 
+			}
 			context_menu.Show (this, evt);
 		}
+
+		void CopyExecution_Clicked (object sender, ContextMenuItemClickedEventArgs e)
+		{
+			TreeIter selected;
+			tree.Selection.GetSelected (out selected);
+
+			var infoObject = tree.Model.GetValue (selected, (int)Columns.Object);
+
+			string bufferText = string.Empty;
+			if (infoObject is ThreadInfo threadInfo)
+				bufferText = $"{threadInfo.Id} {threadInfo.Name} {threadInfo.Location}";
+
+			if (infoObject is ProcessInfo processInfo) 
+				bufferText = $"{processInfo.Id} {processInfo.Name} {processInfo.Description}";
+
+			clipboard = Clipboard.Get (Gdk.Atom.Intern ("CLIPBOARD", false));
+			clipboard.Text = bufferText;
+			clipboard = Clipboard.Get (Gdk.Atom.Intern ("PRIMARY", false));
+			clipboard.Text = bufferText;
+		}
+
 		public override void Dispose ()
 		{
 			base.Dispose ();
@@ -193,8 +229,37 @@ namespace MonoDevelop.Debugger
 				needsUpdate = true;
 		}
 
-		void Update ()
+		List<(DebuggerSession session, ThreadInfo activeThread, List<(ProcessInfo process, ThreadInfo [] threads)> processes)> PreFetchSessionsWithProcessesAndThreads ()
 		{
+			var result = new List<(DebuggerSession, ThreadInfo activeThread, List<(ProcessInfo, ThreadInfo [])>)> ();
+			foreach (var session in DebuggingService.GetSessions ()) {
+				var processList = new List<(ProcessInfo process, ThreadInfo [] threads)> ();
+				result.Add ((session, session.ActiveThread, processList));
+				foreach (var process in session.GetProcesses ()) {
+					processList.Add ((process, process.GetThreads ()));
+				}
+			}
+			return result;
+		}
+
+		CancellationTokenSource cancelUpdate = new CancellationTokenSource ();
+
+		async void Update ()
+		{
+			cancelUpdate.Cancel ();
+			cancelUpdate = new CancellationTokenSource ();
+			var token = cancelUpdate.Token;
+			List<(DebuggerSession session, ThreadInfo activeThread, List<(ProcessInfo process, ThreadInfo [] threads)> processes)> sessions = null;
+			try {
+				sessions = await Task.Run (() => PreFetchSessionsWithProcessesAndThreads ());
+			} catch (Exception ex) {
+				LoggingService.LogInternalError (ex);
+				return;
+			}
+			// Another fetch of all data already in progress, return
+			if (token.IsCancellationRequested)
+				return;
+
 			if (tree.IsRealized)
 				tree.ScrollToPoint (0, 0);
 
@@ -203,26 +268,26 @@ namespace MonoDevelop.Debugger
 			store.Clear ();
 
 			try {
-				if (DebuggingService.GetSessions ().SelectMany (s => s.GetProcesses ()).Count () > 1) {
-					foreach (var session in DebuggingService.GetSessions ()) {
-						foreach (var process in session.GetProcesses ()) {
+				if (sessions.SelectMany (s => s.processes).Count () > 1) {
+					foreach (var sessionWithProcesses in sessions) {
+						foreach (var processWithThreads in sessionWithProcesses.processes) {
 							var iter = store.AppendValues (
-								session.IsRunning ? "md-continue-debug" : "md-pause-debug",
-								process.Id.ToString (),
-								process.Name,
-								process,
-								session == DebuggingService.DebuggerSession ? (int)Pango.Weight.Bold : (int)Pango.Weight.Normal,
+								sessionWithProcesses.session.IsRunning ? "md-continue-debug" : "md-pause-debug",
+								processWithThreads.process.Id.ToString (),
+								processWithThreads.process.Name,
+								processWithThreads.process,
+								sessionWithProcesses.session == DebuggingService.DebuggerSession ? (int)Pango.Weight.Bold : (int)Pango.Weight.Normal,
 								"",
-								session);
-							if (session.IsRunning)
+								sessionWithProcesses);
+							if (sessionWithProcesses.session.IsRunning)
 								continue;
-							AppendThreads (iter, process, session);
+							AppendThreads (iter, processWithThreads.threads, sessionWithProcesses.session, sessionWithProcesses.activeThread);
 						}
 					}
 				} else {
 					if (!DebuggingService.IsPaused)
 						return;
-					AppendThreads (TreeIter.Zero, DebuggingService.DebuggerSession.GetProcesses () [0], DebuggingService.DebuggerSession);
+					AppendThreads (TreeIter.Zero, sessions [0].processes [0].threads, sessions [0].session, sessions [0].activeThread);
 				}
 			} catch (Exception ex) {
 				LoggingService.LogInternalError (ex);
@@ -233,15 +298,12 @@ namespace MonoDevelop.Debugger
 			treeViewState.Load ();
 		}
 
-		void AppendThreads (TreeIter iter, ProcessInfo process, DebuggerSession session)
+		void AppendThreads (TreeIter iter, ThreadInfo [] threads, DebuggerSession session, ThreadInfo activeThread)
 		{
-			var threads = process.GetThreads ();
-
 			Array.Sort (threads, (ThreadInfo t1, ThreadInfo t2) => t1.Id.CompareTo (t2.Id));
 
 			session.FetchFrames (threads);
 
-			var activeThread = session.ActiveThread;
 			foreach (var thread in threads) {
 				var name = thread.Name == null && thread.Id == 1 ? GettextCatalog.GetString ("Main Thread") : thread.Name;
 				var weight = thread == activeThread ? Pango.Weight.Bold : Pango.Weight.Normal;

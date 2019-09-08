@@ -1,4 +1,4 @@
-// 
+﻿// 
 // XmlFormatter.cs
 //  
 // Author:
@@ -44,6 +44,7 @@ namespace MonoDevelop.Xml.Formatting
 			XmlDocument doc;
 			try {
 				doc = new XmlDocument ();
+				doc.XmlResolver = null; // Prevent DTDs from being downloaded.
 				doc.LoadXml (input);
 			} catch (XmlException ex) {
 				// handle xml files without root element (https://bugzilla.xamarin.com/show_bug.cgi?id=4748)
@@ -70,7 +71,7 @@ namespace MonoDevelop.Xml.Formatting
 		{
 			if (policyParent == null)
 				policyParent = PolicyService.DefaultPolicies;
-			var mimeTypeInheritanceChain = DesktopService.GetMimeTypeInheritanceChain (mimeType).ToList ();
+			var mimeTypeInheritanceChain = IdeServices.DesktopService.GetMimeTypeInheritanceChain (mimeType).ToList ();
 			var txtPol = policyParent.Get<TextStylePolicy> (mimeTypeInheritanceChain);
 			var xmlPol = policyParent.Get<XmlFormattingPolicy> (mimeTypeInheritanceChain);
 			return new StringTextSource(FormatXml (txtPol, xmlPol, input.Text));

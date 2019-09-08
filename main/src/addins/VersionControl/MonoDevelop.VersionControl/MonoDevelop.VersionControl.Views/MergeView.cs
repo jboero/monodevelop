@@ -1,4 +1,4 @@
-//
+﻿//
 // MergeView.cs
 //
 // Author:
@@ -25,47 +25,134 @@
 // THE SOFTWARE.
 using MonoDevelop.Components;
 using MonoDevelop.Core;
+using MonoDevelop.Ide.Gui.Documents;
+using System.Linq;
+using MonoDevelop.Ide;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.VersionControl.Views
 {
 	public interface IMergeView
 	{
 	}
-	
-	class MergeView : BaseView, IMergeView
-	{
-		VersionControlDocumentInfo info;
-		MergeWidget widget;
 
-		public override Control Control { 
-			get {
-				if (widget == null) {
-					widget = new MergeWidget ();
-					widget.Load (info);
+	class MergeView : DocumentController, IMergeView
+	{
+		readonly VersionControlDocumentInfo info;
+		FileEventInfo fileEventInfo;
+		MergeWidget widget;
+		MergeWidgetContainer widgetContainer;
+		Gtk.Label NoMergeConflictsLabel;
+
+		public MergeView (VersionControlDocumentInfo info)
+		{
+			this.info = info;
+			fileEventInfo = new FileEventInfo (info.Item.Path.FullPath, info.Item.IsDirectory);
+		}
+
+		protected override Control OnGetViewControl (DocumentViewContent view)
+		{
+			widgetContainer = new MergeWidgetContainer ();
+			NoMergeConflictsLabel = new Gtk.Label () { Text = GettextCatalog.GetString ("No merge conflicts detected.") };
+			RefreshContent ();
+			RefreshMergeEditor ();
+			FileService.FileChanged += FileService_FileChanged;
+			return widgetContainer;
+		}
+
+		void RefreshContent ()
+		{
+			Task.Run (async () => {
+				var item = info?.Item;
+				if (item == null) return false;
+				var isConflicted = (await item.GetVersionInfoAsync ())?.Status.HasFlag (VersionStatus.Conflicted) ?? false;
+				return isConflicted;
+			}).ContinueWith (t => {
+				if (t.Result) {
+					if (widget == null) {
+						widget = new MergeWidget ();
+						widget.Load (info);
+					}
+					if (widgetContainer.Content != widget) {
+						widgetContainer.Content = widget;
+					}
+				} else {
+					if (widgetContainer.Content != NoMergeConflictsLabel) {
+						widgetContainer.Content = NoMergeConflictsLabel;
+					}
 				}
-				
-				return widget;
+			}, Runtime.MainTaskScheduler);
+		}
+
+		void FileService_FileChanged (object sender, FileEventArgs e)
+		{
+			//content is null when is deselected
+			if (widgetContainer.Content == null) {
+				return;
+			}
+
+			//continue only if file server detected some change in this file
+			if (e.All (s => s.FileName.CompareTo (fileEventInfo.FileName) < 0)) {
+				return;
+			}
+
+			//if it is shown we refresh we show the content and refresh the editor (probably this nee
+			info.Start ();
+			RefreshContent ();
+			RefreshMergeEditor ();
+		}
+
+
+		void RefreshMergeEditor ()
+		{
+			if (widgetContainer.Content is MergeWidget) {
+				widget.UpdateLocalText ();
+				var buffer = info.Controller.GetContent<MonoDevelop.Ide.Editor.TextEditor> ();
+				if (buffer != null) {
+					var loc = buffer.CaretLocation;
+					int line = loc.Line < 1 ? 1 : loc.Line;
+					int column = loc.Column < 1 ? 1 : loc.Column;
+					widget.MainEditor.SetCaretTo (line, column);
+				}
 			}
 		}
 
-		public MergeView (VersionControlDocumentInfo info) : base (GettextCatalog.GetString ("Merge"))
+		void ClearContainer () => widgetContainer.Clear ();
+
+		protected override void OnUnfocused () => ClearContainer ();
+
+		protected override void OnDispose ()
 		{
-			this.info = info;
+			if (widgetContainer != null) {
+				ClearContainer ();
+				FileService.FileChanged -= FileService_FileChanged;
+			}
+			base.OnDispose ();
 		}
 
-		protected override void OnSelected ()
+		class MergeWidgetContainer : Gtk.VBox
 		{
-			widget.UpdateLocalText ();
-			widget.info.Start ();
+			Gtk.Widget content;
+			public Gtk.Widget Content {
+				get => content;
+				set {
+					if (content == value) {
+						return;
+					}
+					Clear ();
+					content = value;
+					PackStart (value, true, true, 0);
+					ShowAll ();
+				}
+			}
 
-			var buffer = info.Document.GetContent<MonoDevelop.Ide.Editor.TextEditor> ();
-			if (buffer != null) {
-				var loc = buffer.CaretLocation;
-				int line = loc.Line < 1 ? 1 : loc.Line;
-				int column = loc.Column < 1 ? 1 : loc.Column;
-				widget.MainEditor.SetCaretTo (line, column);
+			public void Clear ()
+			{
+				if (content != null) {
+					Remove (content);
+					content = null;
+				}
 			}
 		}
 	}
 }
-

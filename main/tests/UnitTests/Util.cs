@@ -25,14 +25,12 @@
 //
 //
 
-using System;
 using System.IO;
 using System.Xml;
 using System.Collections;
 using System.Text;
 using MonoDevelop.Core;
 using MonoDevelop.Core.ProgressMonitoring;
-using MonoDevelop.Projects;
 
 namespace UnitTests
 {
@@ -45,8 +43,12 @@ namespace UnitTests
 			get {
 				if (rootDir == null) {
 					rootDir = Path.GetDirectoryName (typeof(Util).Assembly.Location);
-					rootDir = Path.Combine (Path.Combine (rootDir, ".."), "..");
-					rootDir = Path.GetFullPath (Path.Combine (rootDir, "tests"));
+					// If the test suite is running outside the source directory,
+					// the test-projects folder should be a direct subdirectory
+					if (!Directory.Exists (Path.Combine (rootDir, "test-projects"))) {
+						rootDir = Path.Combine (Path.Combine (rootDir, ".."), "..");
+						rootDir = Path.GetFullPath (Path.Combine (rootDir, "tests"));
+					}
 				}
 				return rootDir;
 			}
@@ -135,7 +137,7 @@ namespace UnitTests
 				Directory.CreateDirectory (dst);
 			
 			foreach (string file in Directory.GetFiles (src))
-				File.Copy (file, Path.Combine (dst, Path.GetFileName (file)));
+				File.Copy (file, Path.Combine (dst, Path.GetFileName (file)), overwrite: true);
 			
 			foreach (string dir in Directory.GetDirectories (src))
 				CopyDir (dir, Path.Combine (dst, Path.GetFileName (dir)));
@@ -157,12 +159,12 @@ namespace UnitTests
 				break;
 			case XmlNodeType.Attribute:
 				if (nod.LocalName == "xmlns" && nod.NamespaceURI == "http://www.w3.org/2000/xmlns/") return;
-				sb.Append (" " + nod.NamespaceURI + ":" + nod.LocalName + "='" + nod.Value + "'");
+				sb.Append (" ").Append (nod.NamespaceURI).Append (":").Append (nod.LocalName).Append ("='").Append (nod.Value).Append ("'");
 				break;
 
 			case XmlNodeType.Element:
 				XmlElement elem = (XmlElement) nod;
-				sb.Append ("<" + elem.NamespaceURI + ":" + elem.LocalName);
+				sb.Append ("<").Append (elem.NamespaceURI).Append (":").Append (elem.LocalName);
 
 				ArrayList ats = new ArrayList ();
 				foreach (XmlAttribute at in elem.Attributes)

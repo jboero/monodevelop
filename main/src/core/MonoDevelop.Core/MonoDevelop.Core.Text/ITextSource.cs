@@ -1,4 +1,4 @@
-﻿//
+//
 // ITextSource.cs
 //
 // Author:
@@ -33,6 +33,7 @@ namespace MonoDevelop.Core.Text
 	/// A read-only view on a (potentially mutable) text source.
 	/// The IDocument interface derives from this interface.
 	/// </summary>
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public interface ITextSource
 	{
 		/// <summary>
@@ -40,11 +41,6 @@ namespace MonoDevelop.Core.Text
 		/// Returns null for unversioned text sources.
 		/// </summary>
 		ITextSourceVersion Version { get; }
-
-		/// <summary>
-		/// Determines if a byte order mark was read or is going to be written.
-		/// </summary>
-		bool UseBOM { get; }
 
 		/// <summary>
 		/// Encoding of the text that was read from or is going to be saved to.
@@ -135,6 +131,7 @@ namespace MonoDevelop.Core.Text
 		ITextSource CreateSnapshot (int offset, int length);
 	}
 
+	[Obsolete ("Use the Microsoft.VisualStudio.Text.Editor APIs")]
 	public static class TextSourceExtension
 	{
 		/// <summary>
@@ -170,7 +167,7 @@ namespace MonoDevelop.Core.Text
 		{
 			if (source == null)
 				throw new ArgumentNullException ("source");
-			TextFileUtility.WriteText (fileName, source.Text, source.Encoding, source.UseBOM); 
+			TextFileUtility.WriteText (fileName, source);
 		}
 
 		/// <summary>

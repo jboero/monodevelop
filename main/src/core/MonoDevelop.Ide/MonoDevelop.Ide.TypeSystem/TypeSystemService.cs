@@ -1,5 +1,5 @@
 // 
-// TypeSystemService.cs
+// IdeApp.TypeSystemService.cs
 //  
 // Author:
 //       Mike Krüger <mkrueger@novell.com>
@@ -30,49 +30,73 @@ using System.IO;
 using MonoDevelop.Projects;
 using Mono.Addins;
 using MonoDevelop.Core;
-using MonoDevelop.Ide;
 using System.Threading;
 using System.Xml;
 using ICSharpCode.NRefactory.Utils;
 using System.Threading.Tasks;
 using MonoDevelop.Ide.Extensions;
 using MonoDevelop.Core.Assemblies;
-using System.Text;
 using MonoDevelop.Ide.Editor;
 using MonoDevelop.Core.Text;
+using MonoDevelop.Ide.RoslynServices.Options;
+using MonoDevelop.Ide.Gui.Documents;
+using MonoDevelop.Ide.Composition;
 using Microsoft.CodeAnalysis.Text;
-using Mono.Posix;
 
 namespace MonoDevelop.Ide.TypeSystem
 {
-	public static partial class TypeSystemService
+	[DefaultServiceImplementation]
+	public partial class TypeSystemService: Service
 	{
 		const string CurrentVersion = "1.1.9";
-		static IEnumerable<TypeSystemParserNode> parsers;
-		static string[] filesSkippedInParseThread = new string[0];
-		public static Microsoft.CodeAnalysis.SyntaxAnnotation InsertionModeAnnotation = new Microsoft.CodeAnalysis.SyntaxAnnotation();
 
-		static IEnumerable<TypeSystemParserNode> Parsers {
+		DocumentManager documentManager;
+		DesktopService desktopService;
+		RootWorkspace rootWorkspace;
+		CompositionManager compositionManager;
+
+		[Obsolete]
+		IEnumerable<TypeSystemParserNode> parsers;
+
+		public Microsoft.CodeAnalysis.SyntaxAnnotation InsertionModeAnnotation { get; } = new Microsoft.CodeAnalysis.SyntaxAnnotation();
+
+		// Preferences
+		internal static RoslynPreferences Preferences { get; } = new RoslynPreferences ();
+		internal static ConfigurationProperty<bool> EnableSourceAnalysis = ConfigurationProperty.Create ("MonoDevelop.AnalysisCore.AnalysisEnabled_V2", true);
+
+		internal MonoDevelopRuleSetManager RuleSetManager { get; } = new MonoDevelopRuleSetManager ();
+
+		static MiscellaneousFilesWorkspace miscellaneousFilesWorkspace;
+
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal IEnumerable<TypeSystemParserNode> Parsers {
 			get {
 				return parsers;
 			}
+			set {
+				parsers = value;
+			}
 		}
 
-		public static void RemoveSkippedfile (FilePath fileName)
+		protected override async Task OnInitialize (ServiceProvider serviceProvider)
 		{
-			filesSkippedInParseThread = filesSkippedInParseThread.Where (f => f != fileName).ToArray ();
-		}
+			IntitializeTrackedProjectHandling ();
 
-		public static void AddSkippedFile (FilePath fileName)
-		{
-			if (filesSkippedInParseThread.Any (f => f == fileName))
-				return;
-			filesSkippedInParseThread = filesSkippedInParseThread.Concat (new string[] { fileName }).ToArray ();
-		}
+			serviceProvider.WhenServiceInitialized<CompositionManager> (s => {
+				miscellaneousFilesWorkspace = CompositionManager.Instance.GetExportedValue<MiscellaneousFilesWorkspace> ();
+				serviceProvider.WhenServiceInitialized<DocumentManager> (dm => {
+					documentManager = dm;
+				});
+			});
+			serviceProvider.WhenServiceInitialized<RootWorkspace> (s => {
+				rootWorkspace = s;
+				rootWorkspace.ActiveConfigurationChanged += HandleActiveConfigurationChanged;
+			});
 
-		static TypeSystemService ()
-		{
+			RoslynServices.RoslynService.Initialize ();
 			CleanupCache ();
+
+			#pragma warning disable CS0618, 612 // Type or member is obsolete
 			parsers = AddinManager.GetExtensionNodes<TypeSystemParserNode> ("/MonoDevelop/TypeSystem/Parser");
 			bool initialLoad = true;
 			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/TypeSystem/Parser", delegate (object sender, ExtensionNodeEventArgs args) {
@@ -80,93 +104,93 @@ namespace MonoDevelop.Ide.TypeSystem
 				if (!initialLoad)
 					parsers = AddinManager.GetExtensionNodes<TypeSystemParserNode> ("/MonoDevelop/TypeSystem/Parser");
 			});
+			#pragma warning restore CS0618, 612 // Type or member is obsolete
 			initialLoad = false;
 
 			try {
-				emptyWorkspace = new MonoDevelopWorkspace ();
+				compositionManager = await serviceProvider.GetService<CompositionManager> ().ConfigureAwait (false);
+				emptyWorkspace = new MonoDevelopWorkspace (compositionManager.HostServices, null, this);
+				await emptyWorkspace.Initialize ().ConfigureAwait (false);
 			} catch (Exception e) {
 				LoggingService.LogFatalError ("Can't create roslyn workspace", e); 
 			}
 
-			FileService.FileChanged += delegate(object sender, FileEventArgs e) {
-				//				if (!TrackFileChanges)
-				//					return;
+			FileService.FileChanged += FileService_FileChanged;
 
-				var filesToUpdate = new List<string> ();
-				foreach (var file in e) {
-					// Open documents are handled by the Document class itself.
-					if (IdeApp.Workbench != null && IdeApp.Workbench.GetDocument (file.FileName) != null)
-						continue;
-					
-					foreach (var w in workspaces) {
-						foreach (var p in w.CurrentSolution.ProjectIds) {
-							if (w.GetDocumentId (p, file.FileName) != null) {
-								filesToUpdate.Add (file.FileName);
-								goto found;
-							}
-						}
-					}
-				found:;
-					
-				}
-				if (filesToUpdate.Count == 0)
-					return;
+			desktopService = await serviceProvider.GetService<DesktopService> ();
 
-				Task.Run (delegate {
-					try {
-						foreach (var file in filesToUpdate) {
-							var text = MonoDevelop.Core.Text.StringTextSource.ReadFrom (file).Text;
-							foreach (var w in workspaces)
-								w.UpdateFileContent (file, text);
-						}
-
-						Gtk.Application.Invoke (delegate {
-							if (IdeApp.Workbench != null)
-								foreach (var w in IdeApp.Workbench.Documents)
-									w.StartReparseThread ();
-						});
-					} catch (Exception) {}
-				});
-			};
-
-			IntitializeTrackedProjectHandling ();
+			await serviceProvider.GetService<HelpService> ();
 		}
-/*
-			AddinManager.AddExtensionNodeHandler ("/MonoDevelop/TypeSystem/OutputTracking", delegate (object sender, ExtensionNodeEventArgs args) {
-				var node = (TypeSystemOutputTrackingNode)args.ExtensionNode;
-				switch (args.Change) {
-				case ExtensionChange.Add:
-					outputTrackedProjects.Add (node);
-					break;
-				case ExtensionChange.Remove:
-					outputTrackedProjects.Remove (node);
-					break;
-				}
-			});
 
-		static readonly List<TypeSystemOutputTrackingNode> outputTrackedProjects = new List<TypeSystemOutputTrackingNode> ();
-
-		static bool IsOutputTracked (DotNetProject project)
+		protected override Task OnDispose ()
 		{
-			foreach (var projectType in project.GetProjectTypes ()) {
-				if (outputTrackedProjects.Any (otp => otp.ProjectType != null && string.Equals (otp.ProjectType, projectType, StringComparison.OrdinalIgnoreCase))) {
-					return true;
-				}
-			}
-			return outputTrackedProjects.Any (otp => otp.LanguageName != null && string.Equals (otp.LanguageName, project.LanguageName, StringComparison.OrdinalIgnoreCase));
+			FileService.FileChanged -= FileService_FileChanged;
+			if (rootWorkspace != null)
+				rootWorkspace.ActiveConfigurationChanged -= HandleActiveConfigurationChanged;
+			FinalizeTrackedProjectHandling ();
+			return Task.CompletedTask;
 		}
 
-*/
+		void FileService_FileChanged (object sender, FileEventArgs e)
+		{
+			List<string> filesToUpdate = null;
+			foreach (var file in e) {
+				// Open documents are handled by the Document class itself.
+				if (documentManager?.GetDocument (file.FileName) != null)
+					continue;
 
-		public static TypeSystemParser GetParser (string mimeType, string buildAction = BuildAction.Compile)
+				foreach (var w in workspaces) {
+					var documentIds = w.CurrentSolution.GetDocumentIdsWithFilePath (file.FileName);
+					if (documentIds.IsEmpty)
+						continue;
+
+					if (filesToUpdate == null)
+						filesToUpdate = new List<string> ();
+					filesToUpdate.Add (file.FileName);
+					goto found;
+				}
+			found:;
+
+			}
+			if (filesToUpdate == null || filesToUpdate.Count == 0)
+				return;
+
+			Task.Run (async delegate {
+				try {
+					foreach (var file in filesToUpdate) {
+						var text = MonoDevelop.Core.Text.StringTextSource.ReadFrom (file).Text;
+						foreach (var w in workspaces)
+							await w.UpdateFileContent (file, text);
+					}
+
+					Gtk.Application.Invoke ((o, args) => {
+						if (documentManager != null) {
+							foreach (var w in documentManager.Documents)
+								w.DocumentContext?.ReparseDocument ();
+						}
+					});
+				} catch (Exception) { }
+			});
+		}
+
+		internal async Task<MonoDevelopWorkspace> CreateEmptyWorkspace ()
+		{
+			var ws = new MonoDevelopWorkspace (compositionManager.HostServices, null, this);
+			await ws.Initialize ();
+			return ws;
+		}
+
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public TypeSystemParser GetParser (string mimeType, string buildAction = BuildAction.Compile)
 		{
 			var n = GetTypeSystemParserNode (mimeType, buildAction);
 			return n != null ? n.Parser : null;
 		}
 
-		internal static TypeSystemParserNode GetTypeSystemParserNode (string mimeType, string buildAction)
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal TypeSystemParserNode GetTypeSystemParserNode (string mimeType, string buildAction)
 		{
-			foreach (var mt in DesktopService.GetMimeTypeInheritanceChain (mimeType)) {
+			foreach (var mt in desktopService.GetMimeTypeInheritanceChain (mimeType)) {
 				var provider = Parsers.FirstOrDefault (p => p.CanParse (mt, buildAction));
 				if (provider != null)
 					return provider;
@@ -174,7 +198,8 @@ namespace MonoDevelop.Ide.TypeSystem
 			return null;
 		}
 
-		public static Task<ParsedDocument> ParseFile (Project project, string fileName, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public Task<ParsedDocument> ParseFile (Project project, string fileName, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			StringTextSource text;
 
@@ -186,13 +211,14 @@ namespace MonoDevelop.Ide.TypeSystem
 				return TaskUtil.Default<ParsedDocument>();
 			}
 
-			return ParseFile (project, fileName, DesktopService.GetMimeTypeForUri (fileName), text, cancellationToken);
+			return ParseFile (project, fileName, desktopService.GetMimeTypeForUri (fileName), text, cancellationToken);
 		}
 
-		public static Task<ParsedDocument> ParseFile (ParseOptions options, string mimeType, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public Task<ParsedDocument> ParseFile (ParseOptions options, string mimeType, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			if (options == null)
-				throw new ArgumentNullException ("options");
+				throw new ArgumentNullException (nameof(options));
 			if (options.FileName == null)
 				throw new ArgumentNullException ("options.FileName");
 
@@ -214,7 +240,8 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		internal static bool CanParseProjections (Project project, string mimeType, string fileName)
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal bool CanParseProjections (Project project, string mimeType, string fileName)
 		{
 			var projectFile = project.GetProjectFile (fileName);
 			if (projectFile == null)
@@ -225,25 +252,29 @@ namespace MonoDevelop.Ide.TypeSystem
 			return parser.CanGenerateProjection (mimeType, projectFile.BuildAction, project.SupportedLanguages);
 		}
 
-		public static Task<ParsedDocument> ParseFile (Project project, string fileName, string mimeType, ITextSource content, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public Task<ParsedDocument> ParseFile (Project project, string fileName, string mimeType, ITextSource content, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseFile (new ParseOptions { FileName = fileName, Project = project, Content = content }, mimeType, cancellationToken);
 		}
 
-		public static Task<ParsedDocument> ParseFile (Project project, string fileName, string mimeType, TextReader content, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public Task<ParsedDocument> ParseFile (Project project, string fileName, string mimeType, TextReader content, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseFile (project, fileName, mimeType, new StringTextSource (content.ReadToEnd ()), cancellationToken);
 		}
 
-		public static Task<ParsedDocument> ParseFile (Project project, IReadonlyTextDocument data, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		public Task<ParsedDocument> ParseFile (Project project, IReadonlyTextDocument data, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseFile (project, data.FileName, data.MimeType, data, cancellationToken);
 		}
 
-		internal static async Task<ParsedDocumentProjection> ParseProjection (ParseOptions options, string mimeType, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal async Task<ParsedDocumentProjection> ParseProjection (ParseOptions options, string mimeType, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			if (options == null)
-				throw new ArgumentNullException ("options");
+				throw new ArgumentNullException (nameof(options));
 			if (options.FileName == null)
 				throw new ArgumentNullException ("fileName");
 
@@ -254,6 +285,9 @@ namespace MonoDevelop.Ide.TypeSystem
 			var t = Counters.ParserService.FileParsed.BeginTiming (options.FileName);
 			try {
 				var result = await parser.GenerateParsedDocumentProjection (options, cancellationToken);
+				if (cancellationToken.IsCancellationRequested)
+					return null;
+
 				if (options.Project != null) {
 					var ws = workspaces.First () ;
 					var projectId = ws.GetProjectId (options.Project);
@@ -262,11 +296,16 @@ namespace MonoDevelop.Ide.TypeSystem
 						var projectFile = options.Project.GetProjectFile (options.FileName);
 						if (projectFile != null) {
 							ws.UpdateProjectionEntry (projectFile, result.Projections);
-							foreach (var projection in result.Projections) {
-								var docId = ws.GetDocumentId (projectId, projection.Document.FileName);
-								if (docId != null) {
-									ws.InformDocumentTextChange (docId, new MonoDevelopSourceText (projection.Document));
+							await ws.LoadLock.WaitAsync ();
+							try {
+								foreach (var projection in result.Projections) {
+									var docId = ws.GetDocumentId (projectId, projection.Document.FileName);
+									if (docId != null) {
+										ws.InformDocumentTextChange (docId, new MonoDevelopSourceText (projection.Document));
+									}
 								}
+							} finally {
+								ws.LoadLock.Release ();
 							}
 						}
 					}
@@ -285,26 +324,29 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		internal static Task<ParsedDocumentProjection> ParseProjection (Project project, string fileName, string mimeType, ITextSource content, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal Task<ParsedDocumentProjection> ParseProjection (Project project, string fileName, string mimeType, ITextSource content, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseProjection (new ParseOptions { FileName = fileName, Project = project, Content = content }, mimeType, cancellationToken);
 		}
 
-		internal static Task<ParsedDocumentProjection> ParseProjection (Project project, string fileName, string mimeType, TextReader content, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal Task<ParsedDocumentProjection> ParseProjection (Project project, string fileName, string mimeType, TextReader content, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseProjection (project, fileName, mimeType, new StringTextSource (content.ReadToEnd ()), cancellationToken);
 		}
 
-		internal static Task<ParsedDocumentProjection> ParseProjection (Project project, IReadonlyTextDocument data, CancellationToken cancellationToken = default(CancellationToken))
+		[Obsolete ("Use the Visual Studio Editor APIs")]
+		internal Task<ParsedDocumentProjection> ParseProjection (Project project, IReadonlyTextDocument data, CancellationToken cancellationToken = default(CancellationToken))
 		{
 			return ParseProjection (project, data.FileName, data.MimeType, data, cancellationToken);
 		}
 
 	
 		#region Folding parsers
-		static List<MimeTypeExtensionNode> foldingParsers;
+		List<MimeTypeExtensionNode> foldingParsers;
 
-		static IEnumerable<MimeTypeExtensionNode> FoldingParsers {
+		IEnumerable<MimeTypeExtensionNode> FoldingParsers {
 			get {
 				if (foldingParsers == null) {
 					foldingParsers = new List<MimeTypeExtensionNode> ();
@@ -323,9 +365,9 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		public static IFoldingParser GetFoldingParser (string mimeType)
+		public IFoldingParser GetFoldingParser (string mimeType)
 		{
-			foreach (var mt in DesktopService.GetMimeTypeInheritanceChain (mimeType)) {
+			foreach (var mt in desktopService.GetMimeTypeInheritanceChain (mimeType)) {
 				var node = FoldingParsers.FirstOrDefault (n => n.MimeType == mt);
 				if (node != null)
 					return node.CreateInstance () as IFoldingParser;
@@ -336,11 +378,11 @@ namespace MonoDevelop.Ide.TypeSystem
 
 		#region Parser Database Handling
 
-		static string GetCacheDirectory (TargetFramework framework)
+		string GetCacheDirectory (TargetFramework framework)
 		{
 			var derivedDataPath = UserProfile.Current.CacheDir.Combine ("DerivedData");
 
-			var name = new StringBuilder ();
+			var name = StringBuilderCache.Allocate ();
 			foreach (var ch in framework.Name) {
 				if (char.IsLetterOrDigit (ch)) {
 					name.Append (ch);
@@ -349,7 +391,7 @@ namespace MonoDevelop.Ide.TypeSystem
 				}
 			}
 
-			string result = derivedDataPath.Combine (name.ToString ());
+			string result = derivedDataPath.Combine (StringBuilderCache.ReturnAndFree (name));
 			try {
 				if (!Directory.Exists (result))
 					Directory.CreateDirectory (result);
@@ -359,7 +401,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			return result;
 		}
 
-		static string InternalGetCacheDirectory (FilePath filename)
+		string InternalGetCacheDirectory (FilePath filename)
 		{
 			CanonicalizePath (ref filename);
 			var assemblyCacheRoot = GetAssemblyCacheRoot (filename);
@@ -384,14 +426,14 @@ namespace MonoDevelop.Ide.TypeSystem
 		/// <returns>The cache directory.</returns>
 		/// <param name="project">The project to get the cache for.</param>
 		/// <param name="forceCreation">If set to <c>true</c> the creation is forced and the method doesn't return null.</param>
-		public static string GetCacheDirectory (Project project, bool forceCreation = false)
+		public string GetCacheDirectory (Project project, bool forceCreation = false)
 		{
 			if (project == null)
-				throw new ArgumentNullException ("project");
+				throw new ArgumentNullException (nameof(project));
 			return GetCacheDirectory (project.FileName, forceCreation);
 		}
 
-		static readonly Dictionary<string, object> cacheLocker = new Dictionary<string, object> ();
+		readonly Dictionary<string, object> cacheLocker = new Dictionary<string, object> ();
 
 		/// <summary>
 		/// Gets the cache directory for arbitrary file names.
@@ -400,10 +442,10 @@ namespace MonoDevelop.Ide.TypeSystem
 		/// <returns>The cache directory.</returns>
 		/// <param name="fileName">The file name to get the cache for.</param>
 		/// <param name="forceCreation">If set to <c>true</c> the creation is forced and the method doesn't return null.</param>
-		public static string GetCacheDirectory (string fileName, bool forceCreation = false)
+		public string GetCacheDirectory (string fileName, bool forceCreation = false)
 		{
 			if (fileName == null)
-				throw new ArgumentNullException ("fileName");
+				throw new ArgumentNullException (nameof(fileName));
 			object locker;
 			bool newLock;
 			lock (cacheLocker) {
@@ -433,9 +475,9 @@ namespace MonoDevelop.Ide.TypeSystem
 			public string Version { get; set; }
 		}
 
-		static readonly Dictionary<FilePath, CacheDirectoryInfo> cacheDirectoryCache = new Dictionary<FilePath, CacheDirectoryInfo> ();
+		readonly Dictionary<FilePath, CacheDirectoryInfo> cacheDirectoryCache = new Dictionary<FilePath, CacheDirectoryInfo> ();
 
-		static void CanonicalizePath (ref FilePath fileName)
+		void CanonicalizePath (ref FilePath fileName)
 		{
 			try {
 				// There are some situations where that may cause an exception.
@@ -450,7 +492,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static bool CheckCacheDirectoryIsCorrect (FilePath filename, FilePath candidate, out string result)
+		bool CheckCacheDirectoryIsCorrect (FilePath filename, FilePath candidate, out string result)
 		{
 			CanonicalizePath (ref filename);
 			CanonicalizePath (ref candidate);
@@ -488,7 +530,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static string GetAssemblyCacheRoot (string filename)
+		string GetAssemblyCacheRoot (string filename)
 		{
 			string derivedDataPath = UserProfile.Current.CacheDir.Combine ("DerivedData");
 			string name = Path.GetFileName (filename);
@@ -502,7 +544,7 @@ namespace MonoDevelop.Ide.TypeSystem
 		/// Use this method instead of the normal <c>string.GetHashCode</c> if the hash code
 		/// is persisted to disk.
 		/// </summary>
-		static int GetStableHashCode(string text)
+		int GetStableHashCode(string text)
 		{
 			unchecked {
 				int h = 0;
@@ -513,7 +555,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static IEnumerable<string> GetPossibleCacheDirNames (string baseName)
+		IEnumerable<string> GetPossibleCacheDirNames (string baseName)
 		{
 			int i = 0;
 			while (i < 999999) {
@@ -523,12 +565,12 @@ namespace MonoDevelop.Ide.TypeSystem
 			throw new Exception ("Too many cache directories");
 		}
 
-		static string EscapeToXml (string txt)
+		string EscapeToXml (string txt)
 		{
 			return new System.Xml.Linq.XText (txt).ToString ();
 		}
 
-		static string CreateCacheDirectory (FilePath fileName)
+		string CreateCacheDirectory (FilePath fileName)
 		{
 			CanonicalizePath (ref fileName);
 			try {
@@ -549,9 +591,9 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static readonly FastSerializer sharedSerializer = new FastSerializer ();
+		readonly FastSerializer sharedSerializer = new FastSerializer ();
 
-		static T DeserializeObject<T> (string path) where T : class
+		T DeserializeObject<T> (string path) where T : class
 		{
 			var t = Counters.ParserService.ObjectDeserialized.BeginTiming (path);
 			try {
@@ -570,10 +612,10 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static void SerializeObject (string path, object obj)
+		void SerializeObject (string path, object obj)
 		{
 			if (obj == null)
-				throw new ArgumentNullException ("obj");
+				throw new ArgumentNullException (nameof(obj));
 
 			var t = Counters.ParserService.ObjectSerialized.BeginTiming (path);
 			try {
@@ -596,7 +638,7 @@ namespace MonoDevelop.Ide.TypeSystem
 		/// <summary>
 		/// Removes all cache directories which are older than 30 days.
 		/// </summary>
-		static void CleanupCache ()
+		void CleanupCache ()
 		{
 			string derivedDataPath = UserProfile.Current.CacheDir.Combine ("DerivedData");
 			IEnumerable<string> cacheDirectories;
@@ -627,7 +669,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static void RemoveCache (string cacheDir)
+		void RemoveCache (string cacheDir)
 		{
 			try {
 				Directory.Delete (cacheDir, true);
@@ -636,7 +678,7 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static void TouchCache (string cacheDir)
+		void TouchCache (string cacheDir)
 		{
 			try {
 				Directory.SetLastWriteTime (cacheDir, DateTime.Now);
@@ -645,12 +687,12 @@ namespace MonoDevelop.Ide.TypeSystem
 			}
 		}
 
-		static void StoreExtensionObject (string cacheDir, object extensionObject)
+		void StoreExtensionObject (string cacheDir, object extensionObject)
 		{
 			if (cacheDir == null)
-				throw new ArgumentNullException ("cacheDir");
+				throw new ArgumentNullException (nameof(cacheDir));
 			if (extensionObject == null)
-				throw new ArgumentNullException ("extensionObject");
+				throw new ArgumentNullException (nameof(extensionObject));
 			var fileName = Path.GetTempFileName ();
 			SerializeObject (fileName, extensionObject);
 			var cacheFile = Path.Combine (cacheDir, extensionObject.GetType ().FullName + ".cache");
@@ -665,41 +707,18 @@ namespace MonoDevelop.Ide.TypeSystem
 		}
 
 		#endregion
-
-		internal static void InformDocumentClose (Microsoft.CodeAnalysis.DocumentId analysisDocument, FilePath fileName)
+		internal void InformDocumentClose (Microsoft.CodeAnalysis.DocumentId analysisDocument, SourceTextContainer container)
 		{
 			foreach (var w in workspaces) {
-				if (w.GetOpenDocumentIds ().Contains (analysisDocument) )
-					w.InformDocumentClose (analysisDocument, fileName); 
-
+				if (w.GetOpenDocumentIds (analysisDocument.ProjectId).Contains (analysisDocument))
+					w.InformDocumentClose (analysisDocument, container); 
 			}
 		}
 
-		internal static void InformDocumentOpen (Microsoft.CodeAnalysis.DocumentId analysisDocument, TextEditor editor)
-		{
-			foreach (var w in workspaces) {
-				if (w.Contains (analysisDocument.ProjectId)) {
-					w.InformDocumentOpen (analysisDocument, editor); 
-					return;
-				}
-			}
-			if (!gotDocumentRequestError) {
-				gotDocumentRequestError = true;
-				LoggingService.LogWarning ("Can't open requested document : " + analysisDocument + ":" + editor.FileName);
-			}
-		}
-
-		internal static void InformDocumentOpen (Microsoft.CodeAnalysis.Workspace ws, Microsoft.CodeAnalysis.DocumentId analysisDocument, TextEditor editor)
-		{
-			((MonoDevelopWorkspace)ws).InformDocumentOpen (analysisDocument, editor); 
-		}
-
-		static bool gotDocumentRequestError = false;
-
-		public static Microsoft.CodeAnalysis.ProjectId GetProjectId (MonoDevelop.Projects.Project project)
+		public Microsoft.CodeAnalysis.ProjectId GetProjectId (MonoDevelop.Projects.Project project)
 		{
 			if (project == null)
-				throw new ArgumentNullException ("project");
+				throw new ArgumentNullException (nameof(project));
 			foreach (var w in workspaces) {
 				var projectId = w.GetProjectId (project);
 				if (projectId != null) {
@@ -709,10 +728,10 @@ namespace MonoDevelop.Ide.TypeSystem
 			return null;
 		}
 
-		public static Microsoft.CodeAnalysis.Document GetCodeAnalysisDocument (Microsoft.CodeAnalysis.DocumentId docId, CancellationToken cancellationToken = default (CancellationToken))
+		public Microsoft.CodeAnalysis.Document GetCodeAnalysisDocument (Microsoft.CodeAnalysis.DocumentId docId, CancellationToken cancellationToken = default (CancellationToken))
 		{
 			if (docId == null)
-				throw new ArgumentNullException ("docId");
+				throw new ArgumentNullException (nameof(docId));
 			foreach (var w in workspaces) {
 				var documentId = w.GetDocument (docId, cancellationToken);
 				if (documentId != null) {
@@ -722,10 +741,10 @@ namespace MonoDevelop.Ide.TypeSystem
 			return null;
 		}
 
-		public static MonoDevelop.Projects.Project GetMonoProject (Microsoft.CodeAnalysis.Project project)
+		public MonoDevelop.Projects.Project GetMonoProject (Microsoft.CodeAnalysis.Project project)
 		{
 			if (project == null)
-				throw new ArgumentNullException ("project");
+				throw new ArgumentNullException (nameof(project));
 			foreach (var w in workspaces) {
 				var documentId = w.GetMonoProject (project);
 				if (documentId != null) {
@@ -736,16 +755,94 @@ namespace MonoDevelop.Ide.TypeSystem
 		}
 
 
-		public static MonoDevelop.Projects.Project GetMonoProject (Microsoft.CodeAnalysis.DocumentId documentId)
+		public MonoDevelop.Projects.Project GetMonoProject (Microsoft.CodeAnalysis.DocumentId documentId)
 		{
 			foreach (var w in workspaces) {
-				foreach (var p in w.CurrentSolution.Projects) {
-					if (p.GetDocument (documentId) != null)
-						return GetMonoProject (p);
-				}
+				var doc = w.GetDocument (documentId);
+				if (doc == null)
+					continue;
+
+				var p = doc.Project;
+				if (p != null)
+					return GetMonoProject (p);
 			}
 			return null;
 		}
 
+		object workspaceLoadLock = new object ();
+		TaskCompletionSource<bool> workspaceLoadTaskSource;
+		StatusBarIcon statusIcon = null;
+		int workspacesLoading = 0;
+
+		public static Func<Task> FreezeLoad = () => Task.CompletedTask;
+
+		internal static async Task SafeFreezeLoad ()
+		{
+			try {
+				await FreezeLoad ();
+			} catch (Exception) {
+				// Ignore exceptions, such as the task being cancelled. We want to freeze the load
+				// whilst the NuGet restore is being run and continue after it has finished, cancelled,
+				// or thrown an exception.
+			}
+		}
+
+		public Task ProcessPendingLoadOperations ()
+		{
+			lock (workspaceLoadLock) {
+				return workspaceLoadTaskSource?.Task ?? Task.CompletedTask;
+			}
+		}
+
+		internal void BeginWorkspaceLoad ()
+		{
+			lock (workspaceLoadLock) {
+				if (++workspacesLoading == 1) {
+					workspaceLoadTaskSource = new TaskCompletionSource<bool> ();
+					UpdateTypeInformationGatheringIcon ();
+				}
+			}
+		}
+
+		internal void EndWorkspaceLoad (Action callback = null)
+		{
+			TaskCompletionSource<bool> completedTask = null;
+
+			lock (workspaceLoadLock) {
+				if (--workspacesLoading == 0) {
+					completedTask = workspaceLoadTaskSource;
+					workspaceLoadTaskSource = null;
+					UpdateTypeInformationGatheringIcon ();
+				}
+			}
+			if (completedTask != null) {
+				completedTask.SetResult (true);
+				Runtime.RunInMainThread (() => {
+					callback?.Invoke ();
+				});
+			}
+		}
+
+		void UpdateTypeInformationGatheringIcon ()
+		{
+			if (!IdeApp.IsInitialized)
+				return;
+			Runtime.RunInMainThread (() => {
+				lock (workspaceLoadLock) {
+					if (workspacesLoading > 0) {
+						if (statusIcon == null) {
+							statusIcon = IdeApp.Workbench?.StatusBar.ShowStatusIcon (ImageService.GetIcon (Gui.Stock.Parser));
+							if (statusIcon != null)
+								statusIcon.ToolTip = GettextCatalog.GetString ("Gathering class information");
+						}
+					} else {
+						if (statusIcon != null) {
+							statusIcon.Dispose ();
+							statusIcon = null;
+						}
+					}
+				}
+			}).Ignore ();
+		}
 	}
 }

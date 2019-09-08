@@ -122,6 +122,18 @@ namespace MonoDevelop.Components
 			return new Cairo.Color (r, g, b, hsl.Alpha);
 		}
 
+		public static implicit operator Xwt.Drawing.Color (HslColor hsl)
+		{
+			double r = 0, g = 0, b = 0;
+			hsl.ToRgb (out r, out g, out b);
+			return new Xwt.Drawing.Color (r, g, b, hsl.Alpha);
+		}
+
+		public static implicit operator HslColor (Xwt.Drawing.Color color)
+		{
+			return new HslColor (color.Red, color.Green, color.Blue, color.Alpha);
+		}
+
 		public static implicit operator HslColor (Color color)
 		{
 			return new HslColor (color);
@@ -176,6 +188,13 @@ namespace MonoDevelop.Components
 			return rv << 16 | gv << 8 | bv;
 		}
 
+		public (byte R, byte G, byte B, byte A) ToRgba ()
+		{
+			double r, g, b;
+			ToRgb (out r, out g, out b);
+			return ((byte)(r * 255), (byte)(g * 255), (byte) (b * 255), (byte)(Alpha * 255));
+		}
+
 		public static HslColor FromPixel (uint pixel)
 		{
 			var r = ((pixel >> 16) & 0xFF) / 255.0;
@@ -186,6 +205,8 @@ namespace MonoDevelop.Components
 
 		public HslColor (double r, double g, double b, double a = 1.0) : this ()
 		{
+			this.Alpha = a;
+
 			double v = System.Math.Max (r, g);
 			v = System.Math.Max (v, b);
 
@@ -217,7 +238,6 @@ namespace MonoDevelop.Components
 			}
 			this.H /= 6.0;
 
-			this.Alpha = a;
 		}
 
 		public HslColor (Color color) : this (color.Red / (double)ushort.MaxValue, color.Green / (double)ushort.MaxValue, color.Blue / (double)ushort.MaxValue)
@@ -231,6 +251,14 @@ namespace MonoDevelop.Components
 
 		public static HslColor Parse (string color)
 		{
+			if (color.Length == 9 && color.StartsWith ("#", StringComparison.Ordinal)) {
+				double r = ((double)int.Parse (color.Substring (1, 2), System.Globalization.NumberStyles.HexNumber)) / 255.0;
+				double g = ((double)int.Parse (color.Substring (3, 2), System.Globalization.NumberStyles.HexNumber)) / 255.0;
+				double b = ((double)int.Parse (color.Substring (5, 2), System.Globalization.NumberStyles.HexNumber)) / 255.0;
+				double a = ((double)int.Parse (color.Substring (7, 2), System.Globalization.NumberStyles.HexNumber)) / 255.0;
+				return new HslColor (r, g, b, a);
+			}
+
 			Gdk.Color col = new Gdk.Color (0, 0, 0);
 			Gdk.Color.Parse (color, ref col);
 			return (HslColor)col;
@@ -288,10 +316,10 @@ namespace MonoDevelop.Components
 		public string ToPangoString ()
 		{
 			var resultColor = (Cairo.Color)this;
-			return string.Format ("#{0:x2}{1:x2}{2:x2}",
-				(int)(resultColor.R * 255),
-				(int)(resultColor.G * 255),
-				(int)(resultColor.B * 255));
+			return string.Format ("#{0}{1}{2}",
+				((int)(resultColor.R * 255)).ToString ("x2"),
+				((int)(resultColor.G * 255)).ToString ("x2"),
+				((int)(resultColor.B * 255)).ToString ("x2"));
 		}
 
 
@@ -300,11 +328,16 @@ namespace MonoDevelop.Components
 			if (Alpha == 1.0)
 				return ToPangoString ();
 			var resultColor = (Cairo.Color)this;
-			return string.Format ("#{0:x2}{1:x2}{2:x2}{3:x2}",
-				(int)(resultColor.R * 255),
-				(int)(resultColor.G * 255),
-				(int)(resultColor.B * 255),
-				(int)(resultColor.A * 255));
+			return string.Format ("#{0}{1}{2}{3}",
+				((int)(resultColor.R * 255)).ToString ("x2"),
+				((int)(resultColor.G * 255)).ToString ("x2"),
+				((int)(resultColor.B * 255)).ToString ("x2"),
+				((int)(resultColor.A * 255)).ToString ("x2"));
+		}
+
+		internal Gdk.GC CreateGC (Gdk.Drawable drawable)
+		{
+			return new Gdk.GC (drawable) { RgbBgColor = this, RgbFgColor = this };
 		}
 	}
 }

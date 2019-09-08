@@ -1,4 +1,4 @@
-// 
+﻿// 
 // WelcomePageRecentProjectsList.cs
 //  
 // Author:
@@ -28,9 +28,12 @@ using System;
 using System.Linq;
 using Gtk;
 using MonoDevelop.Core;
+using MonoDevelop.Components.AtkCocoaHelper;
 using System.Collections.Generic;
 using MonoDevelop.Ide.Desktop;
 using System.Xml.Linq;
+
+using MonoDevelop.Components;
 
 namespace MonoDevelop.Ide.WelcomePage
 {
@@ -50,10 +53,11 @@ namespace MonoDevelop.Ide.WelcomePage
 
 			itemCount = count;
 			
-			DesktopService.RecentFiles.Changed += RecentFilesChanged;
-			RecentFilesChanged (null, null);
+			IdeServices.DesktopService.RecentFiles.Changed += RecentFilesChanged;
 
 			SetContent (box);
+			RecentFilesChanged (null, null);
+
 			TitleAlignment.BottomPadding = Styles.WelcomeScreen.Pad.Solutions.LargeTitleMarginBottom;
 			ContentAlignment.LeftPadding = 0;
 			ContentAlignment.RightPadding = 0;
@@ -63,7 +67,7 @@ namespace MonoDevelop.Ide.WelcomePage
 		{
 			destroyed = true;
 			base.OnDestroyed ();
-			DesktopService.RecentFiles.Changed -= RecentFilesChanged;
+			IdeServices.DesktopService.RecentFiles.Changed -= RecentFilesChanged;
 		}
 
 		void RecentFilesChanged (object sender, EventArgs e)
@@ -73,32 +77,49 @@ namespace MonoDevelop.Ide.WelcomePage
 				return;
 			
 			foreach (var c in box.Children) {
+				RemoveAccessibiltyTitledWidget (c);
 				box.Remove (c);
 				c.Destroy ();
 			}
 
 			Gtk.HBox hbox = new HBox ();
+			hbox.Accessible.SetShouldIgnore (true);
+
 			var btn = new WelcomePageListButton (GettextCatalog.GetString ("New..."), null, newProjectIcon, "monodevelop://MonoDevelop.Ide.Commands.FileCommands.NewProject");
+			btn.Accessible.Description = "Create a new solution";
+			btn.Accessible.Name = "WelcomePage.RecentSolutions.NewButton";
 			btn.WidthRequest = (int) (Styles.WelcomeScreen.Pad.Solutions.SolutionTile.Width / 2.3);
 			btn.BorderPadding = 6;
 			btn.LeftTextPadding = 24;
 			hbox.PackStart (btn, false, false, 0);
+
+			SetTitledWidget (btn);
 
 			btn = new WelcomePageListButton (GettextCatalog.GetString ("Open..."), null, openProjectIcon, "monodevelop://MonoDevelop.Ide.Commands.FileCommands.OpenFile");
+			btn.Accessible.Description = "Open an existing solution";
+			btn.Accessible.Name = "WelcomePage.RecentSolutions.OpenButton";
 			btn.WidthRequest = (int) (Styles.WelcomeScreen.Pad.Solutions.SolutionTile.Width / 2.3);
 			btn.BorderPadding = 6;
 			btn.LeftTextPadding = 24;
 			hbox.PackStart (btn, false, false, 0);
 
+			SetTitledWidget (btn);
+
 			box.PackStart (hbox, false, false, 0);
-			
+
 			//TODO: pinned files
-			foreach (var recent in DesktopService.RecentFiles.GetProjects ().Take (itemCount)) {
+			int idx = 1;
+			foreach (var recent in IdeServices.DesktopService.RecentFiles.GetProjects ().Take (itemCount)) {
 				var filename = recent.FileName;
 
 				var accessed = recent.TimeStamp;
 				var pixbuf = ImageService.GetIcon (GetIcon (filename), IconSize.Dnd);
 				var button = new WelcomePageListButton (recent.DisplayName, System.IO.Path.GetDirectoryName (filename), pixbuf, "project://" + filename);
+
+				button.Accessible.SetUrl ("file://" + filename);
+				button.Accessible.Name = string.Format ("WelcomePage.RecentSolutions.RecentFile{0}", idx);
+				idx++;
+
 				button.BorderPadding = 2;
 				button.AllowPinning = true;
 				button.Pinned = recent.IsFavorite;
@@ -112,6 +133,8 @@ namespace MonoDevelop.Ide.WelcomePage
 				box.PackStart (button, false, false, 0);
 				var pinClickHandler = new PinClickHandler (filename);
 				pinClickHandler.Register (button);
+
+				SetTitledWidget (button);
 			}
 
 			this.ShowAll ();
@@ -145,7 +168,7 @@ namespace MonoDevelop.Ide.WelcomePage
 
 			void Button_PinClicked (object sender, EventArgs e)
 			{
-				DesktopService.RecentFiles.SetFavoriteFile (filename, button.Pinned);
+				IdeServices.DesktopService.RecentFiles.SetFavoriteFile (filename, button.Pinned);
 			}
 
 			void Button_Destroyed (object sender, EventArgs e)
@@ -160,7 +183,7 @@ namespace MonoDevelop.Ide.WelcomePage
 			TimeSpan sincelast = DateTime.UtcNow - prjtime;
 
 			if (sincelast.Days >= 1)
-				return GettextCatalog.GetPluralString ("Last opened {0} days ago", "Last opened {0} days ago", sincelast.Days, sincelast.Days);
+				return GettextCatalog.GetPluralString ("Last opened {0} day ago", "Last opened {0} days ago", sincelast.Days, sincelast.Days);
 			if (sincelast.Hours >= 1)
 				return GettextCatalog.GetPluralString ("Last opened {0} hour ago", "Last opened {0} hours ago", sincelast.Hours, sincelast.Hours);
 			if (sincelast.Minutes > 0)
@@ -175,7 +198,7 @@ namespace MonoDevelop.Ide.WelcomePage
 			//getting the icon requires probing the file, so handle IO errors
 			try {
 /* delay project service creation. 
-				icon = IdeApp.Services.ProjectService.FileFormats.GetFileFormats
+				icon = IdeServices.ProjectService.FileFormats.GetFileFormats
 						(fileName, typeof(Solution)).Length > 0
 							? "md-solution"
 							: "md-workspace"; */

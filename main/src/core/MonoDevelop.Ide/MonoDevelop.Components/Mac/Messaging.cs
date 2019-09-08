@@ -33,13 +33,15 @@ namespace MonoDevelop.Components.Mac
 {
 	static class Messaging
 	{
+		// Changing this to ObjCRuntime.Constants.ObjectiveCLibrary will cause NSViewExtensions.SortSubviews to crash.
+		// Needs Xamarin.Mac >= 5.16.1 to work
 		const string LIBOBJC_DYLIB = "objc";
 
 		[DllImport (LIBOBJC_DYLIB, EntryPoint="objc_msgSend")]
-		public static extern void void_objc_msgSend_int_NSRange (IntPtr handle, IntPtr sel, IntPtr a1, NSRange a2);
+		public static extern void void_objc_msgSend (IntPtr handle, IntPtr sel);
 
 		[DllImport (LIBOBJC_DYLIB, EntryPoint="objc_msgSend")]
-		public static extern void void_objc_msgSend (IntPtr handle, IntPtr sel);
+		public static extern void void_objc_msgSend_IntPtr (IntPtr receiver, IntPtr selector, IntPtr arg1);
 
 		[DllImport (LIBOBJC_DYLIB, EntryPoint="objc_msgSend")]
 		public static extern bool bool_objc_msgSend_IntPtr_IntPtr (IntPtr handle, IntPtr sel, IntPtr a1, IntPtr a2);
@@ -58,6 +60,9 @@ namespace MonoDevelop.Components.Mac
 
 		[DllImport (LIBOBJC_DYLIB, EntryPoint="objc_msgSend")]
 		public static extern uint UInt32_objc_msgSend (IntPtr receiver, IntPtr selector);
+
+		[DllImport (LIBOBJC_DYLIB, EntryPoint = "objc_msgSend")]
+		public extern static void void_objc_msgSend_IntPtr_IntPtr (IntPtr receiver, IntPtr selector, IntPtr arg1, IntPtr arg2);
 	}
 }
 #endif

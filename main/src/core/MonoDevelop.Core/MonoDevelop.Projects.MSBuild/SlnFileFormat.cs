@@ -29,16 +29,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
-using System.Text.RegularExpressions;
-
-using MonoDevelop.Projects;
-using MonoDevelop.Core.Serialization;
-using MonoDevelop.Projects.Extensions;
-using MonoDevelop.Core;
-using System.Reflection;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
+using MonoDevelop.Core;
 
 namespace MonoDevelop.Projects.MSBuild
 {
@@ -70,22 +64,20 @@ namespace MonoDevelop.Projects.MSBuild
 			return obj is Solution;
 		}
 		
-		public Task WriteFile (string file, object obj, bool saveProjects, ProgressMonitor monitor)
+		public async Task WriteFile (string file, object obj, bool saveProjects, ProgressMonitor monitor)
 		{
-			return Task.Run (async delegate {
-				Solution sol = (Solution)obj;
+			Solution sol = (Solution)obj;
 
-				try {
-					monitor.BeginTask (GettextCatalog.GetString ("Saving solution: {0}", file), 1);
-					await WriteFileInternal (file, file, sol, saveProjects, monitor);
-				} catch (Exception ex) {
-					monitor.ReportError (GettextCatalog.GetString ("Could not save solution: {0}", file), ex);
-					LoggingService.LogError (GettextCatalog.GetString ("Could not save solution: {0}", file), ex);
-					throw;
-				} finally {
-					monitor.EndTask ();
-				}
-			});
+			try {
+				monitor.BeginTask (GettextCatalog.GetString ("Saving solution: {0}", file), 1);
+				await WriteFileInternal (file, file, sol, saveProjects, monitor).ConfigureAwait (false);
+			} catch (Exception ex) {
+				monitor.ReportError (GettextCatalog.GetString ("Could not save solution: {0}", file), ex);
+				LoggingService.LogError (GettextCatalog.GetString ("Could not save solution: {0}", file), ex);
+				throw;
+			} finally {
+				monitor.EndTask ();
+			}
 		}
 
 		async Task WriteFileInternal (string file, string sourceFile, Solution solution, bool saveProjects, ProgressMonitor monitor)
@@ -97,7 +89,7 @@ namespace MonoDevelop.Projects.MSBuild
 					try {
 						monitor.BeginStep ();
 						item.SavingSolution = true;
-						await item.SaveAsync (monitor);
+						await item.SaveAsync (monitor).ConfigureAwait (false);
 					} finally {
 						item.SavingSolution = false;
 					}
@@ -119,9 +111,9 @@ namespace MonoDevelop.Projects.MSBuild
 
 			sln.FormatVersion = format.SlnVersion;
 
-			// Don't modify the product description if it already has a value
+			// Don't modify the product description comment if it already has a value
 			if (string.IsNullOrEmpty (sln.ProductDescription))
-				sln.ProductDescription = format.ProductDescription;
+				sln.ProductDescription = format.ProductDescriptionComment;
 
 			solution.WriteSolution (monitor, sln);
 
@@ -276,7 +268,7 @@ namespace MonoDevelop.Projects.MSBuild
 				// are missing "{"..."}" in their guid. This is not generally a problem since it
 				// is a valid GUID format. However the solution file format requires that these are present. 
 				string itemGuid = item.ItemId;
-				if (!itemGuid.StartsWith ("{") && !itemGuid.EndsWith ("}"))
+				if (!itemGuid.StartsWith ("{", StringComparison.Ordinal) && !itemGuid.EndsWith ("}", StringComparison.Ordinal))
 					itemGuid = "{" + itemGuid + "}";
 
 				var pset = col.GetOrCreatePropertySet (itemGuid, ignoreCase:true);
@@ -383,21 +375,19 @@ namespace MonoDevelop.Projects.MSBuild
 			try {
 				monitor.BeginTask (string.Format (GettextCatalog.GetString ("Loading solution: {0}"), fileName), 1);
 				monitor.BeginStep ();
-				await sol.OnBeginLoad ();
+				await sol.OnBeginLoad ().ConfigureAwait (false);
 				var projectLoadMonitor = monitor as ProjectLoadProgressMonitor;
 				if (projectLoadMonitor != null)
 					projectLoadMonitor.CurrentSolution = sol;
-				await Task.Factory.StartNew (() => {
-					sol.ReadSolution (monitor);
-				});
+				sol.ReadSolution (monitor);
 			} catch (Exception ex) {
 				monitor.ReportError (GettextCatalog.GetString ("Could not load solution: {0}", fileName), ex);
-				await sol.OnEndLoad ();
+				await sol.OnEndLoad ().ConfigureAwait (false);
 				sol.NotifyItemReady ();
 				monitor.EndTask ();
 				throw;
 			}
-			await sol.OnEndLoad ();
+			await sol.OnEndLoad ().ConfigureAwait (false);
 			sol.NotifyItemReady ();
 			monitor.EndTask ();
 			return sol;
@@ -419,10 +409,8 @@ namespace MonoDevelop.Projects.MSBuild
 			var solDirectory = Path.GetDirectoryName (sol.FileName);
 
 			foreach (SlnProject sec in sln.Projects) {
-				try {
-					// Valid guid?
-					new Guid (sec.TypeGuid);
-				} catch (FormatException) {
+				// Valid guid?
+				if (!Guid.TryParse(sec.TypeGuid, out _)) {
 					monitor.Step (1);
 					//Use default guid as projectGuid
 					LoggingService.LogDebug (GettextCatalog.GetString (
@@ -458,7 +446,7 @@ namespace MonoDevelop.Projects.MSBuild
 					continue;
 				}
 
-				if (projectPath.StartsWith("http://")) {
+				if (projectPath.StartsWith("http://", StringComparison.Ordinal)) {
 					monitor.ReportWarning (GettextCatalog.GetString (
 						"{0}({1}): Projects with non-local source (http://...) not supported. '{2}'.",
 						sol.FileName, sec.Line, projectPath));
@@ -500,14 +488,22 @@ namespace MonoDevelop.Projects.MSBuild
 
 						string unsupportedMessage = e.Message;
 
-						if (e is UserException) {
-							var ex = (UserException) e;
+						switch (e) {
+						case UserException ex:
 							LoggingService.LogError ("{0}: {1}", ex.Message, ex.Details);
+
 							monitor.ReportError (string.Format ("{0}{1}{1}{2}", ex.Message, Environment.NewLine, ex.Details), null);
-						} else {
+							break;
+
+						case UnknownSolutionItemTypeException ux:
+							LoggingService.LogError ("{0}: {1}", ux.Message, projectPath);
+							break;
+
+						default:
 							LoggingService.LogError (string.Format ("Error while trying to load the project {0}", projectPath), e);
 							monitor.ReportWarning (GettextCatalog.GetString (
 								"Error while trying to load the project '{0}': {1}", projectPath, e.Message));
+							break;
 						}
 
 						SolutionItem uitem;
@@ -533,7 +529,7 @@ namespace MonoDevelop.Projects.MSBuild
 						}
 					}
 					monitor.Step (1);
-				});
+				}, TaskScheduler.Default);
 				loadTasks.Add (ft);
 
 				// Limit the number of concurrent tasks. Por solutions with many projects, spawning one thread per
@@ -580,7 +576,7 @@ namespace MonoDevelop.Projects.MSBuild
 
 			foreach (var e in sln.Sections) {
 				string name = e.Id;
-				if (name.StartsWith ("MonoDevelopProperties.")) {
+				if (name.StartsWith ("MonoDevelopProperties.", StringComparison.Ordinal)) {
 					int i = name.IndexOf ('.');
 					LoadMonoDevelopConfigurationProperties (name.Substring (i+1), e, sol, monitor);
 				}
@@ -650,13 +646,13 @@ namespace MonoDevelop.Projects.MSBuild
 					string projConfig = prop.Value;
 
 					string left = prop.Key;
-					if (left.EndsWith (".ActiveCfg")) {
+					if (left.EndsWith (".ActiveCfg", StringComparison.Ordinal)) {
 						action = "ActiveCfg";
 						left = left.Substring (0, left.Length - 10);
-					} else if (left.EndsWith (".Build.0")) {
+					} else if (left.EndsWith (".Build.0", StringComparison.Ordinal)) {
 						action = "Build.0";
 						left = left.Substring (0, left.Length - 8);
-					} else if (left.EndsWith (".Deploy.0")) {
+					} else if (left.EndsWith (".Deploy.0", StringComparison.Ordinal)) {
 						action = "Deploy.0";
 						left = left.Substring (0, left.Length - 9);
 					} else { 

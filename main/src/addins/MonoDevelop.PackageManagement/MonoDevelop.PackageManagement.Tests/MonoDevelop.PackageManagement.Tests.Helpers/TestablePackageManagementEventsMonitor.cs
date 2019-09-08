@@ -26,10 +26,8 @@
 
 using System;
 using System.Collections.Generic;
-using MonoDevelop.PackageManagement;
-using MonoDevelop.Ide;
+using System.Threading.Tasks;
 using MonoDevelop.Core;
-using NuGet;
 
 namespace MonoDevelop.PackageManagement.Tests.Helpers
 {
@@ -37,16 +35,10 @@ namespace MonoDevelop.PackageManagement.Tests.Helpers
 	{
 		public TestablePackageManagementEventsMonitor (
 			ProgressMonitor progressMonitor,
-			IPackageManagementEvents packageManagementEvents)
-			: base (progressMonitor, packageManagementEvents)
+			IPackageManagementEvents packageManagementEvents,
+			TaskCompletionSource<bool> taskCompletionSource)
+			: base (progressMonitor, packageManagementEvents, taskCompletionSource)
 		{
-		}
-
-		public List<FilePath> FilesChanged = new List<FilePath> ();
-
-		protected override void NotifyFilesChanged (FilePath[] files)
-		{
-			FilesChanged.AddRange (files);
 		}
 
 		protected override void GuiSyncDispatch (Action action)

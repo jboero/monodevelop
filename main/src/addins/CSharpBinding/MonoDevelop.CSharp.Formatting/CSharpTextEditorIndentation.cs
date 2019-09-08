@@ -1,4 +1,4 @@
-//
+﻿//
 // CSharpTextEditorIndentation.cs
 //
 // Author:
@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -43,8 +43,13 @@ using ICSharpCode.NRefactory6.CSharp;
 using System.Threading;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Editor;
 using Microsoft.CodeAnalysis.Options;
 using MonoDevelop.Refactoring;
+using Microsoft.CodeAnalysis.Shared.Extensions;
+using System.Globalization;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.CSharp.Extensions;
 
 namespace MonoDevelop.CSharp.Formatting
 {
@@ -53,36 +58,12 @@ namespace MonoDevelop.CSharp.Formatting
 		internal ICSharpCode.NRefactory6.CSharp.CacheIndentEngine stateTracker;
 		int cursorPositionBeforeKeyPress;
 
-		readonly static IEnumerable<string> types = DesktopService.GetMimeTypeInheritanceChain (CSharpFormatter.MimeType);
-
-		CSharpFormattingPolicy Policy {
-			get {
-				return DocumentContext.GetPolicy<CSharpFormattingPolicy> (types);
-			}
-		}
-
-		TextStylePolicy TextStylePolicy {
-			get {
-				return DocumentContext.GetPolicy<TextStylePolicy> (types);
-			}
-		}
+		readonly static IEnumerable<string> types = IdeServices.DesktopService.GetMimeTypeInheritanceChain (CSharpFormatter.MimeType);
 
 		char lastCharInserted;
 
 		static CSharpTextEditorIndentation ()
 		{
-			CompletionWindowManager.WordCompleted += delegate (object sender, CodeCompletionContextEventArgs e) {
-				var editor = e.Widget as IServiceProvider;
-				if (editor == null)
-					return;
-				var extension = editor.GetService (typeof (CSharpTextEditorIndentation)) as CSharpTextEditorIndentation;
-				if (extension == null)
-					return;
-				extension.SafeUpdateIndentEngine (extension.Editor.CaretOffset);
-				if (extension.stateTracker.NeedsReindent)
-					extension.DoReSmartIndent ();
-			};
-
 			RefactoringService.OptionSetCreation = (editor, ctx) => {
 				var policy = ctx.Project.Policies.Get<CSharpFormattingPolicy> (types);
 				return policy.CreateOptions (editor.Options);
@@ -98,23 +79,6 @@ namespace MonoDevelop.CSharp.Formatting
 			}
 		}
 
-		public static bool OnTheFlyFormatting {
-			get {
-				return PropertyService.Get ("OnTheFlyFormatting", true);
-			}
-			set {
-				PropertyService.Set ("OnTheFlyFormatting", value);
-			}
-		}
-
-		void RunFormatter (MonoDevelop.Ide.Editor.DocumentLocation location)
-		{
-			if (!OnTheFlyFormatting || Editor == null || Editor.EditMode != EditMode.Edit)
-				return;
-			var offset = Editor.LocationToOffset (location);
-			OnTheFlyFormatter.Format (Editor, DocumentContext, offset, offset, optionSet: optionSet);
-		}
-
 		protected override void Initialize ()
 		{
 			base.Initialize ();
@@ -124,10 +88,10 @@ namespace MonoDevelop.CSharp.Formatting
 				HandleTextOptionsChanged (this, EventArgs.Empty);
 				Editor.TextChanging += HandleTextReplacing;
 				Editor.TextChanged += HandleTextReplaced;
+				DocumentContext.AnalysisDocumentChanged += HandleTextOptionsChanged;
 			}
 			if (IdeApp.Workspace != null)
 				IdeApp.Workspace.ActiveConfigurationChanged += HandleTextOptionsChanged;
-			CompletionWindowManager.WindowClosed += CompletionWindowManager_WindowClosed;
 		}
 
 		bool indentationDisabled;
@@ -147,12 +111,11 @@ namespace MonoDevelop.CSharp.Formatting
 			}
 		}
 
-		void HandleTextOptionsChanged (object sender, EventArgs e)
+		async void HandleTextOptionsChanged (object sender, EventArgs e)
 		{
-			//var options = Editor.CreateNRefactoryTextEditorOptions ();
-			optionSet = Policy.CreateOptions (Editor.Options);
-			//options.IndentBlankLines = true;
-			ICSharpCode.NRefactory6.CSharp.IStateMachineIndentEngine indentEngine;
+			optionSet = await DocumentContext.GetOptionsAsync ();
+
+			IStateMachineIndentEngine indentEngine;
 			try {
 				var csharpIndentEngine = new ICSharpCode.NRefactory6.CSharp.CSharpIndentEngine (optionSet);
 				//csharpIndentEngine.EnableCustomIndentLevels = true;
@@ -164,19 +127,29 @@ namespace MonoDevelop.CSharp.Formatting
 				LoggingService.LogError ("Error while creating the c# indentation engine", ex);
 				indentEngine = new ICSharpCode.NRefactory6.CSharp.NullIStateMachineIndentEngine ();
 			}
-			stateTracker = new ICSharpCode.NRefactory6.CSharp.CacheIndentEngine (indentEngine);
-			if (DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.Auto) {
-				Editor.SetIndentationTracker (null);
-			} else {
-				Editor.SetIndentationTracker (new IndentVirtualSpaceManager (Editor, stateTracker));
-			}
 
-			indentationDisabled = DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.Auto || DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.None;
-			if (indentationDisabled) {
-				Editor.SetTextPasteHandler (null);
-			} else {
-				Editor.SetTextPasteHandler (new CSharpTextPasteHandler (this, stateTracker, optionSet));
-			}
+			await Runtime.RunInMainThread(delegate {
+				try {
+					var editor = Editor;
+					if (editor == null) // disposed
+						return;
+					stateTracker = new ICSharpCode.NRefactory6.CSharp.CacheIndentEngine (indentEngine);
+					if (DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.Auto) {
+						editor.IndentationTracker = null;
+					} else {
+						editor.IndentationTracker = new CSharpIndentationTracker (editor, DocumentContext);
+					}
+
+					indentationDisabled = DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.Auto || DefaultSourceEditorOptions.Instance.IndentStyle == IndentStyle.None;
+					if (indentationDisabled) {
+						editor.SetTextPasteHandler (null);
+					} else {
+						editor.SetTextPasteHandler (new CSharpTextPasteHandler (this, optionSet));
+					}
+				} catch (Exception ex) {
+					LoggingService.LogError ("Error while handling text option change.", ex);
+				}
+			});
 		}
 
 		public override void Dispose ()
@@ -184,13 +157,13 @@ namespace MonoDevelop.CSharp.Formatting
 			if (Editor != null) {
 				Editor.SetTextPasteHandler (null);
 				Editor.OptionsChanged -= HandleTextOptionsChanged;
-				Editor.SetIndentationTracker (null);
+				Editor.IndentationTracker  = null;
 				Editor.TextChanging -= HandleTextReplacing;
 				Editor.TextChanged -= HandleTextReplaced;
+				DocumentContext.AnalysisDocumentChanged -= HandleTextOptionsChanged;
 			}
 			IdeApp.Workspace.ActiveConfigurationChanged -= HandleTextOptionsChanged;
-			CompletionWindowManager.WindowClosed -= CompletionWindowManager_WindowClosed;
-			
+
 			stateTracker = null;
 			base.Dispose ();
 		}
@@ -199,37 +172,43 @@ namespace MonoDevelop.CSharp.Formatting
 
 		void HandleTextReplaced (object sender, MonoDevelop.Core.Text.TextChangeEventArgs e)
 		{
-			stateTracker.ResetEngineToPosition (Editor, e.Offset); 
-			if (wasInVerbatimString == null)
-				return;
-			if (e.RemovalLength != 1 /*|| textEditorData.Document.CurrentAtomicUndoOperationType == OperationType.Format*/)
-				return;
-			SafeUpdateIndentEngine (Math.Min (Editor.Length, e.Offset + e.InsertionLength + 1));
-			if (wasInVerbatimString == true && !stateTracker.IsInsideVerbatimString) {
-				Editor.TextChanging -= HandleTextReplacing;
-				Editor.TextChanged -= HandleTextReplaced;
-				ConvertVerbatimStringToNormal (Editor, e.Offset + e.InsertionLength + 1);
-				Editor.TextChanging += HandleTextReplacing;
-				Editor.TextChanged += HandleTextReplaced;
+			for (int i = 0; i < e.TextChanges.Count; ++i) {
+				var change = e.TextChanges[i];
+				stateTracker.ResetEngineToPosition (Editor, change.NewOffset);
+				if (wasInVerbatimString == null)
+					return;
+				if (change.RemovalLength != 1 /*|| textEditorData.Document.CurrentAtomicUndoOperationType == OperationType.Format*/)
+					return;
+				SafeUpdateIndentEngine (Math.Min (Editor.Length, change.NewOffset + change.InsertionLength + 1));
+				if (wasInVerbatimString == true && !stateTracker.IsInsideVerbatimString) {
+					Editor.TextChanging -= HandleTextReplacing;
+					Editor.TextChanged -= HandleTextReplaced;
+					ConvertVerbatimStringToNormal (Editor, change.NewOffset + change.InsertionLength + 1);
+					Editor.TextChanging += HandleTextReplacing;
+					Editor.TextChanged += HandleTextReplaced;
+				}
 			}
 		}
 
 		void HandleTextReplacing (object sender, MonoDevelop.Core.Text.TextChangeEventArgs e)
 		{
 			wasInVerbatimString = null;
-			var o = e.Offset + e.RemovalLength;
-			if (o < 0 || o + 1 > Editor.Length || e.RemovalLength != 1/* || textEditorData.Document.IsInUndo*/) {
-				return;
+			for (int i = 0; i < e.TextChanges.Count; ++i) {
+				var change = e.TextChanges[i];
+				var o = change.Offset + change.RemovalLength;
+				if (o < 0 || o + 1 > Editor.Length || change.RemovalLength != 1/* || textEditorData.Document.IsInUndo*/) {
+					continue;
+				}
+				if (Editor.GetCharAt (o) != '"')
+					continue;
+				SafeUpdateIndentEngine (o + 1);
+				wasInVerbatimString = stateTracker.IsInsideVerbatimString;
 			}
-			if (Editor.GetCharAt (o) != '"')
-				return;
-			SafeUpdateIndentEngine (o + 1);
-			wasInVerbatimString = stateTracker.IsInsideVerbatimString;
 		}
 
 		internal static string ConvertToStringLiteral (string text)
 		{
-			var result = new StringBuilder ();
+			var result = StringBuilderCache.Allocate ();
 			foreach (var ch in text) {
 				switch (ch) {
 				case '\t':
@@ -252,7 +231,7 @@ namespace MonoDevelop.CSharp.Formatting
 					break;
 				}
 			}
-			return result.ToString ();
+			return StringBuilderCache.ReturnAndFree (result);
 		}
 
 		static void ConvertNormalToVerbatimString (ITextDocument textEditorData, int offset)
@@ -275,8 +254,8 @@ namespace MonoDevelop.CSharp.Formatting
 			}
 			if (offset > endOffset || endOffset == textEditorData.Length)
 				return;
-			var plainText = TextPasteUtils.StringLiteralPasteStrategy.Instance.Decode (textEditorData.GetTextAt (offset, endOffset - offset));
-			var newText = TextPasteUtils.VerbatimStringStrategy.Encode (plainText);
+			var plainText = CSharpTextPasteHandler.TextPasteUtils.StringLiteralPasteStrategy.Instance.Decode (textEditorData.GetTextAt (offset, endOffset - offset));
+			var newText = CSharpTextPasteHandler.TextPasteUtils.VerbatimStringStrategy.Encode (plainText);
 			textEditorData.ReplaceText (offset, endOffset - offset, newText);
 		}
 
@@ -294,15 +273,15 @@ namespace MonoDevelop.CSharp.Formatting
 				}
 				endOffset++;
 			}
-			var plainText = TextPasteUtils.VerbatimStringStrategy.Decode (textEditorData.GetTextAt (offset, endOffset - offset));
-			var newText = TextPasteUtils.StringLiteralPasteStrategy.Instance.Encode (plainText);
+			var plainText = CSharpTextPasteHandler.TextPasteUtils.VerbatimStringStrategy.Decode (textEditorData.GetTextAt (offset, endOffset - offset));
+			var newText = CSharpTextPasteHandler.TextPasteUtils.StringLiteralPasteStrategy.Instance.Encode (plainText);
 			textEditorData.ReplaceText (offset, endOffset - offset, newText);
 		}
 
 		public bool DoInsertTemplate ()
 		{
 			string word = CodeTemplate.GetTemplateShortcutBeforeCaret (Editor);
-			foreach (CodeTemplate template in CodeTemplateService.GetCodeTemplates (CSharpFormatter.MimeType)) {
+			foreach (CodeTemplate template in CodeTemplateService.GetCodeTemplatesAsync (Editor).WaitAndGetResult (CancellationToken.None)) {
 				if (template.Shortcut == word)
 					return true;
 			}
@@ -311,35 +290,112 @@ namespace MonoDevelop.CSharp.Formatting
 
 		int lastInsertedSemicolon = -1;
 
+#region Xml Tag Insertion
+
 		void CheckXmlCommentCloseTag (char keyChar)
 		{
-			if (keyChar == '>' && stateTracker.IsInsideDocLineComment) {
-				var location = Editor.CaretLocation;
-				string lineText = Editor.GetLineText (Editor.CaretLine);
-				int startIndex = Math.Min (location.Column - 2, lineText.Length - 1);
-				while (startIndex >= 0 && lineText [startIndex] != '<') {
-					--startIndex;
-					if (lineText [startIndex] == '/') {
-						// already closed.
-						startIndex = -1;
-						break;
+			if (!stateTracker.IsInsideDocLineComment || (keyChar != '>' && keyChar != '/'))
+				return;
+			var analysisDocument = DocumentContext?.AnalysisDocument;
+			if (analysisDocument == null)
+				return;
+			var cancellationToken = default (CancellationToken);
+			var tree = analysisDocument.GetSyntaxTreeSynchronously (cancellationToken);
+			var token = tree.FindTokenOnLeftOfPosition (Editor.CaretOffset, cancellationToken, includeDocumentationComments: true);
+			int position = Editor.CaretOffset;
+
+			if (token.IsKind (SyntaxKind.GreaterThanToken)) {
+				var parentStartTag = token.Parent as XmlElementStartTagSyntax;
+				if (parentStartTag == null) {
+					return;
+				}
+
+				// Slightly special case: <blah><blah$$</blah>
+				// If we already have a matching end tag and we're parented by 
+				// an xml element with the same start tag and a missing/non-matching end tag, 
+				// do completion anyway. Generally, if this is the case, we have to walk
+				// up the parent elements until we find an unmatched start tag.
+
+				if (parentStartTag.Name.LocalName.ValueText.Length > 0 && HasMatchingEndTag (parentStartTag)) {
+					if (HasUnmatchedIdenticalParent (parentStartTag)) {
+						Editor.InsertAtCaret ("</" + parentStartTag.Name.LocalName.ValueText + ">");
+						Editor.CaretOffset = position;
+						return;
 					}
 				}
-				if (startIndex >= 0) {
-					int endIndex = startIndex + 1;
-					while (endIndex <= location.Column - 1 && endIndex < lineText.Length && Char.IsLetter (lineText [endIndex])) {
-						endIndex++;
-					}
-					string tag = endIndex - startIndex > 0 ? lineText.Substring (startIndex + 1, endIndex - startIndex - 1) : null;
-					if (!string.IsNullOrEmpty (tag) && ICSharpCode.NRefactory.CSharp.Completion.CSharpCompletionEngine.CommentTags.Any (t => t == tag)) {
-						var caretOffset = Editor.CaretOffset;
-						Editor.InsertText (caretOffset, "</" + tag + ">");
-						Editor.CaretOffset = caretOffset;
+
+				CheckNameAndInsertText (parentStartTag, position, "</{0}>");
+			} else if (token.IsKind (SyntaxKind.LessThanSlashToken)) {
+				// /// <summary>
+				// /// </$$
+				// /// </summary>
+				// We need to check for non-trivia XML text tokens after $$ that match the expected end tag text.
+
+				if (token.Parent.IsKind (SyntaxKind.XmlElementEndTag) &&
+					token.Parent.IsParentKind (SyntaxKind.XmlElement)) {
+					var parentElement = token.Parent.Parent as XmlElementSyntax;
+
+					if (!HasFollowingEndTagTrivia (parentElement, token)) {
+						CheckNameAndInsertText (parentElement.StartTag, null, "{0}>");
 					}
 				}
 			}
 		}
 
+		bool HasFollowingEndTagTrivia(XmlElementSyntax parentElement, SyntaxToken lessThanSlashToken)
+		{
+			var expectedEndTagText = "</" + parentElement.StartTag.Name.LocalName.ValueText + ">";
+
+			var token = lessThanSlashToken.GetNextToken (includeDocumentationComments: true);
+			while (token.Parent.IsKind (SyntaxKind.XmlText)) {
+				if (token.ValueText == expectedEndTagText)
+					return true;
+				token = token.GetNextToken (includeDocumentationComments: true);
+			}
+
+			return false;
+		}
+
+		bool HasUnmatchedIdenticalParent (XmlElementStartTagSyntax parentStartTag)
+		{
+			if (parentStartTag.Parent.Parent is XmlElementSyntax grandParentElement) {
+				if (grandParentElement.StartTag.Name.LocalName.ValueText == parentStartTag.Name.LocalName.ValueText) {
+					if (HasMatchingEndTag (grandParentElement.StartTag))
+						return HasUnmatchedIdenticalParent (grandParentElement.StartTag);
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		bool HasMatchingEndTag (XmlElementStartTagSyntax parentStartTag)
+		{
+			var parentElement = parentStartTag?.Parent as XmlElementSyntax;
+			if (parentElement == null)
+				return false;
+			var endTag = parentElement.EndTag;
+			return endTag != null && !endTag.IsMissing && endTag.Name.LocalName.ValueText == parentStartTag.Name.LocalName.ValueText;
+		}
+
+		void CheckNameAndInsertText (XmlElementStartTagSyntax startTag, int? finalCaretPosition, string formatString)
+		{
+			if (startTag == null) 
+				return;
+
+			var elementName = startTag.Name.LocalName.ValueText;
+
+			if (elementName.Length > 0) {
+				var parentElement = startTag.Parent as XmlElementSyntax;
+				if (parentElement.EndTag.Name.LocalName.ValueText != elementName) {
+					Editor.InsertAtCaret (string.Format (formatString, elementName));
+					if (finalCaretPosition.HasValue)
+						Editor.CaretOffset = finalCaretPosition.Value;
+				}
+			}
+		}
+
+#endregion
 		internal void ReindentOnTab ()
 		{
 			int cursor = Editor.CaretOffset;
@@ -385,10 +441,14 @@ namespace MonoDevelop.CSharp.Formatting
 				    "SmartSemicolonPlacement",
 				    false
 			    ) && !(stateTracker.IsInsideComment || stateTracker.IsInsideString)) {
+				bool isCompletionWindowOpen = CompletionWindowManager.IsVisible;
 				bool retval = base.KeyPress (descriptor);
 				var curLine = Editor.GetLine (Editor.CaretLine);
 				string text = Editor.GetTextAt (curLine);
-				if (!(text.EndsWith (";", StringComparison.Ordinal) || text.Trim ().StartsWith ("for", StringComparison.Ordinal))) {
+
+				if (!isCompletionWindowOpen &&                           // Completion window handles ';' on it's own
+					Editor.GetCharAt (Editor.CaretOffset - 1) == ';' &&  // Formatting engine may've already interfered
+					!(text.EndsWith (";", StringComparison.Ordinal) || text.Trim ().StartsWith ("for", StringComparison.Ordinal))) {
 					int guessedOffset;
 
 					if (GuessSemicolonInsertionOffset (Editor, curLine, Editor.CaretOffset, out guessedOffset)) {
@@ -400,14 +460,9 @@ namespace MonoDevelop.CSharp.Formatting
 						}
 					}
 				}
-				using (var undo = Editor.OpenUndoGroup ()) {
-					if (OnTheFlyFormatting && Editor != null && Editor.EditMode == EditMode.Edit) {
-						OnTheFlyFormatter.FormatStatmentAt (Editor, DocumentContext, Editor.CaretLocation, optionSet: optionSet);
-					}
-				}
 				return retval;
 			}
-			
+
 			if (descriptor.SpecialKey == SpecialKey.Tab && descriptor.ModifierKeys == ModifierKeys.None && !CompletionWindowManager.IsVisible) {
 				SafeUpdateIndentEngine (Editor.CaretOffset);
 				if (stateTracker.IsInsideStringLiteral && !Editor.IsSomethingSelected) {
@@ -456,9 +511,9 @@ namespace MonoDevelop.CSharp.Formatting
 
 
 				bool returnBetweenBraces =
-					descriptor.SpecialKey == SpecialKey.Return && 
-					descriptor.ModifierKeys == ModifierKeys.None && 
-					          Editor.CaretOffset > 0 && Editor.CaretOffset < Editor.Length && 
+					descriptor.SpecialKey == SpecialKey.Return &&
+					descriptor.ModifierKeys == ModifierKeys.None &&
+					          Editor.CaretOffset > 0 && Editor.CaretOffset < Editor.Length &&
 					          Editor.GetCharAt (Editor.CaretOffset - 1) == '{' && Editor.GetCharAt (Editor.CaretOffset) == '}' && !stateTracker.IsInsideOrdinaryCommentOrString;
 
 				bool automaticReindent;
@@ -478,7 +533,7 @@ namespace MonoDevelop.CSharp.Formatting
 				//handle inserted characters
 				if (Editor.CaretOffset <= 0 || Editor.IsSomethingSelected)
 					return retval;
-				
+
 				lastCharInserted = TranslateKeyCharForIndenter (descriptor.SpecialKey, descriptor.KeyChar, Editor.GetCharAt (Editor.CaretOffset - 1));
 				if (lastCharInserted == '\0')
 					return retval;
@@ -503,7 +558,7 @@ namespace MonoDevelop.CSharp.Formatting
 						}
 					}
 					//reindent the line after the insertion, if needed
-					//N.B. if the engine says we need to reindent, make sure that it's because a char was 
+					//N.B. if the engine says we need to reindent, make sure that it's because a char was
 					//inserted rather than just updating the stack due to moving around
 
 					SafeUpdateIndentEngine (Editor.CaretOffset);
@@ -514,19 +569,13 @@ namespace MonoDevelop.CSharp.Formatting
 							if (Editor.GetLine (Editor.CaretLine).Length == 0)
 								Editor.CaretColumn = Editor.GetVirtualIndentationColumn (Editor.CaretLine);
 						} else {
+							if (Editor.GetLine (Editor.CaretLine).Length == 0)
+								Editor.InsertAtCaret (Editor.GetVirtualIndentationString (Editor.CaretLine));
 							DoReSmartIndent ();
 						}
 					}
 				}
 
-				const string reindentChars = ";){}";
-				if (reIndent || descriptor.SpecialKey != SpecialKey.Return && descriptor.SpecialKey != SpecialKey.Tab && automaticReindent && reindentChars.Contains (descriptor.KeyChar)) {
-					using (var undo = Editor.OpenUndoGroup ()) {
-						DoReSmartIndent ();
-					}
-				}
-
-				HandleOnTheFlyFormatting (descriptor);
 				SafeUpdateIndentEngine (Editor.CaretOffset);
 				lastCharInserted = '\0';
 				CheckXmlCommentCloseTag (descriptor.KeyChar);
@@ -544,97 +593,9 @@ namespace MonoDevelop.CSharp.Formatting
 			//and calls HandleCodeCompletion etc to handles completion
 			var result = base.KeyPress (descriptor);
 
-			if (!indentationDisabled && (descriptor.SpecialKey == SpecialKey.Return)) {
-				DoReSmartIndent ();
-			}
-
 			CheckXmlCommentCloseTag (descriptor.KeyChar);
 
-			HandleOnTheFlyFormatting (descriptor);
-			
 			return result;
-		}
-
-		void HandleOnTheFlyFormatting (KeyDescriptor descriptor)
-		{
-			if (descriptor.KeyChar == '{')
-				return;
-			SafeUpdateIndentEngine (Editor.CaretOffset);
-			bool skipFormatting = stateTracker.IsInsideOrdinaryCommentOrString;
-			if (!skipFormatting && !(stateTracker.IsInsideComment || stateTracker.IsInsideString)) {
-				if (DocumentContext.ParsedDocument == null || DocumentContext.ParsedDocument.GetAst<SemanticModel> () == null)
-					return;
-				var document = DocumentContext.AnalysisDocument;
-				if (document == null)
-					return;
-				if (!skipFormatting && service.SupportsFormattingOnTypedCharacter (document, descriptor.KeyChar)) {
-					var caretPosition = Editor.CaretOffset;
-					var token = CSharpEditorFormattingService.GetTokenBeforeTheCaretAsync (document, caretPosition, default(CancellationToken)).Result;
-					if (token.IsMissing || !service.ValidSingleOrMultiCharactersTokenKind (descriptor.KeyChar, token.Kind ()) || token.IsKind (SyntaxKind.EndOfFileToken, SyntaxKind.None))
-						return;
-					if (CSharpEditorFormattingService.TokenShouldNotFormatOnTypeChar (token))
-						return;
-					using (var undo = Editor.OpenUndoGroup ()) {
-						if (OnTheFlyFormatting && Editor != null && Editor.EditMode == EditMode.Edit) {
-							var oldVersion = Editor.Version;
-							OnTheFlyFormatter.FormatStatmentAt (Editor, DocumentContext, Editor.CaretLocation, optionSet: optionSet);
-							if (oldVersion.CompareAge (Editor.Version) != 0)
-								CompletionWindowManager.HideWindow ();
-						}
-					}
-				}
-			}
-			if (OnTheFlyFormatting && descriptor.SpecialKey == SpecialKey.Return) {
-				try {
-					FormatOnReturn ();
-				} catch (Exception e) {
-					LoggingService.LogError ("Exception while formatting", e);
-				}
-			}
-		}
-
-		async void CompletionWindowManager_WindowClosed (object sender, EventArgs e)
-		{
-			var document = DocumentContext.AnalysisDocument;
-			if (document == null)
-				return;
-			var caretPosition = Editor.CaretOffset;
-			var token = await CSharpEditorFormattingService.GetTokenBeforeTheCaretAsync (document, caretPosition, default (CancellationToken)).ConfigureAwait (false);
-			if (token.IsMissing || !token.Parent.IsKind (SyntaxKind.ElseDirectiveTrivia))
-				return;
-			var tokenRange = FormattingRangeHelper.FindAppropriateRange (token);
-			if (tokenRange == null || !tokenRange.HasValue || tokenRange.Value.Item1.Equals (tokenRange.Value.Item2))
-				return;
-			
-			var value = tokenRange.Value;
-			using (var undo = Editor.OpenUndoGroup ()) {
-				OnTheFlyFormatter.Format (Editor, DocumentContext, value.Item1.SpanStart, value.Item2.Span.End, optionSet: optionSet);
-			}
-		}
-
-		async void FormatOnReturn (CancellationToken cancellationToken = default (CancellationToken))
-		{
-			var document = DocumentContext.AnalysisDocument;
-			if (document == null)
-				return;
-			var caretPosition = Editor.CaretOffset;
-			var token = await CSharpEditorFormattingService.GetTokenBeforeTheCaretAsync (document, caretPosition, cancellationToken).ConfigureAwait (false);
-			if (token.IsMissing)
-				return;
-
-			string text = null;
-			if (service.IsInvalidToken (token, ref text))
-				return;
-			// Check to see if the token is ')' and also the parent is a using statement. If not, bail
-			if (CSharpEditorFormattingService.TokenShouldNotFormatOnReturn (token))
-				return;
-			var tokenRange = FormattingRangeHelper.FindAppropriateRange (token);
-			if (tokenRange == null || !tokenRange.HasValue || tokenRange.Value.Item1.Equals (tokenRange.Value.Item2))
-				return;
-			var value = tokenRange.Value;
-			using (var undo = Editor.OpenUndoGroup ()) {
-				OnTheFlyFormatter.Format (Editor, DocumentContext, value.Item1.SpanStart, value.Item2.Span.End, optionSet: optionSet);
-			}
 		}
 
 		CSharpEditorFormattingService service = new CSharpEditorFormattingService ();
@@ -688,7 +649,7 @@ namespace MonoDevelop.CSharp.Formatting
 					lastNonWsChar = ch;
 				}
 				return false;
-			}); 
+			});
 			// if the line ends with ';' the line end is not the correct place for a new semicolon.
 			if (lastNonWsChar == ';')
 				return false;
@@ -765,11 +726,12 @@ namespace MonoDevelop.CSharp.Formatting
 			reIndent = false;
 			switch (charInserted) {
 			case '}':
+			case ':':
 			case ';':
 				reIndent = true;
 				break;
 			case '\n':
-				if (completionWindowWasVisible) // \n is handled by an open completion window 
+				if (completionWindowWasVisible) // \n is handled by an open completion window
 					return;
 				if (FixLineStart (Editor, stateTracker, Editor.OffsetToLineNumber (stateTracker.Offset)))
 					return;
@@ -783,7 +745,7 @@ namespace MonoDevelop.CSharp.Formatting
 		OptionSet optionSet;
 		bool completionWindowWasVisible;
 
-		public bool FixLineStart (TextEditor textEditorData, ICSharpCode.NRefactory6.CSharp.IStateMachineIndentEngine stateTracker, int lineNumber)
+		public bool FixLineStart (Ide.Editor.TextEditor textEditorData, ICSharpCode.NRefactory6.CSharp.IStateMachineIndentEngine stateTracker, int lineNumber)
 		{
 			if (lineNumber > 1) {
 				var line = textEditorData.GetLine (lineNumber);
@@ -837,11 +799,12 @@ namespace MonoDevelop.CSharp.Formatting
 					if (!lexer.IsInString)
 						return false;
 					textEditorData.EnsureCaretIsNotVirtual ();
-					textEditorData.InsertText (prevLine.Offset + prevLine.Length, "\" +");
-
-					int indentSize = textEditorData.CaretOffset - line.Offset;
-					var insertedText = prevLine.GetIndentation (textEditorData) + (trimmedPreviousLine.StartsWith ("\"", StringComparison.Ordinal) ? "" : "\t") + "\"";
-					textEditorData.ReplaceText (line.Offset, indentSize, insertedText);
+					var insertedText = "\" +";
+					textEditorData.InsertText (prevLine.Offset + prevLine.Length, insertedText);
+					var lineOffset = line.Offset + insertedText.Length;
+					int indentSize = textEditorData.CaretOffset - lineOffset;
+					insertedText = prevLine.GetIndentation (textEditorData) + (trimmedPreviousLine.StartsWith ("\"", StringComparison.Ordinal) ? "" : "\t") + "\"";
+					textEditorData.ReplaceText (lineOffset, indentSize, insertedText);
 					return true;
 				}
 			}
@@ -853,7 +816,7 @@ namespace MonoDevelop.CSharp.Formatting
 			DoReSmartIndent (Editor.CaretOffset);
 		}
 
-		internal void DoReSmartIndent (int cursor)
+		internal async void DoReSmartIndent (int cursor)
 		{
 			SafeUpdateIndentEngine (cursor);
 			if (stateTracker.LineBeganInsideVerbatimString || stateTracker.LineBeganInsideMultiLineComment || stateTracker.IsInsidePreprocessorDirective)
@@ -863,42 +826,14 @@ namespace MonoDevelop.CSharp.Formatting
 				return;
 			}
 			var line = Editor.GetLineByOffset (cursor);
+			var doc = DocumentContext.AnalysisDocument;
 
-			// Get context to the end of the line w/o changing the main engine's state
-			var curTracker = stateTracker.Clone ();
-			try {
-				for (int max = cursor; max < line.EndOffset; max++) {
-					curTracker.Push (Editor.GetCharAt (max));
-				}
-			} catch (Exception e) {
-				LoggingService.LogError ("Exception during indentation", e);
+			var formattingService = doc.GetLanguageService<IEditorFormattingService> ();
+			if (formattingService != null && formattingService.SupportsFormatOnReturn) {
+				var changes = await formattingService.GetFormattingChangesOnReturnAsync (doc, cursor, default);
+				if (changes != null)
+					Editor.ApplyTextChanges (changes);
 			}
-			
-			int pos = line.Offset;
-			string curIndent = line.GetIndentation (Editor);
-			int nlwsp = curIndent.Length;
-			int offset = cursor > pos + nlwsp ? cursor - (pos + nlwsp) : 0;
-			if (!stateTracker.LineBeganInsideMultiLineComment || (nlwsp < line.LengthIncludingDelimiter && Editor.GetCharAt (line.Offset + nlwsp) == '*')) {
-				// Possibly replace the indent
-				string newIndent = curTracker.ThisLineIndent;
-				int newIndentLength = newIndent.Length;
-				if (newIndent != curIndent) {
-					if (CompletionWindowManager.IsVisible) {
-						if (pos < CompletionWindowManager.CodeCompletionContext.TriggerOffset)
-							CompletionWindowManager.CodeCompletionContext.TriggerOffset -= nlwsp;
-					}
-					newIndentLength = newIndent.Length;
-					Editor.ReplaceText (pos, nlwsp, newIndent);
-					//textEditorData.CommitLineUpdate (textEditorData.CaretLine);
-					CompletionWindowManager.HideWindow ();
-				}
-				pos += newIndentLength;
-			} else {
-				pos += curIndent.Length;
-			}
-
-			pos += offset;
-
 			Editor.FixVirtualIndentation ();
 		}
 
@@ -907,7 +842,7 @@ namespace MonoDevelop.CSharp.Formatting
 		public void FormatBuffer ()
 		{
 			Console.WriteLine ("format buffer!");
-			ITypeResolveContext dom = TypeSystemService.GetProjectDom (Document.Project);
+			ITypeResolveContext dom = IdeApp.TypeSystemService.GetProjectDom (Document.Project);
 			OnTheFlyFormatter.Format (this.textEditorData, dom);
 		}*/
 	}

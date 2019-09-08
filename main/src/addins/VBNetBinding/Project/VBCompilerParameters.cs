@@ -1,4 +1,4 @@
-//  VBCompilerParameters.cs
+﻿//  VBCompilerParameters.cs
 //
 //  This file was derived from a file from #Develop, and relicensed
 //  by Markus Palme to MIT/X11
@@ -33,6 +33,10 @@ using System.Collections.Generic;
 
 using MonoDevelop.Projects;
 using MonoDevelop.Core.Serialization;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.VisualBasic;
+using System.Collections.Immutable;
+using MonoDevelop.Ide;
 
 namespace MonoDevelop.VBNetBinding
 {
@@ -99,16 +103,22 @@ namespace MonoDevelop.VBNetBinding
 		[ItemProperty ("RemoveIntegerChecks", DefaultValue=false)]
 		bool generateOverflowChecks = false;
 
+		[ItemProperty ("RootNamespace", DefaultValue="")]
+		string rootNamespace = String.Empty;
+
 		// MD-only properties
 		
 		[ItemProperty ("AdditionalParameters")]
 		string additionalParameters = String.Empty;
 
+		/// <summary>
+		/// VB.NET compiler does not support ';' as symbol separators so use ','
+		/// </summary>
 		public override void AddDefineSymbol (string symbol)
 		{
 			var symbols = new List<string> (GetDefineSymbols ());
 			symbols.Add (symbol);
-			definesymbols = string.Join (";", symbols) + ";";
+			definesymbols = string.Join (",", symbols) + ",";
 		}
 		
 		public override void RemoveDefineSymbol (string symbol)
@@ -118,14 +128,14 @@ namespace MonoDevelop.VBNetBinding
 			symbols.Remove (symbol);
 			
 			if (symbols.Count > 0)
-				definesymbols = string.Join (";", symbols) + ";";
+				definesymbols = string.Join (",", symbols) + ",";
 			else
 				definesymbols = string.Empty;
 		}
 
 		public override IEnumerable<string> GetDefineSymbols ()
 		{
-			foreach (var s in definesymbols.Split (new [] { ';' }))
+			foreach (var s in definesymbols.Split (new [] { ',' }))
 				if (!string.IsNullOrEmpty (s))
 					yield return s;
 		}
@@ -190,6 +200,29 @@ namespace MonoDevelop.VBNetBinding
 		public string AdditionalParameters {
 			get { return additionalParameters; }
 			set { additionalParameters = value; }
+		}
+
+		public override CompilationOptions CreateCompilationOptions ()
+		{
+			var project = (VBProject)ParentProject;
+			var workspace = IdeApp.TypeSystemService.GetWorkspace (project.ParentSolution);
+
+			var options = new VisualBasicCompilationOptions (
+				OutputKind.ConsoleApplication,
+				mainTypeName: project.StartupObject,
+				scriptClassName: "Script",
+				optimizationLevel: Optimize ? OptimizationLevel.Release : OptimizationLevel.Debug,
+				rootNamespace: rootNamespace,
+				checkOverflow: generateOverflowChecks,
+				cryptoKeyFile: ParentConfiguration.SignAssembly ? ParentConfiguration.AssemblyKeyFile : null,
+				cryptoPublicKey: ImmutableArray<byte>.Empty,
+				generalDiagnosticOption: TreatWarningsAsErrors ? ReportDiagnostic.Error : ReportDiagnostic.Default,
+				concurrentBuild: true,
+				assemblyIdentityComparer: DesktopAssemblyIdentityComparer.Default,
+				strongNameProvider: new DesktopStrongNameProvider ()
+			);
+
+			return options;
 		}
 	}
 }

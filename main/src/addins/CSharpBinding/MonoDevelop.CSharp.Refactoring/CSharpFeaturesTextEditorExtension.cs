@@ -1,4 +1,4 @@
-// 
+﻿// 
 // RenameTextEditorExtension.cs
 //  
 // Author:
@@ -38,6 +38,7 @@ using MonoDevelop.Refactoring;
 using MonoDevelop.Ide.TypeSystem;
 using MonoDevelop.Ide.Gui;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.CSharp.Refactoring
 {
@@ -46,7 +47,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		static CSharpFeaturesTextEditorExtension ()
 		{
 			GoToDefinitionService.TryNavigateToSymbol = delegate (ISymbol symbol, Microsoft.CodeAnalysis.Project project, bool usePreviewTab) {
-				RefactoringService.RoslynJumpToDeclaration (symbol, TypeSystemService.GetMonoProject (project));
+				RefactoringService.RoslynJumpToDeclaration (symbol, IdeApp.TypeSystemService.GetMonoProject (project));
 				return true;
 			};
 
@@ -58,11 +59,11 @@ namespace MonoDevelop.CSharp.Refactoring
 				var offset = textSpan.Start;
 				string projectedName;
 				int projectedOffset;
-				if (TypeSystemService.GetWorkspace (TypeSystemService.GetMonoProject(project).ParentSolution).TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
+				if (IdeApp.TypeSystemService.GetWorkspace (IdeApp.TypeSystemService.GetMonoProject(project).ParentSolution).TryGetOriginalFileFromProjection (fileName, offset, out projectedName, out projectedOffset)) {
 					fileName = projectedName;
 					offset = projectedOffset;
 				}
-				IdeApp.Workbench.OpenDocument (new FileOpenInformation (fileName, TypeSystemService.GetMonoProject (project)) {
+				IdeApp.Workbench.OpenDocument (new FileOpenInformation (fileName, IdeApp.TypeSystemService.GetMonoProject (project)) {
 					Offset = offset
 				});
 				return true;
@@ -111,16 +112,16 @@ namespace MonoDevelop.CSharp.Refactoring
 		}
 
 		[CommandUpdateHandler (RefactoryCommands.GotoDeclaration)]
-		public async void GotoDeclaration_Update (CommandInfo ci)
+		public async Task GotoDeclaration_Update (CommandInfo ci, CancellationToken cancellationToken)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
 			if (doc == null || doc.FileName == FilePath.Null)
 				return;
-			if (doc.ParsedDocument == null || doc.ParsedDocument.GetAst<SemanticModel> () == null) {
+			if (DocumentContext.AnalysisDocument == null) {
 				ci.Enabled = false;
 				return;
 			}
-			var symbol = await GoToDefinitionService.FindSymbolAsync (base.DocumentContext.AnalysisDocument, Editor.CaretOffset, default(CancellationToken));
+			var symbol = await GoToDefinitionService.FindSymbolAsync (base.DocumentContext.AnalysisDocument, Editor.CaretOffset, cancellationToken);
 			ci.Enabled = symbol != null;
 		}
 

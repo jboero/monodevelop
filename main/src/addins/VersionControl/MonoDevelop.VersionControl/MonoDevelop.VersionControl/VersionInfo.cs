@@ -1,5 +1,7 @@
 
 using MonoDevelop.Core;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.VersionControl
 {
@@ -34,10 +36,11 @@ namespace MonoDevelop.VersionControl
 				AllowedOperations == obj.AllowedOperations;
 		}
 		
-		internal void Init (Repository repo)
+		internal async Task InitAsync (Repository repo, CancellationToken cancellationToken = default)
 		{
 			ownerRepository = repo;
 			RequiresRefresh = false;
+			operations = await ownerRepository.GetSupportedOperationsAsync (this, cancellationToken);
 		}
 		
 		public static VersionInfo CreateUnversioned (FilePath path, bool isDirectory)
@@ -46,7 +49,9 @@ namespace MonoDevelop.VersionControl
 		}
 
 		internal bool RequiresRefresh { get; set; }
-		
+
+		internal bool IsInitialized => ownerRepository != null;
+
 		public bool IsVersioned {
 			get { return (Status & VersionStatus.Versioned) != 0; }
 		}
@@ -106,10 +111,6 @@ namespace MonoDevelop.VersionControl
 		
 		public VersionControlOperation AllowedOperations {
 			get {
-				if (!opsLoaded && ownerRepository != null) {
-					opsLoaded = true;
-					operations = ownerRepository.GetSupportedOperations (this);
-				}
 				return operations;
 			}
 		}

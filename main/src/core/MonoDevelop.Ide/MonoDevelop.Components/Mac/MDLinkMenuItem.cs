@@ -1,4 +1,4 @@
-//
+﻿//
 // MDLinkMenuItem.cs
 //
 // Author:
@@ -40,19 +40,18 @@ namespace MonoDevelop.Components.Mac
 			this.lce = lce;
 			this.Title = lce.Text;
 
-			Target = this;
-			Action = MDMenuItem.ActionSel;
+			Activated += MDLinkMenuItem_Activated;
 		}
 
-		[Export (MDMenuItem.ActionSelName)]
-		public void Run (NSObject dummy)
+		static void MDLinkMenuItem_Activated (object sender, System.EventArgs e)
 		{
-			MonoDevelop.Ide.DesktopService.ShowUrl (lce.Url);
+			if (sender is MDLinkMenuItem linkMenuItem) {
+				MonoDevelop.Ide.IdeServices.DesktopService.ShowUrl (linkMenuItem.lce.Url);
+			}
 		}
 
-		public void Update (MDMenu parent, ref NSMenuItem lastSeparator, ref int index)
+		public void Update (MDMenu parent, ref int index)
 		{
-			MDMenu.ShowLastSeparator (ref lastSeparator);
 		}
 	}
 }

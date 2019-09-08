@@ -2,8 +2,8 @@
 open System
 open System.Collections.Generic
 open System.Text
-open Microsoft.FSharp.Compiler
-open Microsoft.FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler
+open FSharp.Compiler.SourceCodeServices
 
 module Symbols =
     let getLocationFromSymbolUse (s: FSharpSymbolUse) =
@@ -211,7 +211,7 @@ type XmlDoc =
 
 type ParameterTooltip =
   ///A ToolTip of signature, summary
-  | ToolTip of signature:string * doc:XmlDoc * parameters: string list
+  | ToolTip of signature:string * doc:XmlDoc * parameters: string array
     ///A empty tip
   | EmptyTip
 
@@ -413,7 +413,7 @@ module SymbolTooltips =
         let functionName =
             let name =
                 if func.IsConstructor then
-                    match func.EnclosingEntitySafe with
+                    match func.DeclaringEntity with
                     | Some ent -> ent.DisplayName
                     | _ ->
                         //LoggingService.LogWarning(sprintf "getFuncSignatureWithFormat: No enclosing entity found for: %s" func.DisplayName)
@@ -433,7 +433,7 @@ module SymbolTooltips =
             let modifier =
                 //F# types are prefixed with new, should non F# types be too for consistancy?
                 if func.IsConstructor then
-                    match func.EnclosingEntitySafe with
+                    match func.DeclaringEntity with
                     | Some ent -> if ent.IsFSharp then "new" ++ accessibility
                                   else accessibility
                     | _ ->
@@ -488,7 +488,7 @@ module SymbolTooltips =
             | _ -> indent + name.PadRight padding + ":"
 
         let isDelegate =
-            match func.EnclosingEntitySafe with
+            match func.DeclaringEntity with
             | Some ent -> ent.IsDelegate
             | _ ->
                 //LoggingService.logWarning "getFuncSignatureWithFormat: No enclosing entity found for: %s" func.DisplayName
@@ -582,8 +582,7 @@ module SymbolTooltips =
             let basicName = modifier + typeName ++ name
 
             if fse.IsFSharpAbbreviation then
-                let unannotatedType = fse.UnAnnotate()
-                basicName ++ "=" ++ (unannotatedType.DisplayName)
+                basicName ++ "=" ++ (fse.AbbreviatedType.Format displayContext)
             else
                 basicName
 
@@ -617,7 +616,7 @@ module SymbolTooltips =
 
     let getAPCaseSignature displayContext (apc:FSharpActivePatternCase) =
       let findVal =
-          apc.Group.EnclosingEntity
+          apc.Group.DeclaringEntity
           |> Option.bind (fun ent -> ent.MembersFunctionsAndValues
                                     |> Seq.tryFind (fun func -> func.DisplayName.Contains apc.DisplayName)
                                     |> Option.map (getFuncSignature displayContext))
@@ -648,12 +647,15 @@ module SymbolTooltips =
             sprintf "%s%s<small>Namespace:\t%s</small>%s<small>Assembly:\t%s</small>" fullName Environment.NewLine ns Environment.NewLine c.Assembly.SimpleName
       
         | Field f ->
-            let parent = f.DeclaringEntity.UnAnnotate().DisplayName
+            let parent =
+                match f.DeclaringEntity with
+                | Some ent -> ent.DisplayName
+                | None -> "No declaring entity"
             sprintf "<small>From type:\t%s</small>%s<small>Assembly:\t%s</small>" parent Environment.NewLine f.Assembly.SimpleName
       
         | ActivePatternCase ap ->
           let parent =
-              ap.Group.EnclosingEntity
+              ap.Group.DeclaringEntity
               |> Option.map (fun enclosing -> enclosing.UnAnnotate().DisplayName)
               |> Option.fill "None"
           sprintf "<small>From type:\t%s</small>%s<small>Assembly:\t%s</small>" parent Environment.NewLine ap.Assembly.SimpleName
@@ -670,11 +672,11 @@ module SymbolTooltips =
                 let signature = getEntitySignature symbol.DisplayContext fse
                 Some(signature, getSummaryFromSymbol fse, footerForType symbol)
             with exn ->
-                //MonoDevelop.Core.LoggingService.LogWarning (sprintf "getTooltipFromSymbolUse: Error occured processing %A" fse)
+                //MonoDevelop.Core.LoggingService.LogWarning (sprintf "getTooltipFromSymbolUse: Error occurred processing %A" fse)
                 None
 
         | Constructor func ->
-            match func.EnclosingEntitySafe with
+            match func.DeclaringEntity with
             | Some ent when ent.IsValueType || ent.IsEnum ->
                   //ValueTypes
                   let signature = getFuncSignature symbol.DisplayContext func

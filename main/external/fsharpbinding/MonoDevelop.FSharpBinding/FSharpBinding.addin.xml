@@ -1,11 +1,11 @@
-<ExtensionModel>
+﻿<ExtensionModel>
   <Runtime>
-    <Import file="FSharp.Core.dll" />
+    <Import assembly="FSharp.Core.dll" />
     <Import assembly="FSharpBinding.dll" />
     <Import assembly="FSharpBinding.Gui.dll" />
     <Import assembly="MonoDevelop.FSharp.Shared.dll" />
     <Import file="FSharp.Compiler.Service.dll" />
-    <Import assembly="FantomasLib.dll" />
+    <Import assembly="Fantomas.dll" />
     <Import assembly="FSharp.Compiler.CodeDom.dll" />
     <Import assembly="ExtCore.dll" />
     <Import file="MonoDevelop.FSharpInteractive.Service.exe" />
@@ -37,7 +37,7 @@
   </Extension>
 
   <Extension path="/MonoDevelop/ProjectModel/MSBuildItemTypes">
-    <DotNetProjectType language="F#" extension="fsproj" guid="{f2a71f9b-5d33-465a-a702-920d77279786}" type="MonoDevelop.FSharp.FSharpProject"/>
+    <DotNetProjectType language="F#" extension="fsproj" guid="{F2A71F9B-5D33-465A-A702-920D77279786}" type="MonoDevelop.FSharp.FSharpProject"/>
   </Extension>
 
   <Extension path = "/MonoDevelop/ProjectModel/ProjectModelExtensions">
@@ -58,8 +58,8 @@
     <Parser class = "MonoDevelop.FSharp.FSharpFoldingParser" mimeType="text/x-fsharp" />
   </Extension>
 
-  <Extension path = "/MonoDevelop/SourceEditor2/TooltipProviders">
-    <Class id="LanguageItem" class="MonoDevelop.FSharp.FSharpTooltipProvider" mimeType="text/x-fsharp" />
+  <Extension path = "/MonoDevelop/Ide/Editor/TooltipProviders">
+    <Provider id="FSharp" class="MonoDevelop.FSharp.FSharpTooltipProvider" mimeType="text/x-fsharp" />
   </Extension>
 
   <Extension path="/MonoDevelop/Ide/TextEditorResolver">
@@ -68,10 +68,6 @@
 
   <Extension path="/MonoDevelop/Ide/FileFilters">
     <FileFilter id="F#" insertbefore="AllFiles" _label="F# Source Files" extensions="*.fs;*.fsi;*.fsx;*.fsscript"/>
-  </Extension>
-
-  <Extension path = "/MonoDevelop/Ide/FileTemplateTypes">
-    <FileTemplateType name = "UnformattedFile" class = "MonoDevelop.FSharp.UnformattedTextFileDescriptionTemplate"/>
   </Extension>
 
   <Extension path="/MonoDevelop/Ide/FileTemplates">
@@ -95,7 +91,6 @@
       <ProjectTemplate id="MonoDevelop.FSharp.TutorialProject" file="Templates/FSharpTutorialProject.xpt.xml"/>
     </ComplexCondition>
 
-    <ProjectTemplate id="FSharpGtkProject" file="Templates/FSharpGtkProject.xpt.xml"/>
     <ProjectTemplate id="FSharpNUnitLibraryProject" file="Templates/FSharpNUnitLibraryProject.xpt.xml"/>
     
     <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.Portable.FSharp.Targets" >
@@ -110,6 +105,11 @@
     </Condition>
   </Extension>
 
+  <Extension path = "/MonoDevelop/ProjectModel/Gui/ItemOptionPanels/Build/General">
+    <Condition id="ProjectTypeId" value="F#">
+      <Panel id = "FSharpCompilerOptionsPanel" _label = "F#" class = "MonoDevelop.FSharp.FSharpProjectCompilerOptionsPanel"/>
+    </Condition>
+  </Extension>
   <Extension path="/MonoDevelop/Core/MimeTypes">
     <MimeType id="text/x-fsharp" _description="F# Source File" icon="md-file-source" isText="true">
       <File pattern="*.fs" />
@@ -146,22 +146,27 @@
 
   <Extension path = "/MonoDevelop/ProjectModel/PolicySets/Mono" >
     <Policies resource="FSharpStylePolicy.xml" />
+    <Policies resource="FSharpFormattingPolicy.xml" />
   </Extension>
 
-  <Policies resource="FSharpFormattingPolicy.xml" />
+  <Extension path = "/MonoDevelop/ProjectModel/PolicySets/Default" >
+    <Policies resource="FSharpStylePolicy.xml" />
+    <Policies resource="FSharpFormattingPolicy.xml" />
+  </Extension>
 
   <Extension path = "/MonoDevelop/ProjectModel/Gui/MimeTypePolicyPanels">
     <Panel id = "FSharpFormatting" _label = "F# Formatting" mimeType="text/x-fsharp" class = "MonoDevelop.FSharp.FSharpFormattingPolicyPanel" />
   </Extension>
 
   <Extension path = "/MonoDevelop/Ide/BraceMatcher">
-    <Class class="MonoDevelop.FSharp.FSharpBraceMatcher" />
+	<Matcher class="MonoDevelop.FSharp.FSharpBraceMatcher" mimeType="text/x-fsharp"/>
   </Extension>
 
   <Extension path = "/MonoDevelop/Ide/TextEditorExtensions">
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class="MonoDevelop.FSharp.FSharpTextEditorCompletion" />
     <Class fileExtensions = ".fs,.fsx" class = "MonoDevelop.FSharp.FSharpPathExtension" />
     <Class fileExtensions = ".fs,.fsx" class = "MonoDevelop.FSharp.HighlightUnusedCode" />
+    <Class fileExtensions = ".fs,.fsx" class = "MonoDevelop.FSharp.SignatureHelp" />
     <Class fileExtensions = ".fs,.fsi,.fsx" class = "MonoDevelop.FSharp.HighlightUsagesExtension" />
     <Class fileExtensions = ".fs" class = "MonoDevelop.FSharp.FSharpUnitTestTextEditorExtension" />
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.FSharpOutlineTextEditorExtension" />
@@ -170,8 +175,8 @@
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.FSharpFsiEditorCompletion" />
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.FSharpCommandsTextEditorExtension" />
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.ExpandSelectionTextEditorExtension" />
-    <!-- Extension check is done within code -->
-    <Class class = "MonoDevelop.FSharp.FSharpDebugScriptTextEditorExtension" />
+    <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.FSharpDebugScriptTextEditorExtension" />
+    <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class = "MonoDevelop.FSharp.IndentationTextEditorExtension" />
   </Extension>
 
   <Extension path = "/MonoDevelop/Ide/CodeTemplates">
@@ -189,6 +194,10 @@
   
   <Extension path = "/MonoDevelop/Refactoring/FindReferencesProvider">
     <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class="MonoDevelop.FSharp.FSharpFindReferencesProvider" />
+  </Extension>
+
+  <Extension path = "/MonoDevelop/Refactoring/FindReferenceUsagesProvider">
+    <Class fileExtensions = ".fs,.fsi,.fsx,.fsscript" class="MonoDevelop.FSharp.FSharpFindReferenceUsagesProvider" />
   </Extension>
 
   <Extension path = "/MonoDevelop/Refactoring/JumpToDeclarationHandler">
@@ -218,7 +227,7 @@
   </Extension>
 
   <Extension path = "/MonoDevelop/Ide/ContextMenu/ProjectPad">
-    <Condition id="ItemType" value="IFileItem">
+    <Condition id="FileType" fileExtensions=".fs,.fsi,.fsx,.fsscript">
       <CommandItem id = "MonoDevelop.FSharp.SolutionPad.DebugScriptInternal"/>
       <CommandItem id = "MonoDevelop.FSharp.SolutionPad.DebugScriptExternal"/>
     </Condition>
@@ -302,18 +311,25 @@
                  _label="Start Debugging on External Console"
 
                  id="MonoDevelop.FSharp.Editor.DebugScriptExternal" />
+        <Command _description="Toggle type signature help"
+                 _label="Toggle type signature help"
+                 id="MonoDevelop.FSharp.SignatureHelp.Toggle" />
+				
+        <Command _description="Quick Fix Menu"
+                 id="MonoDevelop.FSharp.QuickFixMenu" 
+                 _label="Quick Fix"
+				 type = "array"
+		         defaultHandler = "MonoDevelop.FSharp.QuickFixMenuHandler" />
       </Category>
     </ComplexCondition>
   </Extension>
 
   <Extension path = "/MonoDevelop/SourceEditor2/ContextMenu/Editor">
     <CommandItem id = "MonoDevelop.FSharp.CurrentRefactoringOperations" insertafter="MonoDevelop.SourceEditor.SourceEditorCommands.MarkerOperations" insertbefore="MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator"/>
-    <ComplexCondition>
-      <Or>
-        <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.0\Framework\v4.0\Microsoft.FSharp.Targets" />
-        <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.FSharp.Targets" />
-        <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\4.0\Framework\v4.0\Microsoft.FSharp.Targets" />
-      </Or>
+    <Condition id="FileType" fileExtensions=".fs,.fsi,.fsx,.fsscript">
+	  <ItemSet id = "MonoDevelop.FSharp.QuickFixMenu" _label = "Quick Fix" autohide = "true" insertafter="MonoDevelop.SourceEditor.SourceEditorCommands.MarkerOperations" insertbefore="MonoDevelop.Debugger.DebugCommands.ExpressionEvaluator">
+  	    <CommandItem id = "MonoDevelop.FSharp.QuickFixMenu" />
+      </ItemSet>
       <SeparatorItem id = "FSharpScriptDebug" />
       <CommandItem id = "MonoDevelop.FSharp.Editor.DebugScriptInternal" />
       <CommandItem id = "MonoDevelop.FSharp.Editor.DebugScriptExternal" />
@@ -322,7 +338,7 @@
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendLine" />
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendFile" />
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendReferences" />
-    </ComplexCondition>
+    </Condition>
   </Extension>
   
   <ExtensionPoint path = "/MonoDevelop/SourceEditor2/ContextMenu/Fsi" name = "Editor context menu for fsi">
@@ -346,10 +362,20 @@
         <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.FSharp.Targets" />
         <Condition id="MSBuildTargetIsAvailable" target="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\4.0\Framework\v4.0\Microsoft.FSharp.Targets" />
       </Or>
-      <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendSelection" />
+      <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendSelection" insertbefore="Separator6" />
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendLine" />
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendFile" />
       <CommandItem id = "MonoDevelop.FSharp.FSharpCommands.SendReferences" />
     </ComplexCondition>
   </Extension>
+	
+	<Module>
+		<!-- The GTK# template should only be available if the GTK add-in is enabled -->
+		<Dependencies>
+			<Addin id="GtkCore" version="$(Version)" />
+		</Dependencies>
+		<Extension path = "/MonoDevelop/Ide/ProjectTemplates">
+		    <ProjectTemplate id="FSharpGtkProject" file="Templates/FSharpGtkProject.xpt.xml"/>
+		</Extension>
+	</Module>
 </ExtensionModel>

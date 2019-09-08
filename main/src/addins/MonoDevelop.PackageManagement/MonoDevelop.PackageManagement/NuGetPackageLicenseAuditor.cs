@@ -32,6 +32,7 @@ using System.Threading.Tasks;
 using MonoDevelop.Core;
 using NuGet.Common;
 using NuGet.PackageManagement;
+using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using NuGet.Protocol.Core.Types;
 
@@ -95,7 +96,7 @@ namespace MonoDevelop.PackageManagement
 			var licenses = await GetPackagesWithLicences (actions, cancellationToken);
 			licenses = RemovePackagesAlreadyInstalled (licenses);
 			if (licenses.Any ()) {
-				if (!licenseAcceptanceService.AcceptLicenses (licenses)) {
+				if (!await licenseAcceptanceService.AcceptLicenses (licenses)) {
 					throw new ApplicationException (GettextCatalog.GetString ("Licenses not accepted."));
 				}
 			}
@@ -121,22 +122,25 @@ namespace MonoDevelop.PackageManagement
 			PackageIdentity package,
 			CancellationToken cancellationToken)
 		{
-			foreach (SourceRepository source in sources) {
-				var metadataResource = source.GetResource<PackageMetadataResource> ();
-				if (metadataResource != null) {
-					var packagesMetadata = await metadataResource.GetMetadataAsync (
-						package.Id,
-						includePrerelease: true,
-						includeUnlisted: true,
-						log: NullLogger.Instance,
-						token: cancellationToken);
+			using (var sourceCacheContext = new SourceCacheContext ()) {
+				foreach (SourceRepository source in sources) {
+					var metadataResource = source.GetResource<PackageMetadataResource> ();
+					if (metadataResource != null) {
+						var packagesMetadata = await metadataResource.GetMetadataAsync (
+							package.Id,
+							includePrerelease: true,
+							includeUnlisted: true,
+							sourceCacheContext: sourceCacheContext,
+							log: NullLogger.Instance,
+							token: cancellationToken);
 
-					var metadata = packagesMetadata.FirstOrDefault (p => p.Identity.Version == package.Version);
-					if (metadata != null) {
-						if (metadata.RequireLicenseAcceptance) {
-							return new NuGetPackageLicense (metadata);
+						var metadata = packagesMetadata.FirstOrDefault (p => p.Identity.Version == package.Version);
+						if (metadata != null) {
+							if (metadata.RequireLicenseAcceptance) {
+								return new NuGetPackageLicense (metadata);
+							}
+							return null;
 						}
-						return null;
 					}
 				}
 			}
@@ -151,7 +155,12 @@ namespace MonoDevelop.PackageManagement
 
 			var packages = new HashSet<PackageIdentity> (PackageIdentity.Comparer);
 			foreach (NuGetProjectAction action in installActions) {
-				packages.Add (action.PackageIdentity);
+				var buildIntegratedAction = action as BuildIntegratedProjectAction;
+				if (buildIntegratedAction != null) {
+					packages.AddRange (GetPackages (buildIntegratedAction.GetProjectActions ()));
+				} else {
+					packages.Add (action.PackageIdentity);
+				}
 			}
 
 			return packages;

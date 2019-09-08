@@ -28,11 +28,11 @@ using MonoDevelop.Components.Commands;
 using MonoDevelop.Ide.TypeSystem;
 using System.Threading.Tasks;
 using System.Threading;
-using Microsoft.CodeAnalysis.Diagnostics;
 using System.Collections.Generic;
 using MonoDevelop.CodeActions;
 using MonoDevelop.Ide.Editor;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Options;
 using MonoDevelop.CodeIssues;
 using MonoDevelop.Core;
@@ -42,6 +42,7 @@ using MonoDevelop.Ide.Gui.Pads;
 using System.Collections.Immutable;
 using System.Linq;
 using MonoDevelop.Ide.Gui.Components;
+using MonoDevelop.AnalysisCore;
 
 namespace MonoDevelop.Refactoring
 {
@@ -51,14 +52,14 @@ namespace MonoDevelop.Refactoring
 		{
 			var providers = new List<DiagnosticAnalyzer> ();
 			var alreadyAdded = new HashSet<Type> ();
-			var	diagnostics = await CodeRefactoringService.GetCodeDiagnosticsAsync (new EmptyDocumentContext (project), LanguageNames.CSharp, default (CancellationToken));
+			var options = await ((MonoDevelopWorkspaceDiagnosticAnalyzerProviderService)Ide.Composition.CompositionManager.Instance.GetExportedValue<IWorkspaceDiagnosticAnalyzerProviderService> ()).GetOptionsAsync ();
+			var diagnostics = options.AllDiagnostics.Where (x => x.Languages.Contains (LanguageNames.CSharp));
 			var diagnosticTable = new Dictionary<string, CodeDiagnosticDescriptor> ();
 			foreach (var diagnostic in diagnostics) {
-				if (alreadyAdded.Contains (diagnostic.DiagnosticAnalyzerType))
-					continue;
 				if (!diagnostic.IsEnabled)
 					continue;
-				alreadyAdded.Add (diagnostic.DiagnosticAnalyzerType);
+				if (!alreadyAdded.Add (diagnostic.DiagnosticAnalyzerType))
+					continue;
 				var provider = diagnostic.GetProvider ();
 				if (provider == null)
 					continue;
@@ -92,12 +93,10 @@ namespace MonoDevelop.Refactoring
 				return await compilationWithAnalyzer.GetAnalyzerDiagnosticsAsync ().ConfigureAwait (false);
 			} catch (Exception) {
 				return ImmutableArray<Diagnostic>.Empty;
-			} finally {
-				CompilationWithAnalyzers.ClearAnalyzerState (analyzers);
 			}
 		}
 
-		protected override async void Run ()
+		protected override void Run ()
 		{
 			Execute ();
 		}
@@ -116,7 +115,7 @@ namespace MonoDevelop.Refactoring
 
 		internal static async void Execute ()
 		{
-			var workspace = TypeSystemService.Workspace;
+			var workspace = IdeApp.TypeSystemService.Workspace;
 			try {
 				using (var monitor = IdeApp.Workbench.ProgressMonitors.GetStatusProgressMonitor (GettextCatalog.GetString ("Analyzing solution"), null, false, true, false, null, true)) {
 					CancellationToken token = monitor.CancellationToken;
@@ -148,8 +147,8 @@ namespace MonoDevelop.Refactoring
 		internal static void Report (ProgressMonitor monitor, List<Diagnostic> allDiagnostics, Projects.WorkspaceObject parent)
 		{
 			monitor.BeginTask (GettextCatalog.GetString ("Reporting results..."), allDiagnostics.Count);
-			TaskService.Errors.Clear ();
-			TaskService.Errors.AddRange (allDiagnostics.Select (diagnostic => {
+			IdeServices.TaskService.Errors.Clear ();
+			IdeServices.TaskService.Errors.AddRange (allDiagnostics.Select (diagnostic => {
 				var startLinePosition = diagnostic.Location.GetLineSpan ().StartLinePosition;
 				return new TaskListEntry (
 					diagnostic.Location.SourceTree.FilePath,
@@ -165,12 +164,15 @@ namespace MonoDevelop.Refactoring
 			}));
 
 			monitor.EndTask ();
-			ShowAnalyzationResults ();
+			if (!allDiagnostics.Any ())
+				monitor.ReportSuccess (GettextCatalog.GetString ("Analysis successful."));
+			else
+				ShowAnalyzationResults ();
 		}
 
 		static void ShowAnalyzationResults ()
 		{
-			TaskService.ShowErrors ();
+			IdeServices.TaskService.ShowErrors ();
 			var errorsPad = IdeApp.Workbench.GetPad<ErrorListPad> ().Content as ErrorListPad;
 			errorsPad.SetFilter (true, true, true);
 		}
@@ -205,7 +207,7 @@ namespace MonoDevelop.Refactoring
 
 			public override Projects.Project Project {
 				get {
-					return TypeSystemService.GetMonoProject (project);
+					return IdeApp.TypeSystemService.GetMonoProject (project);
 				}
 			}
 

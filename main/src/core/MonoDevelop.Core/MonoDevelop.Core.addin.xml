@@ -1,7 +1,12 @@
 <ExtensionModel>
 
 	<Runtime>
+		<Import assembly="Microsoft.Extensions.ObjectPool.dll" />
 		<Import assembly="Newtonsoft.Json.dll" />
+		<Import assembly="StreamJsonRpc.dll" />
+		<Import assembly="System.Collections.Immutable.dll" />
+		<Import assembly="System.Reflection.Metadata.dll" />
+		<Import assembly="System.Memory.dll" />
 	</Runtime>
 	
 	<ConditionType id="PackageInstalled" type="MonoDevelop.Core.AddIns.PackageInstalledCondition" />
@@ -10,10 +15,14 @@
 	<ConditionType id="AssemblyInstalled" type="MonoDevelop.Core.AddIns.AssemblyInstalledCondition" />
 	<ConditionType id="MSBuildTargetIsAvailable" type="MonoDevelop.Projects.MSBuild.TargetsAvailableCondition" />
 	<ConditionType id="Branding" type="MonoDevelop.Core.AddIns.BrandingCondition" />
-
+	<ConditionType id="FeatureSwitch" type="MonoDevelop.Core.FeatureConfiguration.FeatureSwitchCondition" />
 	
 	<!-- Extension points -->
 	
+	<ExtensionPoint path="/MonoDevelop/Core/FeatureConfiguration/FeatureSwitchChecks" name="Feature switch checks">
+  		<Description>Pluggable checks for feature dynamic enabling/disabling</Description>
+  		<ExtensionNode objectType="MonoDevelop.Core.FeatureConfiguration.IFeatureSwitchController" />
+  	</ExtensionPoint>
 	
 	<ExtensionPoint path = "/MonoDevelop/Core/ExecutionModes" name = "Execution modes">
 		<Description>Execution modes such as default, debug, profiler, etc.</Description>
@@ -35,6 +44,11 @@
 	<ExtensionPoint path = "/MonoDevelop/Core/WebCredentialProviders" name = "Web credential providers">
 		<Description>Platform-specific services used for obtaining proxy credentials.</Description>
 		<ExtensionNode name="Class" objectType="MonoDevelop.Core.Web.ICredentialProvider" />
+	</ExtensionPoint>
+
+	<ExtensionPoint path = "/MonoDevelop/Core/HttpMessageHandlerProviders" name = "HttpMessageHandler providers">
+		<Description>Platform-specific services used to create HttpMessageHandlers used by the HttpClient.</Description>
+		<ExtensionNode name="Class" objectType="MonoDevelop.Core.Web.HttpMessageHandlerProvider" />
 	</ExtensionPoint>
 	
 	<ExtensionPoint path = "/MonoDevelop/Core/FileSystemExtensions" name = "File system extensions">
@@ -68,16 +82,6 @@
 		<ExtensionNode name = "Class" objectType = "MonoDevelop.Core.IWebCertificateProvider" />
 	</ExtensionPoint>
 
-	<ExtensionPoint path = "/MonoDevelop/Core/Frameworks">
-		<Description>Target frameworks.</Description>
-		<ExtensionNode name="Framework" type="MonoDevelop.Core.AddIns.TargetFrameworkNode" objectType="MonoDevelop.Core.Assemblies.TargetFramework">
-			<Description>Definition of a framework. The list of assemblies of the framework is defined in the referenced resource file.</Description>
-			<ExtensionNode name="Backend" objectType="MonoDevelop.Core.Assemblies.TargetFrameworkBackend">
-				<Description>A framework backend. Provides support for a framework for a runtime.</Description>
-			</ExtensionNode>
-		</ExtensionNode>
-	</ExtensionPoint>
-	
 	<ExtensionPoint path = "/MonoDevelop/Core/UserDataMigration">
 		<Description>Defines data to be migrated from the previous version of MonoDevelop.</Description>
 		<ExtensionNode name="Migration" type="MonoDevelop.Core.AddIns.UserDataMigrationNode" />
@@ -107,6 +111,9 @@
 		</ExtensionNode>
 		<ConditionType id="ItemType" type="MonoDevelop.Core.Gui.Dialogs.OptionPanels.ItemTypeCondition">
 			<Description>Type of the item. If no namespace is provided, MonoDevelop.Projects is assumed.</Description>
+		</ConditionType>
+		<ConditionType id="AppliesTo" type="MonoDevelop.Projects.Extensions.AppliesToCondition">
+			<Description>Project capability expression.</Description>
 		</ConditionType>
 	</ExtensionPoint>
 
@@ -160,8 +167,12 @@
 		<ExtensionNode name="Item" customAttributeType="MonoDevelop.Projects.ExportProjectItemTypeAttribute" />
 	</ExtensionPoint>
 
+	<ExtensionPoint path = "/MonoDevelop/ProjectModel/MSBuildImportSearchPaths" name = "MSBuild project import search paths">
+		<Description>Allows defining fallback search paths for MSBuild project imports</Description>
+		<ExtensionNode name="SearchPath" type="MonoDevelop.Projects.Extensions.ImportSearchPathExtensionNode" />
+	</ExtensionPoint>
+
 	<!-- Extensions -->
-	
 	
 	<Extension path = "/MonoDevelop/Core/ExecutionModes">
 		<ModeSet id="Run" _name="Run" />
@@ -172,17 +183,6 @@
 	<Extension path = "/MonoDevelop/Core/Runtimes">
 		<Class class="MonoDevelop.Core.Assemblies.MsNetTargetRuntimeFactory"/>
 		<Class class="MonoDevelop.Core.Assemblies.MonoTargetRuntimeFactory"/>
-	</Extension>
-	
-	<Extension path = "/MonoDevelop/Core/Frameworks">
-		<Framework id="Net_1.1" resource="framework_NET_1_1.xml"/>
-		<Framework id="Net_2.0" resource="framework_NET_2_0.xml"/>
-		<Framework id="Net_3.0" resource="framework_NET_3_0.xml"/>
-		<Framework id="Net_3.5" resource="framework_NET_3_5.xml"/>
-		<Framework id="Net_3.5_client" resource="framework_NET_3_5_client.xml"/>
-		<Framework id="Net_4.0" resource="framework_NET_4_0.xml"/>
-		<Framework id="Net_4.0_client" resource="framework_NET_4_0_client.xml"/>
-		<Framework id="Net_4.5" resource="framework_NET_4_5.xml"/>
 	</Extension>
 	
 	<Extension path = "/MonoDevelop/Core/ExecutionHandlers">
@@ -219,6 +219,7 @@
 		<Class id="CompiledAssembly" class = "MonoDevelop.Projects.CompiledAssemblyExtension" />
 		<Class id="Workspace" class = "MonoDevelop.Projects.WorkspaceSerializationExtension" />
 		<Class id="MSBuild" class = "MonoDevelop.Projects.MSBuildSerializationExtension" />
+		<Class id="SdkProject" class="MonoDevelop.Projects.SdkProjectReader" />
 		<Class id="MidStep" class = "MonoDevelop.Projects.DummyWorkspaceObjectReader" />
 		<Class id="FinalStep" class = "MonoDevelop.Projects.DummyWorkspaceObjectReader" />
 	</Extension>
@@ -230,10 +231,18 @@
 	</Extension>
 	
 	<Extension path = "/MonoDevelop/ProjectModel/PolicySets" >
-		<PolicySet id="Mono" _name="Mono" allowDiffSerialize="true">
-		<!--	<Policies resource="" /> -->
+		<PolicySet id="Default" _name="Default" allowDiffSerialize="true">
+		<!-- Policies registered in the Default policy set are considered the default for the Ide.
+			 Those policies will be used when no specific options are set
+		-->
 		</PolicySet>
 		<PolicySet id="VisualStudio" _name="Microsoft Visual Studio" allowDiffSerialize="true">
+		<!--	<Policies resource="" /> -->
+		</PolicySet>
+		<PolicySet id="Mono" _name="MonoDevelop" allowDiffSerialize="true" visible="false">
+		<!--	<Policies resource="" /> -->
+		</PolicySet>
+		<PolicySet id="MonoDefault" _name="Mono" allowDiffSerialize="true">
 		<!--	<Policies resource="" /> -->
 		</PolicySet>
 		<PolicySet id="Invariant" _name="Invariant" visible="false"/>
@@ -320,6 +329,7 @@
 		<ProjectType guid = "{82B43B9B-A64C-4715-B499-D71E9CA2BD60}" name = "Visual Studio Extension" />
 		<ProjectType guid = "{14182A97-F7F0-4C62-8B27-98AA8AE2109A}" name = "VB.NET Portable Library" />
 		<ProjectType guid = "{A5A43C5B-DE2A-4C0C-9213-0A381AF9435A}" name = "Universal Windows Platform (UWP)" />
+		<ProjectType guid = "{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}" name = "ASP.NET Core (DNX)" extension="xproj" />
 	</Extension>
 
 	<Extension path = "/MonoDevelop/ProjectModel/MSBuildImportRedirects">

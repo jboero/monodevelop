@@ -15,10 +15,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -29,34 +29,34 @@
 //
 
 using System;
-using System.IO;
 using System.Collections.Generic;
-using System.Diagnostics;
-using MonoDevelop.Core.AddIns;
-using Mono.Addins;
-using System.Reflection;
-using System.Linq;
 using System.Collections.Immutable;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Threading;
+using Mono.Addins;
+using MonoDevelop.Core.AddIns;
 
 namespace MonoDevelop.Core.Assemblies
 {
 	public sealed class SystemAssemblyService
 	{
 		object frameworkWriteLock = new object ();
-		Dictionary<TargetFrameworkMoniker,TargetFramework> frameworks;
-		List<TargetFrameworkMoniker> coreFrameworks;
+		SortedDictionary<TargetFrameworkMoniker,TargetFramework> frameworks = new SortedDictionary<TargetFrameworkMoniker, TargetFramework> ();
 		List<TargetRuntime> runtimes;
 		TargetRuntime defaultRuntime;
-		DirectoryAssemblyContext userAssemblyContext = new DirectoryAssemblyContext ();
-		
+
 		public TargetRuntime CurrentRuntime { get; private set; }
-		
+
 		public event EventHandler DefaultRuntimeChanged;
 		public event EventHandler RuntimesChanged;
-		
+		public event EventHandler FrameworksChanged;
+
 		internal void Initialize ()
 		{
-			CreateFrameworks ();
 			runtimes = new List<TargetRuntime> ();
 			foreach (ITargetRuntimeFactory factory in AddinManager.GetExtensionObjects ("/MonoDevelop/Core/Runtimes", typeof(ITargetRuntimeFactory))) {
 				foreach (TargetRuntime runtime in factory.CreateRuntimes ()) {
@@ -65,27 +65,16 @@ namespace MonoDevelop.Core.Assemblies
 						DefaultRuntime = CurrentRuntime = runtime;
 				}
 			}
-			
+
 			// Don't initialize until Current and Default Runtimes are set
 			foreach (TargetRuntime runtime in runtimes) {
-				runtime.Initialized += HandleRuntimeInitialized;
+				runtime.FrameworksInitialized += HandleRuntimeInitialized;
 			}
 
 			if (CurrentRuntime == null)
 				LoggingService.LogFatalError ("Could not create runtime info for current runtime");
 
 			CurrentRuntime.StartInitialization ();
-			
-			LoadUserAssemblyContext ();
-			userAssemblyContext.Changed += delegate {
-				SaveUserAssemblyContext ();
-			};
-		}
-
-		void InitializeRuntime (TargetRuntime runtime)
-		{
-			runtime.Initialized += HandleRuntimeInitialized;
-			runtime.StartInitialization ();
 		}
 
 		void HandleRuntimeInitialized (object sender, EventArgs e)
@@ -99,7 +88,7 @@ namespace MonoDevelop.Core.Assemblies
 		void UpdateFrameworks (IEnumerable<TargetFramework> toAdd)
 		{
 			lock (frameworkWriteLock) {
-				var newFxList = new Dictionary<TargetFrameworkMoniker,TargetFramework> (frameworks);
+				var newFxList = new SortedDictionary<TargetFrameworkMoniker,TargetFramework> (frameworks);
 				bool changed = false;
 				foreach (var fx in toAdd) {
 					TargetFramework existing;
@@ -114,8 +103,9 @@ namespace MonoDevelop.Core.Assemblies
 				BuildFrameworkRelations (newFxList);
 				frameworks = newFxList;
 			}
+			FrameworksChanged?.Invoke (this, EventArgs.Empty);
 		}
-		
+
 		public TargetRuntime DefaultRuntime {
 			get {
 				return defaultRuntime;
@@ -126,34 +116,31 @@ namespace MonoDevelop.Core.Assemblies
 					DefaultRuntimeChanged (this, EventArgs.Empty);
 			}
 		}
-		
-		public DirectoryAssemblyContext UserAssemblyContext {
-			get { return userAssemblyContext; }
-		}
-		
+
+		[Obsolete ("Assembly folders are no longer supported")]
+		public DirectoryAssemblyContext UserAssemblyContext => new DirectoryAssemblyContext ();
+
 		public IAssemblyContext DefaultAssemblyContext {
 			get { return DefaultRuntime.AssemblyContext; }
 		}
-		
+
 		public void RegisterRuntime (TargetRuntime runtime)
 		{
-			runtime.Initialized += HandleRuntimeInitialized;
+			runtime.FrameworksInitialized += HandleRuntimeInitialized;
 			runtimes.Add (runtime);
-			if (RuntimesChanged != null)
-				RuntimesChanged (this, EventArgs.Empty);
+			RuntimesChanged?.Invoke (this, EventArgs.Empty);
 		}
-		
+
 		public void UnregisterRuntime (TargetRuntime runtime)
 		{
 			if (runtime == CurrentRuntime)
 				return;
 			DefaultRuntime = CurrentRuntime;
 			runtimes.Remove (runtime);
-			runtime.Initialized -= HandleRuntimeInitialized;
-			if (RuntimesChanged != null)
-				RuntimesChanged (this, EventArgs.Empty);
+			runtime.FrameworksInitialized -= HandleRuntimeInitialized;
+			RuntimesChanged?.Invoke (this, EventArgs.Empty);
 		}
-		
+
 		internal IEnumerable<TargetFramework> GetKnownFrameworks ()
 		{
 			return frameworks.Values;
@@ -163,17 +150,17 @@ namespace MonoDevelop.Core.Assemblies
 		{
 			return frameworks.ContainsKey (moniker);
 		}
-		
+
 		public IEnumerable<TargetFramework> GetTargetFrameworks ()
 		{
 			return frameworks.Values;
 		}
-		
+
 		public IEnumerable<TargetRuntime> GetTargetRuntimes ()
 		{
 			return runtimes;
 		}
-		
+
 		public TargetRuntime GetTargetRuntime (string id)
 		{
 			foreach (TargetRuntime r in runtimes) {
@@ -190,24 +177,25 @@ namespace MonoDevelop.Core.Assemblies
 					yield return r;
 			}
 		}
-		
+
 		public TargetFramework GetTargetFramework (TargetFrameworkMoniker id)
 		{
 			TargetFramework fx;
 			if (frameworks.TryGetValue (id, out fx))
 				return fx;
 
-			LoggingService.LogDebug ("Unregistered TargetFramework '{0}' is being requested from SystemAssemblyService, ensuring rutimes initialized and trying again", id);
+			LoggingService.LogDebug ("Unknown TargetFramework '{0}' is being requested from SystemAssemblyService, ensuring runtimes initialized and trying again", id);
 			foreach (var r in runtimes)
 				r.EnsureInitialized ();
 			if (frameworks.TryGetValue (id, out fx))
 				return fx;
+
 			
-			LoggingService.LogWarning ("Unregistered TargetFramework '{0}' is being requested from SystemAssemblyService, returning empty TargetFramework", id);
+			LoggingService.LogWarning ("Unknown TargetFramework '{0}' is being requested from SystemAssemblyService, returning empty TargetFramework", id);
 			UpdateFrameworks (new [] { new TargetFramework (id) });
 			return frameworks [id];
 		}
-		
+
 		public SystemPackage GetPackageFromPath (string assemblyPath)
 		{
 			foreach (TargetRuntime r in runtimes) {
@@ -226,38 +214,46 @@ namespace MonoDevelop.Core.Assemblies
 				aname.Name = fullname.Trim ();
 				return aname;
 			}
-			
-			aname.Name = fullname.Substring (0, i).Trim ();
+
+			var fullNameSpan = fullname.AsSpan ();
+
+			aname.Name = fullNameSpan.Slice (0, i).Trim ().ToString ();
 			i = fullname.IndexOf ("Version", i + 1, StringComparison.Ordinal);
 			if (i == -1)
 				return aname;
 			i = fullname.IndexOf ('=', i);
-			if (i == -1) 
+			if (i == -1)
 				return aname;
+
 			int j = fullname.IndexOf (',', i);
 			if (j == -1)
-				aname.Version = new Version (fullname.Substring (i+1).Trim ());
+				fullNameSpan = fullNameSpan.Slice (i + 1);
 			else
-				aname.Version = new Version (fullname.Substring (i+1, j - i - 1).Trim ());
+				fullNameSpan = fullNameSpan.Slice (i + 1, j - i - 1);
+			aname.Version = new Version (fullNameSpan.Trim ().ToString ());
 			return aname;
 		}
-		
+
+		static readonly ReaderWriterLockSlim readerWriterLock = new ReaderWriterLockSlim ();
 		static readonly Dictionary<string, AssemblyName> assemblyNameCache = new Dictionary<string, AssemblyName> ();
 		internal static AssemblyName GetAssemblyNameObj (string file)
 		{
 			AssemblyName name;
 
-			lock (assemblyNameCache) {
+			using (readerWriterLock.Read ()) {
 				if (assemblyNameCache.TryGetValue (file, out name))
 					return name;
 			}
 
 			try {
 				name = AssemblyName.GetAssemblyName (file);
-				lock (assemblyNameCache) {
-					assemblyNameCache [file] = name;
+
+				using (readerWriterLock.Write ()) {
+					if (assemblyNameCache.TryGetValue (file, out var alreadyAdded))
+						return alreadyAdded;
+
+					return assemblyNameCache [file] = name;
 				}
-				return name;
 			} catch (FileNotFoundException) {
 				// GetAssemblyName is not case insensitive in mono/windows. This is a workaround
 				foreach (string f in Directory.GetFiles (Path.GetDirectoryName (file), Path.GetFileName (file))) {
@@ -269,45 +265,95 @@ namespace MonoDevelop.Core.Assemblies
 				throw;
 			}
 		}
-		
+
 		public static string GetAssemblyName (string file)
 		{
 			return AssemblyContext.NormalizeAsmName (GetAssemblyNameObj (file).ToString ());
 		}
-		
-		void CreateFrameworks ()
+
+		public static bool IsManagedAssembly(string filePath)
 		{
-			frameworks = new Dictionary<TargetFrameworkMoniker, TargetFramework> ();
-			coreFrameworks = new List<TargetFrameworkMoniker> ();
-			foreach (TargetFrameworkNode node in AddinManager.GetExtensionNodes ("/MonoDevelop/Core/Frameworks")) {
-				try {
-					TargetFramework fx = node.CreateFramework ();
-					if (frameworks.ContainsKey (fx.Id)) {
-						LoggingService.LogError ("Duplicate framework '" + fx.Id + "'");
-						continue;
+			try
+			{
+				using (Stream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+				using (BinaryReader binaryReader = new BinaryReader(fileStream))
+				{
+					if (fileStream.Length < 64)
+					{
+						return false;
 					}
-					coreFrameworks.Add (fx.Id);
-					frameworks[fx.Id] = fx;
-				} catch (Exception ex) {
-					LoggingService.LogError ("Could not load framework '" + node.Id + "'", ex);
+
+					// PE Header starts @ 0x3C (60). Its a 4 byte header.
+					fileStream.Position = 0x3C;
+					uint peHeaderPointer = binaryReader.ReadUInt32();
+					if (peHeaderPointer == 0)
+					{
+						peHeaderPointer = 0x80;
+					}
+
+					// Ensure there is at least enough room for the following structures:
+					//     24 byte PE Signature & Header
+					//     28 byte Standard Fields         (24 bytes for PE32+)
+					//     68 byte NT Fields               (88 bytes for PE32+)
+					// >= 128 byte Data Dictionary Table
+					if (peHeaderPointer > fileStream.Length - 256)
+					{
+						return false;
+					}
+
+					// Check the PE signature.  Should equal 'PE\0\0'.
+					fileStream.Position = peHeaderPointer;
+					uint peHeaderSignature = binaryReader.ReadUInt32();
+					if (peHeaderSignature != 0x00004550)
+					{
+						return false;
+					}
+
+					// skip over the PEHeader fields
+					fileStream.Position += 20;
+
+					const ushort PE32 = 0x10b;
+					const ushort PE32Plus = 0x20b;
+
+					// Read PE magic number from Standard Fields to determine format.
+					var peFormat = binaryReader.ReadUInt16();
+					if (peFormat != PE32 && peFormat != PE32Plus)
+					{
+						return false;
+					}
+
+					// Read the 15th Data Dictionary RVA field which contains the CLI header RVA.
+					// When this is non-zero then the file contains CLI data otherwise not.
+					ushort dataDictionaryStart = (ushort)(peHeaderPointer + (peFormat == PE32 ? 232 : 248));
+					fileStream.Position = dataDictionaryStart;
+
+					uint cliHeaderRva = binaryReader.ReadUInt32();
+					if (cliHeaderRva == 0)
+					{
+						return false;
+					}
+
+					return true;
 				}
 			}
-			
-			BuildFrameworkRelations (frameworks);
+			catch (Exception)
+			{
+				return false;
+			}
 		}
 
 		//warning: this may mutate `frameworks` and any newly-added TargetFrameworks in it
-		static void BuildFrameworkRelations (Dictionary<TargetFrameworkMoniker, TargetFramework> frameworks)
+		static void BuildFrameworkRelations (SortedDictionary<TargetFrameworkMoniker, TargetFramework> frameworks)
 		{
 			foreach (TargetFramework fx in frameworks.Values)
 				BuildFrameworkRelations (fx, frameworks);
 		}
-		
-		static void BuildFrameworkRelations (TargetFramework fx, Dictionary<TargetFrameworkMoniker, TargetFramework> frameworks)
+
+		static void BuildFrameworkRelations (TargetFramework fx, SortedDictionary<TargetFrameworkMoniker, TargetFramework> frameworks)
 		{
 			if (fx.RelationsBuilt)
 				return;
-			
+
 			var includesFramework = fx.GetIncludesFramework ();
 			if (includesFramework != null) {
 				fx.IncludedFrameworks.Add (includesFramework);
@@ -320,52 +366,63 @@ namespace MonoDevelop.Core.Assemblies
 					LoggingService.LogWarning ("TargetFramework '{0}' imports unknown framework '{0}'", fx.Id, includesFramework);
 				}
 			}
-			
+
 			fx.RelationsBuilt = true;
 		}
 
-		public static IKVM.Reflection.Universe CreateClosedUniverse ()
-		{
-			const IKVM.Reflection.UniverseOptions ikvmOptions =
-				IKVM.Reflection.UniverseOptions.DisablePseudoCustomAttributeRetrieval |
-				IKVM.Reflection.UniverseOptions.SupressReferenceTypeIdentityConversion |
-				IKVM.Reflection.UniverseOptions.ResolveMissingMembers;
-
-			var universe = new IKVM.Reflection.Universe (ikvmOptions);
-			universe.AssemblyResolve += delegate (object sender, IKVM.Reflection.ResolveEventArgs args) {
-				return ((IKVM.Reflection.Universe)sender).CreateMissingAssembly (args.Name);
-			};
-			return universe;
-		}
-		
 		//FIXME: the fallback is broken since multiple frameworks can have the same corlib
 		public TargetFrameworkMoniker GetTargetFrameworkForAssembly (TargetRuntime tr, string file)
 		{
 			if (!File.Exists (file))
 				return TargetFrameworkMoniker.UNKNOWN;
-			var universe = CreateClosedUniverse ();
+
 			try {
-				IKVM.Reflection.Assembly assembly = universe.LoadFile (file);
-				var att = assembly.CustomAttributes.FirstOrDefault (a =>
-					a.AttributeType.FullName == "System.Runtime.Versioning.TargetFrameworkAttribute"
-				);
-				if (att != null) {
-					if (att.ConstructorArguments.Count == 1) {
-						var v = att.ConstructorArguments[0].Value as string;
-						TargetFrameworkMoniker m;
-						if (v != null && TargetFrameworkMoniker.TryParse (v, out m)) {
+				using (var reader = new PEReader (File.OpenRead (file))) {
+					var mr = reader.GetMetadataReader ();
+
+					foreach (var customAttributeHandle in mr.GetAssemblyDefinition ().GetCustomAttributes ()) {
+						var customAttribute = mr.GetCustomAttribute (customAttributeHandle);
+
+						var ctorHandle = customAttribute.Constructor;
+						if (ctorHandle.Kind != HandleKind.MemberReference)
+							continue;
+
+						var ctor = mr.GetMemberReference ((MemberReferenceHandle)ctorHandle);
+						var attrType = mr.GetTypeReference ((TypeReferenceHandle)ctor.Parent);
+
+						var ns = mr.GetString (attrType.Namespace);
+						if (ns != "System.Runtime.Versioning")
+							continue;
+
+						var typeName = mr.GetString (attrType.Name);
+						if (typeName != "TargetFrameworkAttribute")
+							continue;
+
+						var provider = new StringParameterValueTypeProvider (mr, customAttribute.Value);
+						var signature = ctor.DecodeMethodSignature (provider, null);
+						var parameterTypes = signature.ParameterTypes;
+						if (parameterTypes.Length != 1)
+							continue;
+
+						var value = parameterTypes [0];
+						if (value != null && TargetFrameworkMoniker.TryParse (value, out var m)) {
 							return m;
 						}
+						LoggingService.LogError ("Invalid TargetFrameworkAttribute in assembly {0} - {1}", file, value);
 					}
-					LoggingService.LogError ("Invalid TargetFrameworkAttribute in assembly {0}", file);
-				}
-				if (tr != null) {
-					foreach (var r in assembly.GetReferencedAssemblies ()) {
-						if (r.Name == "mscorlib") {
+
+					if (tr != null) {
+						foreach (var assemblyReferenceHandle in mr.AssemblyReferences) {
+							var assemblyReference = mr.GetAssemblyReference (assemblyReferenceHandle);
+
+							var name = mr.GetString (assemblyReference.Name);
+							if (name != "mscorlib")
+								continue;
+
 							TargetFramework compatibleFramework = null;
 							// If there are several frameworks that can run the file, pick one that is installed
 							foreach (TargetFramework tf in GetKnownFrameworks ()) {
-								if (tf.GetCorlibVersion () == r.Version.ToString ()) {
+								if (tf.GetCorlibVersion () == assemblyReference.Version.ToString ()) {
 									compatibleFramework = tf;
 									if (tr.IsInstalled (tf))
 										return tf.Id;
@@ -379,76 +436,72 @@ namespace MonoDevelop.Core.Assemblies
 				}
 			} catch (Exception ex) {
 				LoggingService.LogError ("Error determining target framework for assembly {0}: {1}", file, ex);
-				return TargetFrameworkMoniker.UNKNOWN;
-			} finally {
-				universe.Dispose ();
 			}
-			LoggingService.LogError ("Failed to determine target framework for assembly {0}", file);
 			return TargetFrameworkMoniker.UNKNOWN;
-		}
-		
-		void SaveUserAssemblyContext ()
-		{
-			List<string> list = new List<string> (userAssemblyContext.Directories);
-			PropertyService.Set ("MonoDevelop.Core.Assemblies.UserAssemblyContext", list);
-			PropertyService.SaveProperties ();
-		}
-		
-		void LoadUserAssemblyContext ()
-		{
-			List<string> dirs = PropertyService.Get<List<string>> ("MonoDevelop.Core.Assemblies.UserAssemblyContext");
-			if (dirs != null)
-				userAssemblyContext.Directories = dirs;
 		}
 
 		/// <summary>
 		/// Simply get all assembly reference names from an assembly given it's file name.
 		/// </summary>
-		public static IEnumerable<string> GetAssemblyReferences (string fileName)
+		public static ImmutableArray<string> GetAssemblyReferences (string fileName)
 		{
-			using (var universe = new IKVM.Reflection.Universe ()) {
-				IKVM.Reflection.Assembly assembly;
-				try {
-					assembly = universe.LoadFile (fileName);
-				} catch {
-					yield break;
+			try {
+				using (var reader = new PEReader (File.OpenRead (fileName))) {
+					var mr = reader.GetMetadataReader ();
+					var assemblyReferences = mr.AssemblyReferences;
+
+					var builder = ImmutableArray.CreateBuilder<string> (assemblyReferences.Count);
+
+					foreach (var assemblyReferenceHandle in assemblyReferences) {
+						var assemblyReference = mr.GetAssemblyReference (assemblyReferenceHandle);
+						builder.Add (mr.GetString (assemblyReference.Name));
+					}
+
+					return builder.MoveToImmutable();
 				}
-				foreach (var r in assembly.GetReferencedAssemblies ()) {
-					yield return r.Name;
-				}
+			} catch {
+				return ImmutableArray<string>.Empty;
 			}
 		}
 
-		static ImmutableDictionary<string, bool> referenceDict = ImmutableDictionary<string, bool>.Empty;
-		static object referenceLock = new object ();
+		static Dictionary<string, bool> facadeReferenceDict = new Dictionary<string, bool> ();
 
-		public static bool ContainsReferenceToSystemRuntime (string fileName)
+		static bool RequiresFacadeAssembliesInternal (string fileName)
 		{
-			lock (referenceLock) {
-				bool result;
-				if (referenceDict.TryGetValue (fileName, out result))
-					return result;
+			if (facadeReferenceDict.TryGetValue (fileName, out var result))
+				return result;
 
-				//const int cacheLimit = 4096;
-				//if (referenceDict.Count > cacheLimit)
-				//	referenceDict = ImmutableDictionary<string, bool>.Empty
-				                                                     
-				using (var universe = new IKVM.Reflection.Universe ()) {
-					IKVM.Reflection.Assembly assembly;
-					try {
-						assembly = universe.LoadFile (fileName);
-					} catch {
-						return false;
-					}
-					foreach (var r in assembly.GetReferencedAssemblies ()) {
-						if (r.FullName.Equals ("System.Runtime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")) {
-							referenceDict = referenceDict.SetItem (fileName, true);
+			try {
+				using (var reader = new PEReader (File.OpenRead (fileName))) {
+					var mr = reader.GetMetadataReader ();
+
+					foreach (var assemblyReferenceHandle in mr.AssemblyReferences) {
+						var assemblyReference = mr.GetAssemblyReference (assemblyReferenceHandle);
+						var name = mr.GetString (assemblyReference.Name);
+
+						// Don't compare the version number since it may change depending on the version of .net standard
+						if (name.Equals ("System.Runtime") || name.Equals ("netstandard")) {
+							facadeReferenceDict [fileName] = true;
 							return true;
 						}
 					}
 				}
-				referenceDict = referenceDict.SetItem (fileName, false);
+			} catch {
 				return false;
+			}
+
+			facadeReferenceDict [fileName] = false;
+			return false;
+		}
+
+		static readonly SemaphoreSlim referenceLockAsync = new SemaphoreSlim (1, 1);
+		public static async System.Threading.Tasks.Task<bool> RequiresFacadeAssembliesAsync (string filename)
+		{
+			try {
+				await referenceLockAsync.WaitAsync ().ConfigureAwait (false);
+				return RequiresFacadeAssembliesInternal (filename);
+			} finally {
+				referenceLockAsync.Release ();
 			}
 		}
 
@@ -476,18 +529,89 @@ namespace MonoDevelop.Core.Assemblies
 		/// </summary>
 		public static IEnumerable<ManifestResource> GetAssemblyManifestResources (string fileName)
 		{
-			using (var universe = new IKVM.Reflection.Universe ()) {
-				IKVM.Reflection.Assembly assembly;
-				try {
-					assembly = universe.LoadFile (fileName);
-				} catch {
-					yield break;
+			using (var reader = new PEReader (File.OpenRead (fileName))) {
+				var mr = reader.GetMetadataReader ();
+
+				var headers = reader.PEHeaders;
+				var resources = headers.CorHeader.ResourcesDirectory;
+				var sectionData = reader.GetSectionData (resources.RelativeVirtualAddress);
+				if (sectionData.Length == 0)
+					return Array.Empty<ManifestResource> (); // RVA could not be found in any section
+
+				var sectionReader = sectionData.GetReader ();
+				var manifestResources = mr.ManifestResources;
+				var result = new List<ManifestResource> (manifestResources.Count);
+
+				foreach (var manifestResourceHandle in manifestResources) {
+					var manifestResource = mr.GetManifestResource (manifestResourceHandle);
+
+					// This means the type is Embedded.
+					var isEmbeddedResource = manifestResource.Implementation.IsNil;
+					if (!isEmbeddedResource)
+						continue;
+
+					int offset = (int)manifestResource.Offset;
+					sectionReader.Offset += offset;
+					try {
+						int length = sectionReader.ReadInt32 ();
+						if ((uint)length > sectionReader.RemainingBytes) {
+							LoggingService.LogError ("Resource stream invalid length {0}", length.ToString ());
+							continue;
+						}
+
+						var name = mr.GetString (manifestResource.Name);
+						unsafe {
+							using (var unmanagedStream = new UnmanagedMemoryStream (sectionReader.CurrentPointer, length, length, FileAccess.Read)) {
+								var memoryStream = new MemoryStream (length);
+								unmanagedStream.CopyTo (memoryStream);
+								memoryStream.Position = 0;
+								result.Add (new ManifestResource (name, () => memoryStream));
+							}
+						}
+					} finally {
+						sectionReader.Offset -= offset;
+					}
 				}
-				foreach (var _r in assembly.GetManifestResourceNames ()) {
-					var r = _r;
-					yield return new ManifestResource (r, () => assembly.GetManifestResourceStream (r));
-				}
+				return result;
 			}
+		}
+
+		[Obsolete("Use Runtime.LoadAssemblyFrom")]
+		public Assembly LoadAssemblyFrom (string asmPath)
+		{
+			return Runtime.LoadAssemblyFrom (asmPath);
+		}
+
+		sealed class StringParameterValueTypeProvider : ISignatureTypeProvider<string, object>
+		{
+			readonly BlobReader valueReader;
+
+			public StringParameterValueTypeProvider (MetadataReader reader, BlobHandle value)
+			{
+				valueReader = reader.GetBlobReader (value);
+
+				var prolog = valueReader.ReadUInt16 ();
+				if (prolog != 1)
+					throw new BadImageFormatException ("Invalid custom attribute prolog.");
+			}
+
+			public string GetPrimitiveType (PrimitiveTypeCode typeCode) => typeCode != PrimitiveTypeCode.String ? "" : valueReader.ReadSerializedString ();
+			public string GetArrayType (string elementType, ArrayShape shape) => "";
+			public string GetByReferenceType (string elementType) => "";
+			public string GetFunctionPointerType (MethodSignature<string> signature) => "";
+			public string GetGenericInstance (string genericType, ImmutableArray<string> typestrings) => "";
+			public string GetGenericInstantiation (string genericType, ImmutableArray<string> typeArguments) { throw new NotImplementedException (); }
+			public string GetGenericMethodParameter (int index) => "";
+			public string GetGenericMethodParameter (object genericContext, int index) { throw new NotImplementedException (); }
+			public string GetGenericTypeParameter (int index) => "";
+			public string GetGenericTypeParameter (object genericContext, int index) { throw new NotImplementedException (); }
+			public string GetModifiedType (string modifier, string unmodifiedType, bool isRequired) => "";
+			public string GetPinnedType (string elementType) => "";
+			public string GetPointerType (string elementType) => "";
+			public string GetSZArrayType (string elementType) => "";
+			public string GetTypeFromDefinition (MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind) => "";
+			public string GetTypeFromReference (MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind) => "";
+			public string GetTypeFromSpecification (MetadataReader reader, object genericContext, TypeSpecificationHandle handle, byte rawTypeKind) => "";
 		}
 	}
 }

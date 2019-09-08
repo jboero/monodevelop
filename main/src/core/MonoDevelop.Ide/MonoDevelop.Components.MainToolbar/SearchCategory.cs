@@ -33,8 +33,15 @@ namespace MonoDevelop.Components.MainToolbar
 {
 	public abstract class SearchCategory : IComparable<SearchCategory>
 	{
-		protected const int FirstCategory = -1000;
-		protected int sortOrder = 0;
+		protected const int FirstCategoryOrder = -100;
+		protected const int HighPriorityResultsOrder = -50;
+		protected const int CommandCategoryOrder = 50;
+		protected const int LoadingCategoryOrder = 100;
+		protected const int SearchPackagesOrder = 149;
+		protected const int SearchInSolutionOrder = 150;
+
+		protected int sortOrder;
+		internal int SortOrder => sortOrder;
 
 		internal class DataItemComparer : IComparer<SearchResult>
 		{
@@ -79,7 +86,7 @@ namespace MonoDevelop.Components.MainToolbar
 
 		public abstract Task GetResults (ISearchResultCallback searchResultCallback, SearchPopupSearchPattern pattern, CancellationToken token);
 
-		public virtual void Initialize (PopoverWindow popupWindow)
+		public virtual void Initialize (XwtPopup popupWindow)
 		{
 			
 		}

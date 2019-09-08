@@ -1,4 +1,4 @@
-//
+﻿//
 // EditBranchDialog.cs
 //
 // Author:
@@ -24,6 +24,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System;
 using System.Linq;
 using Gtk;
 using MonoDevelop.Core;
@@ -32,11 +33,15 @@ using MonoDevelop.Components;
 using LibGit2Sharp;
 using MonoDevelop.Components.AutoTest;
 using System.ComponentModel;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace MonoDevelop.VersionControl.Git
 {
 	partial class EditBranchDialog : Gtk.Dialog
 	{
+		const int GitRefnameMax = 1024;
+
 		readonly ListStore comboStore;
 		readonly string currentTracking;
 		readonly string oldName;
@@ -67,19 +72,29 @@ namespace MonoDevelop.VersionControl.Git
 			SemanticModelAttribute modelAttr = new SemanticModelAttribute ("comboStore__Branch", "comboStore__Icon", "comboStore__Name", "comboStore__Tracking");
 			TypeDescriptor.AddAttributes (comboStore, modelAttr);
 
-			foreach (Branch b in repo.GetBranches ()) {
-				AddValues (b.FriendlyName, ImageService.GetIcon ("vc-branch", IconSize.Menu), "refs/heads/");
-			}
+			var token = destroyTokenSource.Token;
 
-			foreach (Remote r in repo.GetRemotes ()) {
-				foreach (string b in repo.GetRemoteBranches (r.Name))
-					AddValues (r.Name + "/" + b, ImageService.GetIcon ("vc-repository", IconSize.Menu), "refs/remotes/");
-			}
+			repo.GetLocalBranchNamesAsync (token).ContinueWith (t => {
+				if (token.IsCancellationRequested)
+					return;
+				foreach (var b in t.Result)
+					AddValues (b, ImageService.GetIcon ("vc-branch", IconSize.Menu), "refs/heads/");
+			}, token, TaskContinuationOptions.NotOnCanceled | TaskContinuationOptions.NotOnFaulted, Runtime.MainTaskScheduler).Ignore ();
+
+			repo.GetRemoteBranchFullNamesAsync (token).ContinueWith (t => {
+				if (token.IsCancellationRequested)
+					return;
+				foreach (var r in t.Result) {
+					AddValues (r, ImageService.GetIcon ("vc-repository", IconSize.Menu), "refs/remotes/");
+				}
+			}, token, TaskContinuationOptions.NotOnCanceled | TaskContinuationOptions.NotOnFaulted, Runtime.MainTaskScheduler).Ignore ();
 
 			entryName.Text = name;
 			checkTrack.Active = !string.IsNullOrEmpty (tracking);
 
 			UpdateStatus ();
+
+			WidthRequest = 400;
 		}
 
 		void AddValues (string name, Xwt.Drawing.Image icon, string prefix)
@@ -115,11 +130,17 @@ namespace MonoDevelop.VersionControl.Git
 			get { return entryName.Text; }
 		}
 
-		void UpdateStatus ()
+		async void UpdateStatus ()
 		{
 			comboSources.Sensitive = checkTrack.Active;
 			buttonOk.Sensitive = entryName.Text.Length > 0;
-			if (oldName != entryName.Text && repo.GetBranches ().Any (b => b.FriendlyName == entryName.Text)) {
+
+			var token = destroyTokenSource.Token;
+			bool branchExists = oldName != entryName.Text && (await repo.GetLocalBranchNamesAsync (token)).Any (b => b == entryName.Text);
+			if (token.IsCancellationRequested)
+				return;
+
+			if (branchExists) {
 				labelError.Markup = "<span color='" + Ide.Gui.Styles.ErrorForegroundColor.ToHexString (false) + "'>" + GettextCatalog.GetString ("A branch with this name already exists") + "</span>";
 				labelError.Show ();
 				buttonOk.Sensitive = false;
@@ -127,6 +148,10 @@ namespace MonoDevelop.VersionControl.Git
 				labelError.Markup = "<span color='" + Ide.Gui.Styles.ErrorForegroundColor.ToHexString (false) + "'>" + GettextCatalog.GetString (@"A branch name can not:
 Start with '.' or end with '/' or '.lock'
 Contain a ' ', '..', '~', '^', ':', '\', '?', '['") + "</span>";
+				labelError.Show ();
+				buttonOk.Sensitive = false;
+			} else if (entryName.Text.Length > GitRefnameMax) {
+				labelError.Markup = "<span color='" + Ide.Gui.Styles.ErrorForegroundColor.ToHexString (false) + "'>" + GettextCatalog.GetString ("Branch name too long") + "</span>";
 				labelError.Show ();
 				buttonOk.Sensitive = false;
 			} else
@@ -141,6 +166,14 @@ Contain a ' ', '..', '~', '^', ':', '\', '?', '['") + "</span>";
 		protected virtual void OnEntryNameChanged (object sender, System.EventArgs e)
 		{
 			UpdateStatus ();
+		}
+
+		CancellationTokenSource destroyTokenSource = new CancellationTokenSource ();
+
+		protected override void OnDestroyed ()
+		{
+			destroyTokenSource.Cancel ();
+			base.OnDestroyed ();
 		}
 	}
 }

@@ -29,10 +29,8 @@ using System;
 using System.IO;
 using NUnit.Framework;
 using MonoDevelop.Core;
-using MonoDevelop.Ide;
 using MonoDevelop.Core.Assemblies;
-using MonoDevelop.Ide.TypeSystem;
-using System.Threading;
+using System.Threading.Tasks;
 
 namespace UnitTests
 {
@@ -48,45 +46,58 @@ namespace UnitTests
 
 		static string LocateTopLevel ()
 		{
-			var cwd = typeof (TestBase).Assembly.Location;
-			while (!string.IsNullOrEmpty (cwd) && !File.Exists (Path.Combine (cwd, "top_level_monodevelop")))
-				cwd = Path.GetDirectoryName (cwd);
-			return cwd;
+			var initialCwd = Path.GetDirectoryName (typeof (TestBase).Assembly.Location);
+			if (initialCwd != Util.TestsRootDir) {
+				var cwd = initialCwd;
+				while (!string.IsNullOrEmpty (cwd)) {
+					if (File.Exists (Path.Combine (cwd, "top_level_monodevelop")))
+						return cwd;
+					cwd = Path.GetDirectoryName (cwd);
+				}
+			}
+
+			return initialCwd;
 		}
 
 		[TestFixtureSetUp]
-		public void Simulate ()
+		public async Task Simulate ()
 		{
 			if (firstRun) {
 				string rootDir = Path.Combine (Util.TestsRootDir, "config");
 				try {
 					firstRun = false;
-					InternalSetup (rootDir);
+					await InternalSetup (rootDir);
 				} catch (Exception) {
 					// if we encounter an error, try to re create the configuration directory
 					// (This takes much time, therfore it's only done when initialization fails)
 					try {
 						if (Directory.Exists (rootDir))
 							Directory.Delete (rootDir, true);
-						InternalSetup (rootDir);
+						await InternalSetup (rootDir);
 					} catch (Exception) {
 					}
 				}
 			}
+			await InitializeServices ();
 		}
 
-		protected virtual void InternalSetup (string rootDir)
+		async Task InitializeServices ()
+		{
+			foreach (RequireServiceAttribute attribute in Attribute.GetCustomAttributes (GetType (), typeof (RequireServiceAttribute), true)) {
+				var m = typeof (ServiceProvider).GetMethod ("GetService").MakeGenericMethod (attribute.ServiceType);
+				var task = (Task)m.Invoke (Runtime.ServiceProvider, new object [0]);
+				await task;
+			}
+		}
+
+		protected virtual async Task InternalSetup (string rootDir)
 		{
 			Util.ClearTmpDir ();
 			Environment.SetEnvironmentVariable ("MONO_ADDINS_REGISTRY", rootDir);
 			Environment.SetEnvironmentVariable ("XDG_CONFIG_HOME", rootDir);
-			Runtime.Initialize (true);
-			Xwt.Application.Initialize (Xwt.ToolkitType.Gtk);
-			Gtk.Application.Init ();
-			DesktopService.Initialize ();
 			global::MonoDevelop.Projects.Services.ProjectService.DefaultTargetFramework
 				= Runtime.SystemAssemblyService.GetTargetFramework (TargetFrameworkMoniker.NET_4_0);
-		}
+ 		}
 
 		
 		[TestFixtureTearDown]
@@ -100,14 +111,6 @@ namespace UnitTests
 		public static string GetTempFile (string extension)
 		{
 			return Path.Combine (Path.GetTempPath (), "test-file-" + (pcount++) + extension);
-		}
-		
-		public static string GetMdb (string file)
-		{
-			if (Runtime.SystemAssemblyService.DefaultRuntime is MonoTargetRuntime)
-				return file + ".mdb";
-			else
-				return Path.ChangeExtension (file, ".pdb");
 		}
 	}
 }

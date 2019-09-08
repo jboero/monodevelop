@@ -31,6 +31,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Configuration;
 using System.Web.Mvc.Razor;
 using System.Web.Razor;
@@ -39,20 +40,17 @@ using System.Web.Razor.Parser.SyntaxTree;
 using System.Web.Razor.Text;
 using System.Web.WebPages.Razor;
 using System.Web.WebPages.Razor.Configuration;
-
-
-using MonoDevelop.Core;
-using MonoDevelop.Ide;
-using MonoDevelop.Ide.Gui;
-using MonoDevelop.Ide.TypeSystem;
-using MonoDevelop.Projects;
-using MonoDevelop.AspNet.Projects;
-using MonoDevelop.AspNet.WebForms.Parser;
-using MonoDevelop.AspNet.Razor.Parser;
-using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using MonoDevelop.Ide.Editor;
+
+using MonoDevelop.AspNet.Projects;
+using MonoDevelop.AspNet.Razor.Parser;
+using MonoDevelop.AspNet.WebForms.Parser;
+using MonoDevelop.Core;
 using MonoDevelop.Core.Text;
+using MonoDevelop.Ide;
+using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.Editor.Projection;
+using MonoDevelop.Ide.TypeSystem;
 
 namespace MonoDevelop.AspNet.Razor
 {
@@ -75,7 +73,7 @@ namespace MonoDevelop.AspNet.Razor
 			};
 		}
 
-		public override System.Threading.Tasks.Task<ParsedDocument> Parse (MonoDevelop.Ide.TypeSystem.ParseOptions parseOptions, CancellationToken cancellationToken)
+		public override Task<ParsedDocument> Parse (MonoDevelop.Ide.TypeSystem.ParseOptions parseOptions, CancellationToken cancellationToken)
 		{
 			OpenRazorDocument currentDocument = GetDocument (parseOptions.FileName);
 			if (currentDocument == null)
@@ -86,6 +84,56 @@ namespace MonoDevelop.AspNet.Razor
 			lock (currentDocument) {
 				return Parse (context, cancellationToken);
 			}
+		}
+
+		public override bool CanGenerateProjection (string mimeType, string buildAction, string [] supportedLanguages)
+		{
+			return mimeType == "text/x-cshtml";
+		}
+
+		public override async Task<IReadOnlyList<Projection>> GenerateProjections (Ide.TypeSystem.ParseOptions options, CancellationToken cancellationToken = default (CancellationToken))
+		{
+			var razorDocument = (RazorCSharpParsedDocument)await Parse (options, cancellationToken);
+			return await GenerateProjections (razorDocument, options, cancellationToken);
+		}
+
+		Task<IReadOnlyList<Projection>> GenerateProjections (RazorCSharpParsedDocument razorDocument, Ide.TypeSystem.ParseOptions options, CancellationToken cancellationToken = default (CancellationToken))
+		{
+			var code = razorDocument.PageInfo.CSharpCode;
+			if (string.IsNullOrEmpty (code))
+				return Task.FromResult ((IReadOnlyList<Projection>)new Projection[0]);
+
+			string filename = razorDocument.PageInfo.ParsedDocument.FileName;
+			var currentMappings = razorDocument.PageInfo.GeneratorResults.DesignTimeLineMappings;
+
+			return Task.Run (() => {
+				var doc = TextEditorFactory.CreateNewDocument (new StringTextSource (code), filename, "text/x-csharp");
+				var segments = new List<ProjectedSegment> ();
+
+				foreach (var map in currentMappings) {
+
+					string pattern = "#line " + map.Key + " ";
+					var idx = razorDocument.PageInfo.CSharpCode.IndexOf (pattern, StringComparison.Ordinal);
+					if (idx < 0)
+						continue;
+					var line = doc.GetLineByOffset (idx);
+					var offset = line.NextLine.Offset + map.Value.StartGeneratedColumn - 1;
+
+					var seg = new ProjectedSegment (map.Value.StartOffset.Value, offset, map.Value.CodeLength);
+					segments.Add (seg);
+				}
+
+				var projections = new List<Projection> ();
+				projections.Add (new Projection (doc, segments));
+				return (IReadOnlyList<Projection>) projections;
+			});
+		}
+
+		public override async Task<ParsedDocumentProjection> GenerateParsedDocumentProjection (Ide.TypeSystem.ParseOptions options, CancellationToken cancellationToken = default (CancellationToken))
+		{
+			var razorDocument = (RazorCSharpParsedDocument)await Parse (options, cancellationToken);
+			var projections = await GenerateProjections (razorDocument, options, cancellationToken);
+			return new ParsedDocumentProjection (razorDocument, projections);
 		}
 
 		OpenRazorDocument GetDocument (string fileName)
@@ -141,13 +189,13 @@ namespace MonoDevelop.AspNet.Razor
 				kind = RazorHostKind.Template;
 			}
 
-			var model = context.AnalysisDocument.GetSemanticModelAsync (cancellationToken).Result;
+			// var model = context.AnalysisDocument.GetSemanticModelAsync (cancellationToken).Result;
 			var pageInfo = new RazorCSharpPageInfo () {
 				HtmlRoot = context.HtmlParsedDocument,
 				GeneratorResults = context.CapturedArgs.GeneratorResults,
 				Spans = context.EditorParser.CurrentParseTree.Flatten (),
 				CSharpSyntaxTree = context.ParsedSyntaxTree,
-				ParsedDocument = new DefaultParsedDocument ("generated.cs") { Ast = model },
+				ParsedDocument = new DefaultParsedDocument ("generated.cs") { /* Ast = model */},
 				AnalysisDocument = context.AnalysisDocument,
 				CSharpCode = context.CSharpCode,
 				Errors = errors,
@@ -277,15 +325,15 @@ namespace MonoDevelop.AspNet.Razor
 			return host;
 		}
 
-		static TextChange CreateTextChange (RazorCSharpParserContext context, SeekableTextReader source)
+		static System.Web.Razor.Text.TextChange CreateTextChange (RazorCSharpParserContext context, SeekableTextReader source)
 		{
 			ChangeInfo lastChange = context.GetLastTextChange ();
 			if (lastChange == null)
-				return new TextChange (0, 0, new SeekableTextReader (String.Empty), 0, source.Length, source);
+				return new System.Web.Razor.Text.TextChange (0, 0, new SeekableTextReader (String.Empty), 0, source.Length, source);
 			if (lastChange.DeleteChange)
-				return new TextChange (lastChange.StartOffset, lastChange.AbsoluteLength, lastChange.Buffer,
+				return new System.Web.Razor.Text.TextChange (lastChange.StartOffset, lastChange.AbsoluteLength, lastChange.Buffer,
 					lastChange.StartOffset,	0, source);
-			return new TextChange (lastChange.StartOffset, 0, lastChange.Buffer, lastChange.StartOffset,
+			return new System.Web.Razor.Text.TextChange (lastChange.StartOffset, 0, lastChange.Buffer, lastChange.StartOffset,
 				lastChange.AbsoluteLength, source);
 		}
 
@@ -395,16 +443,16 @@ namespace MonoDevelop.AspNet.Razor
 			context.CSharpCode = CreateCodeFile (context);
 			context.ParsedSyntaxTree = CSharpSyntaxTree.ParseText (Microsoft.CodeAnalysis.Text.SourceText.From (context.CSharpCode));
 
-			var originalProject = TypeSystemService.GetCodeAnalysisProject (context.Project);
+			var originalProject = IdeApp.TypeSystemService.GetCodeAnalysisProject (context.Project);
 			if (originalProject != null) {
 				string fileName = context.FileName + ".g.cs";
-				var documentId = TypeSystemService.GetDocumentId (originalProject.Id, fileName);
+				var documentId = IdeApp.TypeSystemService.GetDocumentId (originalProject.Id, fileName);
 				if (documentId == null) {
 					context.AnalysisDocument = originalProject.AddDocument (
 						fileName,
 						context.ParsedSyntaxTree?.GetRoot ());
 				} else {
-					context.AnalysisDocument = TypeSystemService.GetCodeAnalysisDocument (documentId);
+					context.AnalysisDocument = IdeApp.TypeSystemService.GetCodeAnalysisDocument (documentId);
 				}
 			}
 		}

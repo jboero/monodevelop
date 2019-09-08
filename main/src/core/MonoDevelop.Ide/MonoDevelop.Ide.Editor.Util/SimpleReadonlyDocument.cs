@@ -1,4 +1,4 @@
-﻿//
+//
 // SimpleReadonlyDocument.cs
 //
 // Author:
@@ -35,6 +35,7 @@ namespace MonoDevelop.Ide.Editor.Util
 	/// <summary>
 	/// A simple and fast implementation for a read only text document.
 	/// </summary>
+	[Obsolete ("Use the Microsoft.VisualStudio.Text APIs")]
 	public class SimpleReadonlyDocument : IReadonlyTextDocument
 	{
 		readonly ITextSource textSource;
@@ -92,10 +93,10 @@ namespace MonoDevelop.Ide.Editor.Util
 						return new Delimiter ((int)(p - start), UnicodeNewline.LF);
 					case NewLine.NEL:
 						return new Delimiter ((int)(p - start), UnicodeNewline.NEL);
-					case NewLine.VT:
-						return new Delimiter ((int)(p - start), UnicodeNewline.VT);
-					case NewLine.FF:
-						return new Delimiter ((int)(p - start), UnicodeNewline.FF);
+					//case NewLine.VT:
+					//	return new Delimiter ((int)(p - start), UnicodeNewline.VT);
+					//case NewLine.FF:
+					//	return new Delimiter ((int)(p - start), UnicodeNewline.FF);
 					case NewLine.LS:
 						return new Delimiter ((int)(p - start), UnicodeNewline.LS);
 					case NewLine.PS:
@@ -107,7 +108,7 @@ namespace MonoDevelop.Ide.Editor.Util
 			}
 		}
 
-		struct Delimiter
+		readonly struct Delimiter
 		{
 			public static readonly Delimiter Invalid = new Delimiter (-1, 0);
 
@@ -368,13 +369,6 @@ namespace MonoDevelop.Ide.Editor.Util
 		public ITextSourceVersion Version {
 			get {
 				return textSource.Version;
-			}
-		}
-
-		/// <inheritdoc/>
-		public bool UseBOM {
-			get {
-				return textSource.UseBOM;
 			}
 		}
 

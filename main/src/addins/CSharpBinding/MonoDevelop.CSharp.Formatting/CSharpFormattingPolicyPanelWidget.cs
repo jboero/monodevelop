@@ -34,7 +34,7 @@ namespace MonoDevelop.CSharp.Formatting
 	[System.ComponentModel.ToolboxItem(true)]
 	partial class CSharpFormattingPolicyPanelWidget : Gtk.Bin
 	{
-		readonly TextEditor texteditor = TextEditorFactory.CreateNewEditor ();
+		readonly Ide.Editor.TextEditor texteditor = TextEditorFactory.CreateNewEditor ();
 
 //		Gtk.ListStore model = new Gtk.ListStore (typeof(string));
 //		List<CSharpFormattingPolicy> policies = new List<CSharpFormattingPolicy> ();
@@ -90,7 +90,7 @@ namespace Example {
 		{
 			texteditor.Options = DefaultSourceEditorOptions.Instance.WithTextStyle (textStylePolicy);
 
-			texteditor.Text = CSharpFormatter.FormatText (policy, textStylePolicy, example, 0, example.Length);
+			texteditor.Text = CSharpFormatter.FormatText (policy.CreateOptions (textStylePolicy), example, 0, example.Length);
 		}
 
 		void HandleButtonEditClicked (object sender, EventArgs e)

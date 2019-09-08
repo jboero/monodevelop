@@ -3,10 +3,28 @@ include main/monodevelop_version
 EXTRA_DIST = configure code_of_conduct.md
 SPACE := 
 SPACE +=  
-AOT_DIRECTORIES:=$(subst $(SPACE),:,$(shell find main/build/* -type d))
-MONO_AOT:=MONO_PATH=$(AOT_DIRECTORIES):$(MONO_PATH) mono --aot --debug
 
-all: update_submodules all-recursive
+ifeq ($(origin APP), undefined)
+BIN_DIR=main/build
+else
+BIN_DIR="$(APP)/Contents/Resources/lib/monodevelop"
+endif
+
+AOT_DIRECTORIES:=$(subst $(SPACE),:,$(shell find $(BIN_DIR)/* -not -path "*azure-functions-cli*" -not -path "*.dSYM*" -not -path "*/ServiceHub/*" -not -path $(BIN_DIR)/tests* -type d))
+
+MONO_DIR=/Library/Frameworks/Mono.framework/Libraries/mono
+MSBUILD_PATH=$(MONO_DIR)/msbuild/15.0/bin
+
+# --assembly-loader=strict will not work for valuetuples here, even with binding redirects
+AOT_COMMAND=mono64 --aot=hybrid --debug --assembly-loader=strict
+MONO_AOT:=MONO_PATH="$(AOT_DIRECTORIES):$(MSBUILD_PATH):$(MONO_PATH)" $(AOT_COMMAND) --apply-bindings=$(BIN_DIR)/bin/MonoDevelop.exe.config
+
+MSBUILD_LIBRARIES=Microsoft.Build.dll Microsoft.Build.Framework.dll Microsoft.Build.Utilities.Core.dll
+MSBUILD_DLLS=$(patsubst %, $(MSBUILD_PATH)/%, $(MSBUILD_LIBRARIES))
+
+# Set $PATH to point to provisioned .NET Core and avoid the ones provisioned by VSTS itself
+all: export PATH:="/usr/local/share/dotnet:$(PATH)"
+all: print_config update_submodules all-recursive
 
 GIT_FOUND = $$(echo $$(which git))
 SYNC_SUBMODULES = \
@@ -19,6 +37,11 @@ SYNC_SUBMODULES = \
 		git submodule update --init --recursive || exit 1; \
 	fi
 
+print_config:
+	@echo "PATH is $(PATH)"
+	@echo ".NET Core `dotnet --version` installed in `which dotnet`"
+	@dotnet --list-sdks
+
 update_submodules:
 	@$(SYNC_SUBMODULES)
 
@@ -30,13 +53,14 @@ CONFIG_MAKE=$(top_srcdir)/config.make
 %-recursive: $(CONFIG_MAKE)
 	@export PKG_CONFIG_PATH="`pwd`/$(top_srcdir)/local-config:$(prefix)/lib/pkgconfig:$(prefix)/share/pkgconfig:$$PKG_CONFIG_PATH"; \
 	export MONO_GAC_PREFIX="$(prefix):$$MONO_GAC_PREFIX"; \
+	export PATH="$$PATH:/Library/Frameworks/Mono.framework/Versions/Current/bin"; \
 	set . $$MAKEFLAGS; final_exit=:; \
 	case $$2 in --unix) shift ;; esac; \
 	case $$2 in *=*) dk="exit 1" ;; *k*) dk=: ;; *) dk="exit 1" ;; esac; \
 	for dir in $(SUBDIRS); do \
 		case $$dir in \
-		.) PATH=$(PATH):/Library/Frameworks/Mono.framework/Versions/Current/bin $(MAKE) $*-local || { final_exit="exit 1"; $$dk; };;\
-		*) (cd $$dir && PATH=$(PATH):/Library/Frameworks/Mono.framework/Versions/Current/bin $(MAKE) $*) || { final_exit="exit 1"; $$dk; };;\
+		.) $(MAKE) $*-local || { final_exit="exit 1"; $$dk; };;\
+		*) (cd $$dir && $(MAKE) $*) || { final_exit="exit 1"; $$dk; };;\
 		esac \
 	done
 	$$final_exit
@@ -59,7 +83,10 @@ distclean: distclean-recursive
 remove-stale-tarballs:
 	rm -rf tarballs
 
-dist: update_submodules remove-stale-tarballs dist-recursive
+remove-stale-buildinfo:
+	rm -f main/src/core/MonoDevelop.Core/BuildVariables.cs
+
+dist: update_submodules remove-stale-tarballs remove-stale-buildinfo dist-recursive
 	mkdir -p tarballs
 	for t in $(SUBDIRS); do \
 		if test -e $$t/*.tar.gz; then \
@@ -87,23 +114,31 @@ dist: update_submodules remove-stale-tarballs dist-recursive
 	@echo Decompressing monodevelop-$(PACKAGE_VERSION).tar.bz2
 	@cd tarballs && tar xvjf monodevelop-$(PACKAGE_VERSION).tar.bz2
 	@cp version.config tarballs/monodevelop-$(PACKAGE_VERSION)
+	@cp NuGet.config tarballs/monodevelop-$(PACKAGE_VERSION)
 	@rm -f main/build/bin/buildinfo
 	@cd main && make buildinfo
 	@cp main/build/bin/buildinfo tarballs/monodevelop-$(PACKAGE_VERSION)/
 	@echo Generating merged tarball
-	@find tarballs/monodevelop-$(PACKAGE_VERSION)/ -type f -a \
-		\( -name \*.exe -o \
-		-name \*.dll -o \
-		-name \*.mdb \) \
-		-delete
 	@cd tarballs && tar -cjf monodevelop-$(PACKAGE_VERSION).tar.bz2 monodevelop-$(PACKAGE_VERSION)
 	@cd tarballs && rm -rf monodevelop-$(PACKAGE_VERSION)
 
+aot-all: aot aot-gac aot-msbuild-with-copy
+
+aot-msbuild-with-copy: aot-msbuild
+	@for i in $(MSBUILD_DLLS); do cp -r "$$i" "$$i.dylib" "$$i.dylib.dSYM" $(BIN_DIR)/bin; done
+
 aot:
-	@for i in main/build/bin/*.dll; do ($(MONO_AOT) $$i &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
-	@for i in main/build/AddIns/*.dll; do ($(MONO_AOT) $$i &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
-	@for i in main/build/AddIns/*/*.dll; do ($(MONO_AOT) $$i &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
-	@for i in main/build/AddIns/*/*/*.dll; do ($(MONO_AOT) $$i &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+	@for i in $(BIN_DIR)/bin/*.dll; do ($(MONO_AOT) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+	@for i in $(BIN_DIR)/AddIns/*.dll; do ($(MONO_AOT) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+	@for i in $(BIN_DIR)/AddIns/*/*.dll; do ($(MONO_AOT) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+	@for i in $(BIN_DIR)/AddIns/*/*/*.dll; do ($(MONO_AOT) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+
+aot-gac:
+	@for i in $(MONO_DIR)/4.5/*.dll; do (sudo $(AOT_COMMAND) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+	@for i in $(MONO_DIR)/gac/*/*/*.dll; do (sudo $(AOT_COMMAND) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
+
+aot-msbuild:
+	@for i in $(MSBUILD_DLLS); do (sudo $(AOT_COMMAND) "$$i" &> /dev/null && echo AOT successful: $$i) || (echo AOT failed: $$i); done
 
 run:
 	cd main && $(MAKE) run
@@ -122,12 +157,23 @@ run-gdb:
 
 run-gdb-64:
 	cd main && $(MAKE) run-gdb-64
+
+run-leaks:
+	cd main && $(MAKE) run-leaks
+
+run-no-accessibility:
+	cd main && $(MAKE) run-no-accessibility
 test:
 	cd main && $(MAKE) test assembly=$(assembly)
+    
+deploy-tests:
+	cd main && $(MAKE) deploy-tests
 
 uitest:
 	cd main && $(MAKE) uitest assembly=$(assembly) tests=$(tests)
 
+performance-tests:
+	cd main && $(MAKE) performance-tests
 coverage:
 	cd main && $(MAKE) coverage
 

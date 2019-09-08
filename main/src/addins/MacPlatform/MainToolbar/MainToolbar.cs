@@ -33,7 +33,6 @@ using AppKit;
 using CoreGraphics;
 using Foundation;
 using MonoDevelop.Ide;
-using MonoDevelop.MacIntegration;
 using Xwt;
 
 namespace MonoDevelop.MacIntegration.MainToolbar
@@ -71,22 +70,47 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 
 		void AttachToolbarEvents (SearchBar bar)
 		{
-			bar.Changed += (o, e) => {
-				if (SearchEntryChanged != null)
-					SearchEntryChanged (o, e);
+			bar.PerformCommand += (o, e) => {
+				PerformCommand?.Invoke (o, e);
 			};
 			bar.KeyPressed += (o, e) => {
-				if (SearchEntryKeyPressed != null)
-					SearchEntryKeyPressed (o, e);
+				SearchEntryChanged?.Invoke (o, e);
 			};
 			bar.LostFocus += (o, e) => {
-				if (SearchEntryLostFocus != null)
-					SearchEntryLostFocus (o, e);
+				SearchEntryLostFocus?.Invoke (o, e);
 			};
 			bar.SelectionActivated += (o, e) => {
-				if (SearchEntryActivated != null)
-					SearchEntryActivated (o, e);
+				SearchEntryActivated?.Invoke (o, e);
 			};
+			bar.LostFocus += (sender, e) => {
+				exitAction?.Invoke (Gtk.DirectionType.TabForward);
+			};
+		}
+
+		void OnKeyPressed (object sender, KeyEventArgs args)
+		{
+			var searchField = sender as NSSearchField;
+
+			if (searchField == null || searchEntry.Window == null)
+				return;
+
+			var isNSTextView = searchField.Window.FirstResponder is NSTextView;
+			var isTabPressedInsideSearchBar = (args.Key == Key.Tab && isNSTextView);
+
+			if(isTabPressedInsideSearchBar)
+				SearchEntryKeyPressed?.Invoke (sender, args);
+		}
+
+		void Focus(Gtk.DirectionType direction)
+		{
+			awesomeBar.Window.MakeFirstResponder (direction == Gtk.DirectionType.TabForward ? (NSView)awesomeBar.RunButton : (NSView)awesomeBar.SearchBar);
+		}
+
+		Action<Gtk.DirectionType> exitAction;
+		public void Focus (Gtk.DirectionType direction, Action<Gtk.DirectionType> onExit)
+		{
+			exitAction = onExit;
+			Focus (direction);
 		}
 
 		public MainToolbar (Gtk.Window window)
@@ -98,8 +122,12 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 
 			awesomeBar = new AwesomeBar ();
 			awesomeBar.RunButton.Activated += (o, e) => {
-				if (RunButtonClicked != null)
-					RunButtonClicked (o, e);
+				RunButtonClicked?.Invoke (o, e);
+			};
+
+			awesomeBar.RunButton.UnfocusToolbar += (o, e) => {
+				awesomeBar.Window.MakeFirstResponder (null);
+				exitAction (Gtk.DirectionType.TabBackward);
 			};
 
 			// Remove the focus from the Gtk system when Cocoa has focus
@@ -128,7 +156,7 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 				case AwesomeBarId:
 					return new NSToolbarItem (AwesomeBarId) {
 						View = awesomeBar,
-						MinSize = new CGSize (1024, AwesomeBar.ToolbarWidgetHeight),
+						MinSize = new CGSize (MacSystemInformation.OsVersion < MacSystemInformation.Mojave ? 1024: 600, AwesomeBar.ToolbarWidgetHeight),
 						MaxSize = new CGSize (float.PositiveInfinity, AwesomeBar.ToolbarWidgetHeight)
 					};
 
@@ -137,28 +165,36 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 				}
 			};
 
-			Action<NSNotification> resizeAction = notif => Runtime.RunInMainThread (() => {
-				var win = awesomeBar.Window;
-				if (win == null) {
-					return;
-				}
-
-				var item = widget.Items[0];
-
-				var abFrameInWindow = awesomeBar.ConvertRectToView (awesomeBar.Frame, null);
-				var awesomebarHeight = AwesomeBar.ToolbarWidgetHeight;
-				var size = new CGSize (win.Frame.Width - abFrameInWindow.X - 4, awesomebarHeight);
-
-				if (item.MinSize != size) {
-					item.MinSize = size;
-				}
-			});
-
 			// We can't use the events that Xamarin.Mac adds for delegate methods as they will overwrite
 			// the delegate that Gtk has added
 			NSWindow nswin = GtkMacInterop.GetNSWindow (window);
-			NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.DidResizeNotification, resizeAction, nswin);
-			NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.DidEndLiveResizeNotification, resizeAction, nswin);
+
+			// The way how sizing of the NSToolbar is implemented seems to have changen in Mojave.
+			// Previously we had to track the window size and update our MinSize to prevent NSToolbar
+			// from removing the item automatically. Now the same logic has the opposite effect on Mojave.
+			// Additionally AwesomeBar has no active window, after being removed from the NSToolbar, making
+			// the required size calculation much more complex. However letting NSToolbar do the magic
+			// internally works on Mojave correctly.
+			if (MacSystemInformation.OsVersion < MacSystemInformation.Mojave) {
+				Action<NSNotification> resizeAction = notif => Runtime.RunInMainThread (() => {
+					var win = awesomeBar.Window;
+					if (win == null) {
+						return;
+					}
+
+					var item = widget.Items [0];
+
+					var abFrameInWindow = awesomeBar.ConvertRectToView (awesomeBar.Frame, null);
+					var awesomebarHeight = AwesomeBar.ToolbarWidgetHeight;
+					var size = new CGSize (win.Frame.Width - abFrameInWindow.X - 4, awesomebarHeight);
+
+					if (item.MinSize != size) {
+						item.MinSize = size;
+					}
+				});
+				NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.DidResizeNotification, resizeAction, nswin);
+				NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.DidEndLiveResizeNotification, resizeAction, nswin);
+			}
 
 			NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.WillEnterFullScreenNotification, (note) => IsFullscreen = true, nswin);
 			NSNotificationCenter.DefaultCenter.AddObserver (NSWindow.WillExitFullScreenNotification, (note) => IsFullscreen = false, nswin);
@@ -173,6 +209,7 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 		public event EventHandler RunButtonClicked;
 		public event EventHandler SearchEntryChanged;
 		public event EventHandler<Xwt.KeyEventArgs> SearchEntryKeyPressed;
+		public event EventHandler<SearchEntryCommandArgs> PerformCommand;
 		public event EventHandler SearchEntryLostFocus;
 
 		#pragma warning disable 0067
@@ -190,20 +227,14 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			}
 		}
 
-		public void RebuildToolbar (IEnumerable<IButtonBarButton> buttons)
+		public void RebuildToolbar (IEnumerable<ButtonBarGroup> groups)
 		{
-			List<IButtonBarButton> barItems = new List<IButtonBarButton> ();
-			List<ButtonBar> buttonBars = new List<ButtonBar> ();
-
-			foreach (var item in buttons) {
-				if (item.IsSeparator) {
-					var bar = new ButtonBar (barItems);
-					buttonBars.Add (bar);
-
-					barItems.Clear ();
-				} else {
-					barItems.Add (item);
-				}
+			var buttonBars = new List<ButtonBar> ();
+			foreach (var g in groups) {
+				var bar = new ButtonBar (g.Buttons) {
+					Title = g.Title
+				};
+				buttonBars.Add (bar);
 			}
 
 			awesomeBar.ButtonBarContainer.ButtonBars = buttonBars;
@@ -306,37 +337,46 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			}
 			set {
 				searchEntry.StringValue = value;
+				// BXC #61249: setting StringValue programmatically won't raise the Changed event,
+				// but we want to start a new search when the controller updates the search text
+				SearchEntryChanged?.Invoke (searchEntry, EventArgs.Empty);
 			}
 		}
-
+					
 		public Gtk.Widget PopupAnchor {
 			get {
 				var entry = searchEntry;
-				var widget = entry.gtkWidget;
+				var entryWidget = entry.gtkWidget;
 				var window = GtkMacInterop.GetGtkWindow (entry.Window);
 
 				// window will be null if the app is fullscreen.
 				if (window != null) {
-					widget.GdkWindow = window.GdkWindow;
+					entryWidget.GdkWindow = window.GdkWindow;
 
 					// We need to adjust the position of the frame so the popup will line up correctly
 					var abFrameInWindow = awesomeBar.ConvertRectToView (awesomeBar.Frame, null);
-					widget.Allocation = new Gdk.Rectangle ((int)(entry.Frame.X + abFrameInWindow.X - 8), (int)entry.Frame.Y, (int)entry.Frame.Width, 0);
+					entryWidget.Allocation = new Gdk.Rectangle ((int)(entry.Frame.X + abFrameInWindow.X - 8), (int)entry.Frame.Y, (int)entry.Frame.Width, 0);
 				} else {
 					// Reset the Gtk Widget each time since we can't set the GdkWindow to null.
-					widget.Dispose ();
-					widget = entry.gtkWidget = GtkMacInterop.NSViewToGtkWidget (entry);
+					entryWidget.Dispose ();
+					entryWidget = entry.gtkWidget = GtkMacInterop.NSViewToGtkWidget (entry);
 
-					var nsWindows = NSApplication.SharedApplication.Windows;
-					var fullscreenToolbarNsWindow = nsWindows.FirstOrDefault (nswin =>
-						nswin.IsVisible && nswin.Description.StartsWith ("<NSToolbarFullScreenWindow", StringComparison.Ordinal));
+					var fullscreenToolbarNsWindow = searchEntry.Window;
+					if (fullscreenToolbarNsWindow == null) { // fallback to old query code and log an internal error
+						LoggingService.LogInternalError ("Getting the main fullscreen IDE window failed, this should never happen", new InvalidOperationException ());
+						#pragma warning disable CS0618
+						//TODO: reenable warning and use SharedApplication.DangerousWindows once XamMac dependency is bumped to 5.10+
+						var nsWindows = NSApplication.SharedApplication.Windows;
+						#pragma warning restore CS0618
+						fullscreenToolbarNsWindow = nsWindows.FirstOrDefault (nswin =>
+							nswin.IsVisible && nswin.Description.StartsWith ("<NSToolbarFullScreenWindow", StringComparison.Ordinal));
+					}
 
 					CGPoint gdkOrigin = ScreenMonitor.GdkPointForNSScreen (searchEntry.Window.Screen);
-
-					widget.Allocation = new Gdk.Rectangle (0, (int)(gdkOrigin.Y + fullscreenToolbarNsWindow.Frame.Height - 20),
-						(int)(gdkOrigin.X + fullscreenToolbarNsWindow.Frame.Width - 16), 0);
+					entryWidget.Allocation = new Gdk.Rectangle ((int)fullscreenToolbarNsWindow.Frame.X, (int)(gdkOrigin.Y + fullscreenToolbarNsWindow.Frame.Height - 20),
+						(int)(fullscreenToolbarNsWindow.Frame.Width - 16), 0);
 				}
-				return widget;
+				return entryWidget;
 			}
 		}
 
@@ -350,6 +390,19 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 		public MonoDevelop.Ide.StatusBar StatusBar {
 			get { return statusBar; }
 		}
+
+		public void ShowAccessibilityAnnouncement (string message)
+		{
+			var dictionary =
+				new NSDictionary (
+					NSAccessibilityNotificationUserInfoKeys.AnnouncementKey, new NSString (message),
+					NSAccessibilityNotificationUserInfoKeys.PriorityKey, NSAccessibilityPriorityLevel.High);
+			NSAccessibility.PostNotification (
+				searchEntry.GetAccessibilityFocusedUIElement (),
+				NSAccessibilityNotifications.AnnouncementRequestedNotification, 
+				dictionary);
+		}
+
 		#endregion
 	}
 }

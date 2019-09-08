@@ -1,4 +1,4 @@
-//
+﻿//
 // MDMenuItem.cs
 //
 // Author:
@@ -29,6 +29,7 @@ using System;
 using AppKit;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Core;
+using MonoDevelop.Ide.Navigation;
 using System.Text;
 using Foundation;
 using ObjCRuntime;
@@ -42,59 +43,135 @@ namespace MonoDevelop.Components.Mac
 		public const string ActionSelName = "run:";
 		public static Selector ActionSel = new Selector (ActionSelName);
 
-		CommandEntry ce;
-		CommandManager manager;
-
-		bool isArrayItem;
-		object initialCommandTarget;
-		CommandSource commandSource;
+		readonly Dispatcher dispatcher;
+		readonly bool isArrayItem;
 
 		public MDMenuItem (CommandManager manager, CommandEntry ce, ActionCommand command, CommandSource commandSource, object initialCommandTarget)
 		{
-			this.ce = ce;
-			this.manager = manager;
-			this.initialCommandTarget = initialCommandTarget;
-			this.commandSource = commandSource;
+			dispatcher = new Dispatcher (manager, ce, command, commandSource, initialCommandTarget, this);
 
 			isArrayItem = command.CommandArray;
 
-			Target = this;
+			Target = dispatcher;
 			Action = ActionSel;
 		}
 
-		public CommandEntry CommandEntry { get { return ce; } }
-
-		[Export (ActionSelName)]
-		public void Run (NSMenuItem sender)
+		protected override void Dispose (bool disposing)
 		{
-			var a = sender as MDExpandedArrayItem;
-			//if the command opens a modal subloop, give cocoa a chance to unhighlight the menu item
-			GLib.Timeout.Add (1, () => {
-				if (a != null) {
-					manager.DispatchCommand (ce.CommandId, a.Info.DataItem, initialCommandTarget, commandSource);
-				} else {
-					manager.DispatchCommand (ce.CommandId, null, initialCommandTarget, commandSource);
+			if (disposing) {
+				dispatcher.Dispose ();
+			}
+
+			base.Dispose (disposing);
+		}
+
+		public CommandManager Manager { get { return dispatcher.Manager; } }
+		public CommandEntry CommandEntry { get { return dispatcher.Entry; } }
+
+		sealed class Dispatcher : NSObject
+		{
+			public CommandManager Manager { get; }
+			public CommandEntry Entry { get; }
+			public CommandSource CommandSource { get; }
+			public object InitialCommandTarget { get; }
+			public CommandInfo LastInfo {
+				get => lastInfo;
+				set {
+					if (lastInfo == value) {
+						return;
+					}
+
+					if (lastInfo != null) {
+						lastInfo.CancelAsyncUpdate ();
+						lastInfo.Changed -= OnLastInfoChanged;
+					}
+					lastInfo = value;
+					if (lastInfo != null && lastInfo.IsUpdatingAsynchronously) {
+						lastInfo.Changed += OnLastInfoChanged;
+					}
 				}
-				return false;
-			});
+			}
+
+			CommandInfo lastInfo;
+			readonly WeakReference<MDMenuItem> itemRef;
+
+			public Dispatcher (CommandManager manager, CommandEntry ce, ActionCommand command, CommandSource commandSource, object initialCommandTarget, MDMenuItem item)
+			{
+				Manager = manager;
+				Entry = ce;
+				CommandSource = commandSource;
+				InitialCommandTarget = initialCommandTarget;
+				itemRef = new WeakReference<MDMenuItem> (item);
+			}
+
+			[Export (ActionSelName)]
+			public void Run (NSMenuItem sender)
+			{
+				var a = sender as MDExpandedArrayItem;
+				//if the command opens a modal subloop, give cocoa a chance to unhighlight the menu item
+				GLib.Timeout.Add (1, () => {
+					if (a != null) {
+						Manager.DispatchCommand (Entry.CommandId, a.Info.DataItem, InitialCommandTarget, CommandSource, LastInfo);
+					} else {
+						Manager.DispatchCommand (Entry.CommandId, null, InitialCommandTarget, CommandSource, LastInfo);
+					}
+					return false;
+				});
+			}
+
+			void OnLastInfoChanged (object sender, EventArgs args)
+			{
+				if (LastInfo != sender || !itemRef.TryGetTarget (out var menuItem))
+					return;
+
+				var parent = menuItem.Menu;
+				var ind = menuItem.FindMeInParent (parent);
+				menuItem.Update (parent, ref ind, LastInfo);
+				(parent as MDMenu)?.UpdateSeparators ();
+			}
+
+			protected override void Dispose (bool disposing)
+			{
+				if (lastInfo != null) {
+					lastInfo.CancelAsyncUpdate ();
+					lastInfo.Changed -= OnLastInfoChanged;
+					lastInfo = null;
+				}
+				base.Dispose (disposing);
+			}
 		}
 
 		//NOTE: This is used to disable the whole menu when there's a modal dialog.
 		// We can justify this because safari 3.2.1 does it ("do you want to close all tabs?").
 		public static bool IsGloballyDisabled {
 			get {
-				return MonoDevelop.Ide.DesktopService.IsModalDialogRunning ();
+				return MonoDevelop.Ide.IdeServices.DesktopService.IsModalDialogRunning ();
 			}
 		}
 
-		public void Update (MDMenu parent, ref NSMenuItem lastSeparator, ref int index)
+		int FindMeInParent (NSMenu parent)
 		{
-			var info = manager.GetCommandInfo (ce.CommandId, new CommandTargetRoute (initialCommandTarget));
+			for (int n = 0; n < parent.Count; n++)
+				if (parent.ItemAt (n) == this)
+					return n;
+			return -1;
+		}
 
+		public void Update (MDMenu parent, ref int index)
+		{
+			try {
+				var info = dispatcher.Manager.GetCommandInfo (dispatcher.Entry.CommandId, new CommandTargetRoute (dispatcher.InitialCommandTarget));
+				dispatcher.LastInfo = info;
+				Update (parent, ref index, info);
+			} catch(Exception ex) {
+				LoggingService.LogInternalError ($"Updating MDMenu for {dispatcher.Entry.CommandId} failed.", ex);
+			}
+		}
+
+		void Update (NSMenu parent, ref int index, CommandInfo info)
+		{
 			if (!isArrayItem) {
-				SetItemValues (this, info, ce.DisabledVisible, ce.OverrideLabel);
-				if (!Hidden)
-					MDMenu.ShowLastSeparator (ref lastSeparator);
+				SetItemValues (this, info, dispatcher.Entry.DisabledVisible, dispatcher.Entry.OverrideLabel);
 				return;
 			}
 
@@ -111,10 +188,10 @@ namespace MonoDevelop.Components.Mac
 			}
 
 			index++;
-			PopulateArrayItems (info.ArrayInfo, parent, ref lastSeparator, ref index);
+			PopulateArrayItems (info.ArrayInfo, parent, ref index);
 		}
 
-		void PopulateArrayItems (CommandArrayInfo infos, NSMenu parent, ref NSMenuItem lastSeparator, ref int index)
+		void PopulateArrayItems (CommandArrayInfo infos, NSMenu parent, ref int index)
 		{
 			if (infos == null)
 				return;
@@ -124,7 +201,6 @@ namespace MonoDevelop.Components.Mac
 					var n = NSMenuItem.SeparatorItem;
 					n.Hidden = true;
 					n.Target = this;
-					lastSeparator = n;
 					if (parent.Count > index)
 						parent.InsertItem (n, index);
 					else
@@ -135,20 +211,17 @@ namespace MonoDevelop.Components.Mac
 
 				var item = new MDExpandedArrayItem {
 					Info = ci,
-					Target = this,
-					Action = ActionSel,
+					Target = dispatcher
 				};
-
 				if (ci is CommandInfoSet) {
 					item.Submenu = new NSMenu ();
 					int i = 0;
-					NSMenuItem sep = null;
-					PopulateArrayItems (((CommandInfoSet)ci).CommandInfos, item.Submenu, ref sep, ref i);
+					PopulateArrayItems (((CommandInfoSet)ci).CommandInfos, item.Submenu, ref i);
 				}
 				SetItemValues (item, ci, true);
+				if (item.Enabled)
+					item.Action = ActionSel;
 
-				if (!item.Hidden)
-					MDMenu.ShowLastSeparator (ref lastSeparator);
 				if (parent.Count > index)
 					parent.InsertItem (item, index);
 				else
@@ -165,15 +238,54 @@ namespace MonoDevelop.Components.Mac
 
 		void SetItemValues (NSMenuItem item, CommandInfo info, bool disabledVisible, string overrideLabel = null)
 		{
-			item.SetTitleWithMnemonic (GetCleanCommandText (info, overrideLabel));
-			if (!string.IsNullOrEmpty (info.Description) && item.ToolTip != info.Description)
-				item.ToolTip = info.Description;
+			item.Title = GetCleanCommandText (info, overrideLabel);
 
-			bool enabled = info.Enabled && (!IsGloballyDisabled || commandSource == CommandSource.ContextMenu);
+			bool enabled = info.Enabled && (!IsGloballyDisabled || dispatcher.CommandSource == CommandSource.ContextMenu);
 			bool visible = info.Visible && (disabledVisible || info.Enabled);
 
 			item.Enabled = enabled;
 			item.Hidden = !visible;
+
+			string fileName = null;
+			var doc = info.DataItem as Ide.Gui.Document;
+			if (doc != null) {
+				if (doc.IsFile)
+					fileName = doc.FileName;
+				else {
+					// Designer documents have no file bound to them, but the document name
+					// could be a valid path
+					var docName = doc.Name;
+					if (!string.IsNullOrEmpty (docName) && System.IO.Path.IsPathRooted (docName) && System.IO.File.Exists (docName))
+						fileName = docName;
+				}
+			} else if (info.DataItem is NavigationHistoryItem) {
+					var navDoc = ((NavigationHistoryItem)info.DataItem).NavigationPoint as DocumentNavigationPoint;
+					if (navDoc != null)
+						fileName = navDoc.FileName;
+			} else {
+				var str = info.DataItem as string;
+				if (str != null && System.IO.Path.IsPathRooted (str) && System.IO.File.Exists (str))
+					fileName = str;
+			}
+
+			if (!String.IsNullOrWhiteSpace (fileName)) {
+				item.ToolTip = fileName;
+				Xwt.Drawing.Image icon = null;
+				if (!info.Icon.IsNull)
+					icon = Ide.ImageService.GetIcon (info.Icon, Gtk.IconSize.Menu);
+				if (icon == null)
+					icon = Ide.IdeServices.DesktopService.GetIconForFile (fileName, Gtk.IconSize.Menu);
+				if (icon != null) {
+					var scale = NSApplication.SharedApplication.MainWindow?.Screen?.BackingScaleFactor ?? NSScreen.MainScreen.BackingScaleFactor;
+
+					if (NSUserDefaults.StandardUserDefaults.StringForKey ("AppleInterfaceStyle") == "Dark")
+						icon = icon.WithStyles ("dark");
+					else
+						icon = icon.WithStyles ("-dark");
+					item.Image = icon.ToBitmap (scale).ToNSImage ();
+					item.Image.Template = true;
+				}
+			}
 
 			SetAccel (item, info.AccelKey);
 
@@ -260,16 +372,22 @@ namespace MonoDevelop.Components.Mac
 			if (txt == null)
 				return "";
 
+			bool isSpecial = ContextMenuItem.ContainsSpecialMnemonics;
 			//FIXME: markup stripping could be done better
 			var sb = new StringBuilder ();
 			for (int i = 0; i < txt.Length; i++) {
 				char ch = txt[i];
-				if (ch == '_') {
+
+				if (isSpecial && ch == '(') {
+					if (i + 3 < txt.Length && txt [i + 1] == '_' && txt [i + 3] == ')') {
+						i += 3;
+					}
+				} else if (ch == '_') {
+					// macOS hasn't supported mnemonics since 10.6, so strip them entirely,
+					// but still preserve '__' as a literal escaped '_'
 					if (i + 1 < txt.Length && txt[i + 1] == '_') {
 						sb.Append ('_');
 						i++;
-					} else {
-						sb.Append ('&');
 					}
 				} else if (!ci.UseMarkup) {
 					sb.Append (ch);

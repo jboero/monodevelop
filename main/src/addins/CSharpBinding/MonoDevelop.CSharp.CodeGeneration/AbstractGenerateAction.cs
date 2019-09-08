@@ -38,6 +38,12 @@ using MonoDevelop.Ide.Editor;
 using MonoDevelop.Core.Text;
 using MonoDevelop.CSharp.Completion;
 using MonoDevelop.CSharp.Formatting;
+using Microsoft.CodeAnalysis.Formatting;
+using MonoDevelop.Core;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Editor;
+using Microsoft.CodeAnalysis.Shared.Extensions;
+using System.Threading;
 
 namespace MonoDevelop.CodeGeneration
 {
@@ -119,15 +125,15 @@ namespace MonoDevelop.CodeGeneration
 		static string AddIndent (string text, string indent)
 		{
 			var doc = TextEditorFactory.CreateNewReadonlyDocument (new StringTextSource (text), "");
-			var result = new StringBuilder ();
+			var result = StringBuilderCache.Allocate ();
 			foreach (var line in doc.GetLines ()) {
 				result.Append (indent);
 				result.Append (doc.GetTextAt (line.SegmentIncludingDelimiter));
 			}
-			return result.ToString ();
+			return StringBuilderCache.ReturnAndFree (result);
 		}
 
-		public void GenerateCode ()
+		public void GenerateCode (Gtk.TreeView treeView)
 		{
 			TreeIter iter;
 			if (!store.GetIterFirst (out iter))
@@ -138,8 +144,12 @@ namespace MonoDevelop.CodeGeneration
 				if (include)
 					includedMembers.Add (store.GetValue (iter, 3));
 			} while (store.IterNext (ref iter));
-
-			var output = new StringBuilder ();
+			if (includedMembers.Count == 0) {
+				if (treeView.Selection.GetSelected (out iter)) {
+					includedMembers.Add (store.GetValue (iter, 3));
+				}
+			}
+			var output = StringBuilderCache.Allocate ();
 			string indent = options.Editor.GetVirtualIndentationString (options.Editor.CaretLine);
 			foreach (string nodeText in GenerateCode (includedMembers)) {
 				if (output.Length > 0) {
@@ -153,10 +163,12 @@ namespace MonoDevelop.CodeGeneration
 				var data = options.Editor;
 				data.EnsureCaretIsNotVirtual ();
 				int offset = data.CaretOffset;
-				var text = output.ToString ().TrimStart ();
-				using (var undo = data.OpenUndoGroup ()) {
-					data.InsertAtCaret (text);
-					OnTheFlyFormatter.Format (data, options.DocumentContext, offset, offset + text.Length);
+				var text = StringBuilderCache.ReturnAndFree (output).TrimStart ();
+				data.InsertAtCaret (text);				
+				var formattingService = options.DocumentContext?.AnalysisDocument?.GetLanguageService<IEditorFormattingService> ();
+				if (formattingService != null) {
+					var changes = formattingService.GetFormattingChangesAsync (options.DocumentContext.AnalysisDocument, new TextSpan (offset, text.Length), CancellationToken.None).WaitAndGetResult (CancellationToken.None);
+					data.ApplyTextChanges (changes);
 				}
 			}
 		}

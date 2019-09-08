@@ -1,4 +1,4 @@
-// NewFileDialog.cs
+﻿// NewFileDialog.cs
 //
 // Author:
 //   Todd Berman  <tberman@off.net>
@@ -30,6 +30,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 
+using MonoDevelop.Components.AtkCocoaHelper;
 using MonoDevelop.Core;
 using MonoDevelop.Ide.Templates;
 using MonoDevelop.Projects;
@@ -60,27 +61,70 @@ namespace MonoDevelop.Ide.Projects
 		Project[] projectRefs;
 
 		Project parentProject;
+		SolutionFolder parentSolutionFolder;
 		string basePath;
 
 		string userEditedEntryText = null;
 		string previousDefaultEntryText = null;
 
-		public NewFileDialog (Project parentProject, string basePath)
+		public NewFileDialog (Project parentProject, string basePath, SolutionFolder parentSolutionFolder = null)
 		{
 			Build ();
 			this.parentProject = parentProject;
+			this.parentSolutionFolder = parentSolutionFolder;
 			this.basePath = basePath;
 
 			BorderWidth = 6;
-			TransientFor = IdeApp.Workbench.RootWindow;
 			HasSeparator = false;
 
 			InitializeComponents ();
 
 			nameEntry.GrabFocus ();
 
-		}
+			// Accessibility
+			Accessible.Name = "NewFileDialog";
+			Accessible.Description = GettextCatalog.GetString ("Add a new file to the project");
 
+			okButton.Accessible.Name = "NewFileDialog.OkButton";
+			okButton.Accessible.Description = GettextCatalog.GetString ("Create the new file and close the dialog");
+
+			cancelButton.Accessible.Name = "NewFileDialog.CancelButton";
+			cancelButton.Accessible.Description = GettextCatalog.GetString ("Close the dialog without creating a new file");
+
+			catView.Accessible.Name = "NewFileDialog.CategoryView";
+			catView.Accessible.Description = GettextCatalog.GetString ("Select a category for the new file");
+			catView.Accessible.SetTitle (GettextCatalog.GetString ("Categories"));
+
+			labelTemplateTitle.Accessible.Name = "NewFileDialog.TemplateTitleLabel";
+			labelTemplateTitle.Accessible.Description = GettextCatalog.GetString ("The name of the selected template");
+
+			infoLabel.Accessible.Name = "NewFileDialog.InfoLabel";
+			infoLabel.Accessible.Description = GettextCatalog.GetString ("The description of the selected template");
+
+			iconView.Accessible.Name = "NewFileDialog.TemplateList";
+			iconView.Accessible.Description = GettextCatalog.GetString ("Select a template for the new file");
+			iconView.Accessible.SetTitle (GettextCatalog.GetString ("Templates"));
+
+			nameEntry.SetCommonAccessibilityAttributes ("NewFileDialog.NameEntry",
+														GettextCatalog.GetString ("Name"),
+														GettextCatalog.GetString ("Enter the name of the new file"));
+			nameEntry.Accessible.SetTitleUIElement (label1.Accessible);
+
+			label1.Accessible.Name = "NewFileDialog.NameLabel";
+			label1.Accessible.SetTitleFor (nameEntry.Accessible);
+
+			projectAddCheckbox.Accessible.Name = "NewFileDialog.AddCheckbox";
+			projectAddCheckbox.Accessible.Description = GettextCatalog.GetString ("Select whether to add this new file to an existing project");
+			projectAddCheckbox.Accessible.AddLinkedUIElement (projectAddCombo.Accessible);
+
+			projectAddCombo.Accessible.Name = "NewFileDialog.AddProjectCombo";
+			projectAddCombo.Accessible.Description = GettextCatalog.GetString ("Select which project to add the file to");
+			projectAddCombo.Accessible.SetTitleUIElement (projectAddCombo.Accessible);
+
+			projectFolderEntry.Accessible.Name = "NewFileDialog.ProjectFolderEntry";
+			projectFolderEntry.Accessible.Description = GettextCatalog.GetString ("Select which the project folder to add the file");
+			projectFolderEntry.Accessible.SetLabel (GettextCatalog.GetString ("Project Folder"));
+		}
 
 		void InitializeView ()
 		{
@@ -130,7 +174,11 @@ namespace MonoDevelop.Ide.Projects
 
 			if (catView.Selection.GetSelected (out treeModel, out treeIter)) {
 				FillCategoryTemplates (treeIter);
-				catView.ExpandRow (treeModel.GetPath (treeIter), false);
+				if (!IdeServices.DesktopService.AccessibilityInUse) {
+					// When accessibility is being used, don't expand rows automatically
+					// as it can be confusing when using a screen reader
+					catView.ExpandRow (treeModel.GetPath (treeIter), false);
+				}
 				UpdateOkStatus ();
 			}
 		}
@@ -255,7 +303,9 @@ namespace MonoDevelop.Ide.Projects
 				project = parentProject;
 			
 			var templates = FileTemplate.GetFileTemplates (project, basePath);
-			templates.Sort ((FileTemplate t, FileTemplate u) => string.Compare (t.Name, u.Name));
+
+			// stable sort, to ensure the template ordering is maintained among templates with the same name
+			templates = templates.OrderBy(t => t.Name).ToList();
 			
 			foreach (var template in templates) {
 				List<string> langs = template.GetCompatibleLanguages (project, basePath);
@@ -341,8 +391,11 @@ namespace MonoDevelop.Ide.Projects
 		{
 			iconView.Clear ();
 			var list = (List<TemplateItem>)(catStore.GetValue (iter, 2));
+			var itemNames = new HashSet<string>();
 			foreach (TemplateItem item in list) {
-				iconView.Add (item);
+				if (itemNames.Add(item.Name)) {
+					iconView.Add(item);
+				}
 			}
 
 			// select first template
@@ -356,8 +409,8 @@ namespace MonoDevelop.Ide.Projects
 			FileTemplate template = iconView.CurrentlySelected != null ? iconView.CurrentlySelected.Template : null;
 			
 			if (template != null) {
-				labelTemplateTitle.Markup = "<b>" + GettextCatalog.GetString (template.Name) + "</b>";
-				infoLabel.Text = GettextCatalog.GetString (template.Description);
+				labelTemplateTitle.Markup = "<b>" + template.Name + "</b>";
+				infoLabel.Text = template.Description;
 				
 				string filename = GetFileNameFromEntry ();
 				string name = null;
@@ -455,7 +508,7 @@ namespace MonoDevelop.Ide.Projects
 
 		public event EventHandler OnOked;
 
-		void OpenEvent (object sender, EventArgs e)
+		async  void OpenEvent (object sender, EventArgs e)
 		{
 			if (!okButton.Sensitive)
 				return;
@@ -479,7 +532,8 @@ namespace MonoDevelop.Ide.Projects
 				}
 
 				try {
-					if (!item.Create (project, project, path, titem.Language, filename))
+					var policyParent = (SolutionFolderItem)project ?? (SolutionFolderItem)parentSolutionFolder;
+					if (!await item.Create (policyParent, project, parentSolutionFolder, path, titem.Language, filename))
 						return;
 				} catch (Exception ex) {
 					LoggingService.LogError ("Error creating file", ex);
@@ -488,7 +542,10 @@ namespace MonoDevelop.Ide.Projects
 				}
 
 				if (project != null)
-					IdeApp.ProjectOperations.SaveAsync (project);
+					IdeApp.ProjectOperations.SaveAsync (project).Ignore ();
+
+				if (parentSolutionFolder != null)
+					IdeApp.ProjectOperations.SaveAsync (parentSolutionFolder.ParentSolution).Ignore ();
 
 				if (OnOked != null)
 					OnOked (null, null);
@@ -496,7 +553,6 @@ namespace MonoDevelop.Ide.Projects
 				Destroy ();
 			}
 		}
-
 
 		/// <summary>
 		///  Represents a new file template
@@ -606,7 +662,7 @@ namespace MonoDevelop.Ide.Projects
 			labelTemplateTitle.Text = string.Empty;
 			
 			Project[] projects = null;
-			if (parentProject == null)
+			if (parentProject == null && parentSolutionFolder == null)
 				projects = IdeApp.Workspace.GetAllProjects ().ToArray ();
 
 			if (projects != null && projects.Length > 0) {
@@ -798,7 +854,7 @@ namespace MonoDevelop.Ide.Projects
 			
 			public void Add (TemplateItem templateItem)
 			{
-				string name = GLib.Markup.EscapeText (GettextCatalog.GetString (templateItem.Name));
+				string name = GLib.Markup.EscapeText (templateItem.Name);
 				if (!string.IsNullOrEmpty (templateItem.Language))
 					name += "\n<span foreground='darkgrey'><small>" + templateItem.Language + "</small></span>";
 				string icon = templateItem.Template.Icon;

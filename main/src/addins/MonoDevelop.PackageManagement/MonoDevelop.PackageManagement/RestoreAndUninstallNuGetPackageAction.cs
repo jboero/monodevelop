@@ -43,6 +43,7 @@ namespace MonoDevelop.PackageManagement
 		RestoreNuGetPackagesInProjectAction restoreAction;
 		UninstallNuGetPackageAction uninstallAction;
 		IDotNetProject dotNetProject;
+		IMonoDevelopSolutionManager solutionManager;
 		MSBuildNuGetProject nugetProject;
 		PackagePathResolver packagePathResolver;
 
@@ -50,6 +51,7 @@ namespace MonoDevelop.PackageManagement
 			IMonoDevelopSolutionManager solutionManager,
 			IDotNetProject dotNetProject)
 		{
+			this.solutionManager = solutionManager;
 			this.dotNetProject = dotNetProject;
 
 			nugetProject = solutionManager.GetNuGetProject (dotNetProject) as MSBuildNuGetProject;
@@ -65,6 +67,10 @@ namespace MonoDevelop.PackageManagement
 
 		public string PackageId { get; set; }
 		public NuGetVersion Version { get; set; }
+
+		public PackageActionType ActionType {
+			get { return PackageActionType.Uninstall; }
+		}
 
 		public void Execute ()
 		{
@@ -115,7 +121,7 @@ namespace MonoDevelop.PackageManagement
 			if (result) {
 				return await nugetProject.PackagesConfigNuGetProject.UninstallPackageAsync (
 					new PackageIdentity (PackageId, Version),
-					new NuGetProjectContext (),
+					new NuGetProjectContext (solutionManager.Settings),
 					cancellationToken
 				);
 			}

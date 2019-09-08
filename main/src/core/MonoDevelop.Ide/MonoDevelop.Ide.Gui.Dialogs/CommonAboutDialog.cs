@@ -58,8 +58,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 		public CommonAboutDialog ()
 		{
 			Name = "wizard_dialog";
-			Title = string.Format (GettextCatalog.GetString ("About {0}"), BrandingService.ApplicationLongName);
-			TransientFor = IdeApp.Workbench.RootWindow;
+			Title = string.Format (GettextCatalog.GetString ("About {0}"), BrandingService.ApplicationName);
 			AllowGrow = false;
 			HasSeparator = false;
 			BorderWidth = 0;
@@ -91,10 +90,7 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 					notebook.Page = 0;
 				}
 			};
-
-			AddButton (Gtk.Stock.Close, (int)ResponseType.Close);
-
-			ShowAll ();
+			backButton.HasDefault = backButton.CanDefault = true;
 		}
 
 		static void CopyBufferToClipboard ()
@@ -119,21 +115,24 @@ namespace MonoDevelop.Ide.Gui.Dialogs
 					ChangeColor (cw);
 			}
 		}
-		
+
 		static CommonAboutDialog instance;
-		
+
 		public static void ShowAboutDialog ()
 		{
 			if (Platform.IsMac) {
 				if (instance == null) {
+					var parent = IdeServices.DesktopService.GetFocusedTopLevelWindow ();
 					instance = new CommonAboutDialog ();
-					MessageService.PlaceDialog (instance, IdeApp.Workbench.RootWindow);
+					instance.ShowAll ();
+					MessageService.PlaceDialog (instance, parent);
 					instance.Response += delegate {
 						instance.Destroy ();
 						instance.Dispose ();
 						instance = null;
 					};
 				}
+
 				instance.Present ();
 				return;
 			}

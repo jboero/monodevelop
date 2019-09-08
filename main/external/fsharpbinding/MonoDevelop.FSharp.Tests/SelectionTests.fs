@@ -9,11 +9,17 @@ open MonoDevelop.FSharp
 open ExtCore
 open ExtCore.Control
 open ExtCore.Control.Collections
+open System.Threading.Tasks
+open System.Runtime.CompilerServices
 
 [<TestFixture>]
 type ``Expandselection``() =
-    let rec getSelections(doc:TestDocument, selections:list<_>) =
 
+    [<SetUp;AsyncStateMachine(typeof<Task>)>]
+    let ``run before test``() =
+        FixtureSetup.initialiseMonoDevelopAsync()
+
+    let rec getSelections(doc:TestDocument, selections:list<_>) =
         let selectionOpt = ExpandSelection.getExpandRange (doc.Editor, doc.Ast.ParseTree.Value)
         match selectionOpt with
         | None -> selections

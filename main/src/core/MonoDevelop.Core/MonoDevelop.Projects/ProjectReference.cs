@@ -75,6 +75,8 @@ namespace MonoDevelop.Projects
 		SystemPackage cachedPackage;
 		string customError;
 		FilePath hintPath;
+		bool hintPathChanged;
+		bool useFullPathForHintPath;
 		bool hasBeenRead;
 
 		string originalMSBuildReferenceHintPath;
@@ -96,6 +98,8 @@ namespace MonoDevelop.Projects
 				package = value;
 			}
 		}
+
+		public string ProjectGuid { get => projectGuid; }
 		
 		public ProjectReference ()
 		{
@@ -247,6 +251,8 @@ namespace MonoDevelop.Projects
 				} else {
 					var type = File.Exists (path) ? ReferenceType.Assembly : ReferenceType.Package;
 					Init (type, buildItem.Include, path);
+					if (buildItem.Metadata.TryGetPathValue ("HintPath", out FilePath relativePath, relativeToProject: false))
+						useFullPathForHintPath = relativePath == path;
 				}
 			} else {
 				string asm = buildItem.Include;
@@ -280,6 +286,8 @@ namespace MonoDevelop.Projects
 			string name = buildItem.Metadata.GetValue ("Name", Path.GetFileNameWithoutExtension (path));
 			string projectGuid = buildItem.Metadata.GetValue ("Project");
 			Init (ReferenceType.Project, name, null, projectGuid);
+
+			ReferenceSourceTarget = buildItem.Metadata.GetValue ("ReferenceSourceTarget");
 		}
 
 		internal protected override void Write (Project project, MSBuildItem buildItem)
@@ -320,10 +328,14 @@ namespace MonoDevelop.Projects
 					buildItem.Metadata.SetValue ("Project", refProj.ItemId, preserveExistingCase:true);
 					buildItem.Metadata.SetValue ("Name", refProj.Name);
 					buildItem.Metadata.SetValue ("ReferenceOutputAssembly", ReferenceOutputAssembly, true);
+					buildItem.Metadata.SetValue ("ReferenceSourceTarget", ReferenceSourceTarget);
 				}
 			}
 
 			buildItem.Metadata.SetValue ("Private", LocalCopy, DefaultLocalCopy);
+
+			if (hintPathChanged)
+				buildItem.Metadata.SetValue ("HintPath", HintPath, relativeToProject: !useFullPathForHintPath);
 		}
 
 		bool ReferenceStringHasVersion (string asmName)
@@ -442,9 +454,21 @@ namespace MonoDevelop.Projects
 				return true;
 			}
 		}
+		string aliases = "";
 
-		[ItemProperty ("Aliases", DefaultValue="")]
-		public string Aliases { get; set; }
+		[ItemProperty ("Aliases", DefaultValue = "")]
+		public string Aliases {
+			get {
+				return aliases;
+			}
+			set {
+				aliases = value;
+				if (ownerProject != null)
+					ownerProject.NotifyModified ("References");
+			}
+		}
+
+		internal string ReferenceSourceTarget { get; set; } = "ProjectReference";
 
 		public bool IsValid {
 			get { return string.IsNullOrEmpty (ValidationErrorMessage); }
@@ -480,13 +504,15 @@ namespace MonoDevelop.Projects
 					}
 				} else if (ReferenceType == ReferenceType.Project) {
 					if (ownerProject != null && ownerProject.ParentSolution != null && ReferenceOutputAssembly) {
-						DotNetProject p = ResolveProject (ownerProject.ParentSolution) as DotNetProject;
-						if (p != null) {
+						var p = ResolveProject (ownerProject.ParentSolution);
+						var dotNetProject = p as DotNetProject;
+						if (dotNetProject != null) {
 							string reason;
 
-							if (!ownerProject.CanReferenceProject (p, out reason))
+							if (!ownerProject.CanReferenceProject (dotNetProject, out reason))
 								return reason;
-						}
+						} else if (p == null)
+							return GettextCatalog.GetString ("Project not found");
 					}
 				} else if (ReferenceType == ReferenceType.Assembly) {
 					if (!File.Exists (hintPath))
@@ -515,6 +541,12 @@ namespace MonoDevelop.Projects
 
 		public FilePath HintPath {
 			get { return hintPath; }
+			set {
+				hintPath = value;
+				hintPathChanged = true;
+				if (ownerProject != null)
+					ownerProject.NotifyModified ("References");
+			}
 		}
 		
 		string GetVersionNum (string asmName)
@@ -593,7 +625,7 @@ namespace MonoDevelop.Projects
 			
 			if (s != null)
 				return new string[] { s };
-			return new string [0];
+			return Array.Empty<string> ();
 		}
 		/*
 		void AddRequiredPackages (List<string> result, SystemPackage fromPackage)

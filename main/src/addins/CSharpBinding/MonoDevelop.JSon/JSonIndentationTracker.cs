@@ -33,10 +33,16 @@ namespace MonoDevelop.JSon
 {
 	class JSonIndentationTracker : IndentationTracker
 	{
-		readonly TextEditor data;
+		readonly Ide.Editor.TextEditor data;
 		readonly CacheIndentEngine stateTracker;
 
-		public JSonIndentationTracker(TextEditor data, CacheIndentEngine stateTracker)
+        public override IndentationTrackerFeatures SupportedFeatures { 
+            get {
+                return IndentationTrackerFeatures.SmartBackspace | IndentationTrackerFeatures.CustomIndentationEngine;
+            }
+        }
+
+		public JSonIndentationTracker(Ide.Editor.TextEditor data, CacheIndentEngine stateTracker)
 		{
 			this.data = data;
 			this.stateTracker = stateTracker;

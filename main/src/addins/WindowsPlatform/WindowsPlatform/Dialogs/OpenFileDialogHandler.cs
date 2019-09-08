@@ -1,4 +1,4 @@
-// 
+﻿// 
 // OpenFileDialogHandler.cs
 //  
 // Authors:
@@ -159,18 +159,21 @@ namespace MonoDevelop.Platform
 			IShellItemArray resultsArray;
 			uint count;
 
-			try {
-				nativeDialog.GetSelectedItems (out resultsArray);
-			} catch (COMException ex) {
+			var hr = nativeDialog.GetSelectedItems(out resultsArray);
+			if (hr != 0) {
+				var e = Marshal.GetExceptionForHR(hr);
+
 				//we get E_FAIL when there is no selection
-				if (ex != null && ex.ErrorCode == -2147467259)
+				if (hr == -2147467259) {
 					return filenames;
-				throw;
-			} catch (FileNotFoundException) {
-				return filenames;
+				} else if (e is FileNotFoundException) {
+					return filenames;
+				}
+
+				throw e;
 			}
 
-			var hr = (int)resultsArray.GetCount (out count);
+			hr = (int)resultsArray.GetCount (out count);
 			if (hr != 0)
 				throw Marshal.GetExceptionForHR (hr);
 
@@ -196,7 +199,7 @@ namespace MonoDevelop.Platform
 
 			foreach (var e in TextEncoding.ConversionEncodings) {
 				combo.Items.Add (new EncodingComboItem (Encoding.GetEncoding (e.CodePage), string.Format ("{0} ({1})", e.Name, e.Id)));
-				if (selectedEncoding != null && e.CodePage == selectedEncoding.WindowsCodePage)
+				if (selectedEncoding != null && e.CodePage == selectedEncoding.CodePage)
 					combo.SelectedIndex = i;
 				i++;
 			}
@@ -233,7 +236,7 @@ namespace MonoDevelop.Platform
 			int selected = -1;
 			int i = 0;
 			bool hasBench = false;
-			var projectService = IdeApp.Services.ProjectService;
+			var projectService = IdeServices.ProjectService;
 			if (projectService.IsWorkspaceItemFile (fileName) || projectService.IsSolutionItemFile (fileName)) {
 				hasBench = true;
 				combo.Items.Add (new ViewerComboItem (null, GettextCatalog.GetString ("Solution Workbench")));
@@ -242,7 +245,7 @@ namespace MonoDevelop.Platform
 				i++;
 			}
 
-			foreach (var vw in DisplayBindingService.GetFileViewers (fileName, null))
+			foreach (var vw in IdeServices.DisplayBindingService.GetFileViewers (fileName, null).Result)
 				if (!vw.IsExternal) {
 					combo.Items.Add (new ViewerComboItem (vw, vw.Title));
 

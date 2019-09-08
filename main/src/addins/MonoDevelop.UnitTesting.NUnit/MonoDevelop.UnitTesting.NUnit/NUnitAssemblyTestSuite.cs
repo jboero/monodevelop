@@ -44,6 +44,7 @@ using System.Xml.Linq;
 using System.Linq;
 using System.Globalization;
 using System.Threading.Tasks;
+using MonoDevelop.Core.Assemblies;
 
 namespace MonoDevelop.UnitTesting.NUnit
 {
@@ -207,10 +208,14 @@ namespace MonoDevelop.UnitTesting.NUnit
 			ld.TestInfoCachePath = cacheLoaded ? null : TestInfoCachePath;
 			ld.Callback = delegate {
 				Runtime.RunInMainThread (delegate {
+					if (ld.Error != null)
+						this.ErrorMessage = ld.Error.Message;
+					else
+						ErrorMessage = string.Empty;
 					AsyncCreateTests (ld);
 				});
 			};
-			ld.SupportAssemblies = new List<string> (SupportAssemblies);
+			ld.SupportAssemblies = GetSupportAssembliesAsync ();
 			ld.NUnitVersion = NUnitVersion;
 			
 			AsyncLoadTest (ld);
@@ -328,13 +333,19 @@ namespace MonoDevelop.UnitTesting.NUnit
 
 				try {
 					if (File.Exists (ld.Path)) {
-						runner = new ExternalTestRunner ();
+						runner = new ExternalTestRunner (Path.GetDirectoryName (ld.Path));
+						runner.ProcessExecutionArchitecture = AssemblyUtilities.GetProcessExecutionArchitectureForAssembly (ld.Path);
 						runner.Connect (ld.NUnitVersion).Wait ();
-						ld.Info = runner.GetTestInfo (ld.Path, ld.SupportAssemblies).Result;
+						var supportAssemblies = new List<string> (ld.SupportAssemblies.Result);
+						ld.Info = runner.GetTestInfo (ld.Path, supportAssemblies).Result;
 					}
-				} catch (Exception ex) {
-					Console.WriteLine (ex);
-					ld.Error = ex;
+				} catch (AggregateException exception){
+					var baseException = exception.GetBaseException ();
+					Console.WriteLine (baseException);
+					ld.Error = baseException;
+				} catch (Exception exception) {
+					Console.WriteLine (exception);
+					ld.Error = exception;
 				}
 				finally {
 					try {
@@ -385,9 +396,11 @@ namespace MonoDevelop.UnitTesting.NUnit
 			if (runnerExe != null)
 				return RunWithConsoleRunner (runnerExe, test, suiteName, pathName, testName, testContext);
 
-			var console = testContext.ExecutionContext.ConsoleFactory.CreateConsole ();
+			var console = testContext.ExecutionContext.ConsoleFactory.CreateConsole (
+				OperationConsoleFactory.CreateConsoleOptions.Default.WithTitle (GettextCatalog.GetString ("Unit Tests")));
 
-			ExternalTestRunner runner = new ExternalTestRunner ();
+			ExternalTestRunner runner = new ExternalTestRunner (Path.GetDirectoryName (AssemblyPath));
+			runner.ProcessExecutionArchitecture = AssemblyUtilities.GetProcessExecutionArchitectureForAssembly (AssemblyPath);
 			runner.Connect (NUnitVersion, testContext.ExecutionContext.ExecutionHandler, console).Wait ();
 			LocalTestMonitor localMonitor = new LocalTestMonitor (testContext, test, suiteName, testName != null);
 
@@ -420,8 +433,9 @@ namespace MonoDevelop.UnitTesting.NUnit
 				GetCustomTestRunner (out testRunnerAssembly, out testRunnerType);
 
 				testContext.Monitor.CancellationToken.ThrowIfCancellationRequested ();
-					
-				result = runner.Run (localMonitor, filter, AssemblyPath, "", new List<string> (SupportAssemblies), testRunnerType, testRunnerAssembly, crashLogFile).Result;
+
+				var supportAssemblies = new List<string> (GetSupportAssembliesAsync ().Result);
+				result = runner.Run (localMonitor, filter, AssemblyPath, "", supportAssemblies, testRunnerType, testRunnerAssembly, crashLogFile).Result;
 				if (testName != null)
 					result = localMonitor.SingleTestResult;
 				
@@ -445,6 +459,7 @@ namespace MonoDevelop.UnitTesting.NUnit
 				}
 			} finally {
 				// Dispose the runner before the console, to make sure the console is available until the runner is disposed.
+				runner.Disconnect ().Wait ();
 				runner.Dispose ();
 				if (console != null)
 					console.Dispose ();
@@ -481,7 +496,8 @@ namespace MonoDevelop.UnitTesting.NUnit
 		{
 			var outFile = Path.GetTempFileName ();
 			var xmlOutputConsole = new LocalConsole ();
-			var appDebugOutputConsole = testContext.ExecutionContext.ConsoleFactory.CreateConsole ();
+			var appDebugOutputConsole = testContext.ExecutionContext.ConsoleFactory.CreateConsole (
+				OperationConsoleFactory.CreateConsoleOptions.Default.WithTitle (GettextCatalog.GetString ("Unit Tests")));
 			OperationConsole cons;
 			if (appDebugOutputConsole != null) {
 				cons = new MultipleOperationConsoles (appDebugOutputConsole, xmlOutputConsole);
@@ -655,11 +671,19 @@ namespace MonoDevelop.UnitTesting.NUnit
 		protected abstract string AssemblyPath {
 			get;
 		}
-		
+
+		[Obsolete ("Override GetSupportAssembliesAsync instead")]
 		protected virtual IEnumerable<string> SupportAssemblies {
 			get { yield break; }
 		}
 		
+		protected virtual Task<IEnumerable<string>> GetSupportAssembliesAsync ()
+		{
+			#pragma warning disable 618
+			return Task.FromResult (SupportAssemblies);
+			#pragma warning restore 618
+		}
+
 		// File where cached test info for this test suite will be saved
 		// Returns null by default which means that test info will not be saved.
 		protected virtual string TestInfoCachePath {
@@ -674,7 +698,7 @@ namespace MonoDevelop.UnitTesting.NUnit
 			public NunitTestInfo Info;
 			public TestInfoCache InfoCache;
 			public WaitCallback Callback;
-			public List<string> SupportAssemblies;
+			public Task<IEnumerable<string>> SupportAssemblies;
 			public NUnitVersion NUnitVersion;
 		}
 		

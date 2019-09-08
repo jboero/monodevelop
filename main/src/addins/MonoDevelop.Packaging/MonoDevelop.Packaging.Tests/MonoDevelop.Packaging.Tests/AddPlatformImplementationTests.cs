@@ -27,27 +27,24 @@
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using MonoDevelop.Core;
+using MonoDevelop.Ide;
 using MonoDevelop.Ide.Templates;
 using MonoDevelop.Projects;
 using NUnit.Framework;
 using UnitTests;
 using MonoDevelop.Projects.SharedAssetsProjects;
-using MonoDevelop.Projects.MSBuild;
 
 namespace MonoDevelop.Packaging.Tests
 {
 	[TestFixture]
-	public class AddPlatformImplementationTests : TestBase
+	public class AddPlatformImplementationTests : IdeTestBase
 	{
-		public AddPlatformImplementationTests ()
+		[TestFixtureSetUp]
+		public void SetUp ()
 		{
-			Simulate ();
-
-			#pragma warning disable 219
-			// Ensure NuGet.ProjectManagement assembly is loaded otherwise creating
-			// a PackagingProject will fail.
-			string binDirectory = NuGet.ProjectManagement.Constants.BinDirectory;
-			#pragma warning restore 219
+			if (!Platform.IsMac)
+				Assert.Ignore ("Platform not Mac - Ignoring AddPlatformImplementationTests");
 		}
 
 		[Test]
@@ -63,7 +60,7 @@ namespace MonoDevelop.Packaging.Tests
 				SolutionPath = dir
 			};
 
-			var solution = template.CreateWorkspaceItem (cinfo) as Solution;
+			var solution = await template.CreateWorkspaceItem (cinfo) as Solution;
 			string solutionFileName = Path.Combine (dir, "Solution.sln");
 			await solution.SaveAsync (solutionFileName, Util.GetMonitor ());
 
@@ -88,7 +85,7 @@ namespace MonoDevelop.Packaging.Tests
 			await viewModel.CreateProjects (Util.GetMonitor ());
 
 			// Verify projects created as expected.
-			solution = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
+			solution = (Solution) await Ide.Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
 
 			pclProject = solution.GetAllProjects ().OfType<DotNetProject> ().FirstOrDefault (p => p.Name == "MyProject");
 
@@ -134,7 +131,6 @@ namespace MonoDevelop.Packaging.Tests
 		}
 
 		[Test]
-		[Platform (Exclude = "Win")]
 		public async Task AddIOSProjectForPCLProject ()
 		{
 			string templateId = "MonoDevelop.CSharp.PortableLibrary";
@@ -147,7 +143,7 @@ namespace MonoDevelop.Packaging.Tests
 				SolutionPath = dir
 			};
 
-			var solution = template.CreateWorkspaceItem (cinfo) as Solution;
+			var solution = await template.CreateWorkspaceItem (cinfo) as Solution;
 			string solutionFileName = Path.Combine (dir, "Solution.sln");
 			await solution.SaveAsync (solutionFileName, Util.GetMonitor ());
 
@@ -172,7 +168,7 @@ namespace MonoDevelop.Packaging.Tests
 			await viewModel.CreateProjects (Util.GetMonitor ());
 
 			// Verify projects created as expected.
-			solution = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
+			solution = (Solution) await Ide.Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
 
 			pclProject = solution.GetAllProjects ().OfType<DotNetProject> ().FirstOrDefault (p => p.Name == "MyProject");
 
@@ -215,7 +211,6 @@ namespace MonoDevelop.Packaging.Tests
 		}
 
 		[Test]
-		[Platform (Exclude = "Win")]
 		public async Task AddSharedProjectForPCLProject ()
 		{
 			string templateId = "MonoDevelop.CSharp.PortableLibrary";
@@ -228,7 +223,7 @@ namespace MonoDevelop.Packaging.Tests
 				SolutionPath = dir
 			};
 
-			var solution = template.CreateWorkspaceItem (cinfo) as Solution;
+			var solution = await template.CreateWorkspaceItem (cinfo) as Solution;
 			string solutionFileName = Path.Combine (dir, "Solution.sln");
 			await solution.SaveAsync (solutionFileName, Util.GetMonitor ());
 
@@ -259,7 +254,7 @@ namespace MonoDevelop.Packaging.Tests
 			await viewModel.CreateProjects (Util.GetMonitor ());
 
 			// Verify projects created as expected.
-			solution = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
+			solution = (Solution) await Ide.Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
 
 			pclProject = solution.GetAllProjects ().OfType<DotNetProject> ().FirstOrDefault (p => p.Name == "MyProject");
 
@@ -345,7 +340,6 @@ namespace MonoDevelop.Packaging.Tests
 		}
 
 		[Test]
-		[Platform (Exclude = "Win")]
 		public async Task PCLProjectInSameDirectoryAsSolution ()
 		{
 			string templateId = "MonoDevelop.CSharp.PortableLibrary";
@@ -358,7 +352,7 @@ namespace MonoDevelop.Packaging.Tests
 				SolutionPath = dir
 			};
 
-			var solution = template.CreateWorkspaceItem (cinfo) as Solution;
+			var solution = await template.CreateWorkspaceItem (cinfo) as Solution;
 			string solutionFileName = Path.Combine (dir, "Solution.sln");
 			await solution.SaveAsync (solutionFileName, Util.GetMonitor ());
 
@@ -383,7 +377,7 @@ namespace MonoDevelop.Packaging.Tests
 			await viewModel.CreateProjects (Util.GetMonitor ());
 
 			// Verify projects created as expected.
-			solution = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
+			solution = (Solution) await Ide.Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solutionFileName);
 
 			var androidProject = solution.GetAllProjects ().FirstOrDefault (p => p.Name == "MyProject.Android");
 			var nugetProject = solution.GetAllProjects ().FirstOrDefault (p => p.Name == "MyProject.NuGet");
@@ -395,10 +389,6 @@ namespace MonoDevelop.Packaging.Tests
 			Assert.AreEqual (expectedBaseDirectory.Combine ("MyProject.iOS", "MyProject.iOS.csproj"), iosProject.FileName);
 			Assert.AreEqual (expectedBaseDirectory.Combine ("MyProject.NuGet", "MyProject.NuGet.nuproj"), nugetProject.FileName);
 			Assert.AreEqual (expectedBaseDirectory.Combine ("MyProject.Shared", "MyProject.Shared.shproj"), sharedProject.FileName);
-
-			Assert.IsTrue (androidProject.GetFlavor<DotNetProjectPackagingExtension> ().GetRequiresMSBuild ());
-			Assert.IsTrue (nugetProject.GetFlavor<DotNetProjectPackagingExtension> ().GetRequiresMSBuild ());
-			Assert.IsTrue (iosProject.GetFlavor<DotNetProjectPackagingExtension> ().GetRequiresMSBuild ());
 		}
 	}
 }

@@ -37,24 +37,26 @@ using System.Threading.Tasks;
 
 namespace MonoDevelop.Ide.CodeCompletion
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense.AsyncCompletion APIs")]
 	public abstract class ParameterHintingData
 	{
-		public ISymbol Symbol {
-			get;
-			private set;
-		}
-
-		protected ParameterHintingData (ISymbol symbol)
-		{
-			Symbol = symbol;
-		}
-
 		public abstract int ParameterCount {
 			get;
 		}
 
 		public abstract bool IsParameterListAllowed {
 			get;
+		}
+
+		public ParameterHintingData ()
+		{
+
+		}
+
+		[Obsolete("Obsolete use parameterless constructor.")]
+		public ParameterHintingData (ISymbol symbol)
+		{
+
 		}
 
 		public abstract string GetParameterName (int parameter);

@@ -46,7 +46,11 @@ namespace MonoDevelop.PackageManagement
 			get { return consoleMonitor.Console; }
 		}
 
-		public PackageManagementProgressMonitor (OutputProgressMonitor consoleMonitor, ProgressMonitor statusMonitor)
+		public PackageManagementProgressMonitor (
+			OutputProgressMonitor consoleMonitor,
+			ProgressMonitor statusMonitor,
+			CancellationTokenSource cancellationTokenSource)
+			: base (cancellationTokenSource)
 		{
 			AddFollowerMonitor (statusMonitor);
 			this.consoleMonitor = consoleMonitor;
@@ -65,7 +69,7 @@ namespace MonoDevelop.PackageManagement
 			consoleMonitor.ErrorLog.Write (message);
 		}
 
-		public override void Dispose ()
+		protected override void OnDispose (bool disposing)
 		{
 			consoleMonitorReg.Dispose ();
 			statusMonitorReg.Dispose ();
@@ -84,7 +88,7 @@ namespace MonoDevelop.PackageManagement
 
 			consoleMonitor.Dispose ();
 
-			base.Dispose ();
+			base.OnDispose (disposing);
 		}
 
 		void ReportAllWarningsButLastToConsole ()

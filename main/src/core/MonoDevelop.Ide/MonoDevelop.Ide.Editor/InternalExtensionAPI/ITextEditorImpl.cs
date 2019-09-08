@@ -32,9 +32,15 @@ using MonoDevelop.Ide.Editor.Highlighting;
 using MonoDevelop.Components;
 using Xwt;
 using System.Collections.Immutable;
+using System.Threading;
+using System.Threading.Tasks;
+using MonoDevelop.Projects;
+using MonoDevelop.Ide.Gui.Documents;
+using System.Text;
 
 namespace MonoDevelop.Ide.Editor
 {
+	[Obsolete ("Use the Microsoft.VisualStudio.Language.Intellisense.AsyncCompletion APIs")]
 	public enum EditMode
 	{
 		Edit,
@@ -42,9 +48,30 @@ namespace MonoDevelop.Ide.Editor
 		CursorInsertion
 	}
 
+	[Obsolete]
 	interface ITextEditorImpl : IDisposable
 	{
-		ViewContent ViewContent { get; }
+		DocumentController DocumentController { get; set; }
+
+		IEnumerable<object> GetContents (Type type);
+
+		ProjectReloadCapability ProjectReloadCapability { get; }
+
+		Project Project { get; set; }
+
+		Microsoft.VisualStudio.Text.Editor.ITextView TextView { get; set; }
+
+		void DiscardChanges ();
+
+		Task Load (string fileName, Encoding loadEncoding, bool reload = false);
+
+		Task Save (FileSaveInformation fileSaveInformation);
+
+		bool IsDirty { get; set; }
+
+		event EventHandler ContentNameChanged;
+
+		event EventHandler DirtyChanged;
 
 		string ContentName { get; set; }
 
@@ -56,13 +83,15 @@ namespace MonoDevelop.Ide.Editor
 
 		IReadonlyTextDocument Document { get; }
 
-		DocumentLocation CaretLocation { get; set; }
-
 		SemanticHighlighting SemanticHighlighting { get; set; }
 
+		ISyntaxHighlighting SyntaxHighlighting { get; set; }
+	
 		int CaretOffset { get; set; }
 
 		bool IsSomethingSelected { get; }
+
+		IEnumerable<Selection> Selections { get; }
 
 		SelectionMode SelectionMode { get; }
 
@@ -94,7 +123,7 @@ namespace MonoDevelop.Ide.Editor
 
 		void FixVirtualIndentation ();
 
-		IEditorActionHost Actions { get; }
+		IMonoDevelopEditorOperations Actions { get; }
 
 		ITextMarkerFactory TextMarkerFactory { get; }
 
@@ -168,15 +197,15 @@ namespace MonoDevelop.Ide.Editor
 
 		IEnumerable<IFoldSegment> GetFoldingsIn (int offset, int length);
 
+		string GetPangoMarkup (int offset, int length, bool fitIdeStyle = false);
+
 		string GetMarkup (int offset, int length, MarkupOptions options);
 
-		void SetIndentationTracker (IndentationTracker indentationTracker);
-		void SetSelectionSurroundingProvider (SelectionSurroundingProvider surroundingProvider);
-		void SetTextPasteHandler (TextPasteHandler textPasteHandler);
+		Task<string> GetMarkupAsync (int offset, int length, MarkupOptions options, CancellationToken cancellationToken);
 
-		event EventHandler<LineEventArgs> LineChanged;
-		event EventHandler<LineEventArgs> LineInserted;
-		event EventHandler<LineEventArgs> LineRemoved;
+		IndentationTracker IndentationTracker { get; set; }
+        void SetSelectionSurroundingProvider (SelectionSurroundingProvider surroundingProvider);
+		void SetTextPasteHandler (TextPasteHandler textPasteHandler);
 
 		#region Internal use only API (do not mirror in TextEditor)
 
@@ -216,11 +245,20 @@ namespace MonoDevelop.Ide.Editor
 		void UpdateBraceMatchingResult (BraceMatchingResult? result);
 
 		IEnumerable<IDocumentLine> VisibleLines { get; }
+		IReadOnlyList<Caret> Carets { get; }
 
 		void GrabFocus ();
+		bool HasFocus { get; }
+		bool LockFixIndentation { get; set; }
 
-		event EventHandler<LineEventArgs> LineShown;
+		event EventHandler<LineEventArgs> LineShowing;
 		event EventHandler FocusLost;
 
-}
+		void ShowTooltipWindow (Components.Window window, TooltipWindowOptions options);
+		void HideTooltipWindow ();
+		Task<ScopeStack> GetScopeStackAsync (int offset, CancellationToken cancellationToken);
+
+		double GetLineHeight (int line);
+		void SetNotDirtyState ();
+	}
 }

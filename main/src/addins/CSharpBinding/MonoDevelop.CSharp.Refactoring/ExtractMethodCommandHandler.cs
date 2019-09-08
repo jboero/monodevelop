@@ -24,34 +24,33 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
-using MonoDevelop.Components.Commands;
-using ICSharpCode.NRefactory6.CSharp.ExtractMethod;
-using MonoDevelop.Ide;
-using ICSharpCode.NRefactory6.CSharp;
-using System.Threading;
-using Microsoft.CodeAnalysis.Text;
 using System.Linq;
-using MonoDevelop.Refactoring;
-using MonoDevelop.Core;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.CSharp.ExtractMethod;
+using MonoDevelop.Components.Commands;
+using MonoDevelop.Core;
+using MonoDevelop.Ide;
+using MonoDevelop.Refactoring;
 
 namespace MonoDevelop.CSharp.Refactoring
 {
 	class ExtractMethodCommandHandler : CommandHandler
 	{
-		public static async Task<bool> IsValid (MonoDevelop.Ide.Gui.Document doc, CancellationToken cancellationToken = default(CancellationToken))
+		public static async Task<bool> IsValid (MonoDevelop.Ide.Gui.Document doc, CancellationToken cancellationToken = default (CancellationToken))
 		{
 			if (doc == null)
 				return false;
 			if (doc.Editor == null || !doc.Editor.IsSomethingSelected)
 				return false;
-			var ad = doc.AnalysisDocument;
+			var ad = doc.DocumentContext.AnalysisDocument;
 			if (ad == null)
 				return false;
 			var selectionRange = doc.Editor.SelectionRange;
 			try {
-				var selection = new CSharpSelectionValidator (await SemanticDocument.CreateAsync (ad, cancellationToken).ConfigureAwait (false), new TextSpan (selectionRange.Offset, selectionRange.Length), doc.GetOptionSet ());
+				var selection = new CSharpSelectionValidator (await SemanticDocument.CreateAsync (ad, cancellationToken).ConfigureAwait (false), new TextSpan (selectionRange.Offset, selectionRange.Length), doc.DocumentContext.GetOptionSet ());
 				var result = await selection.GetValidSelectionAsync (cancellationToken).ConfigureAwait (false);
 				return result.ContainsValidContext;
 			} catch (Exception) {
@@ -62,20 +61,20 @@ namespace MonoDevelop.CSharp.Refactoring
 		protected override void Update (CommandInfo info)
 		{
 			var doc = IdeApp.Workbench.ActiveDocument;
-			info.Enabled = doc != null && doc.ParsedDocument != null && doc.ParsedDocument.GetAst<SemanticModel> () != null;
+			info.Enabled = doc != null && doc.Editor != null && doc.DocumentContext.AnalysisDocument != null;
 		}
 
 		public async static Task Run (MonoDevelop.Ide.Gui.Document doc)
 		{
 			if (!doc.Editor.IsSomethingSelected)
 				return;
-			var ad = doc.AnalysisDocument;
-			if (ad == null || ! await IsValid (doc))
+			var ad = doc.DocumentContext.AnalysisDocument;
+			if (ad == null || !await IsValid (doc))
 				return;
 			try {
 				var selectionRange = doc.Editor.SelectionRange;
-				var token = default(CancellationToken);
-				var selection = new CSharpSelectionValidator (await SemanticDocument.CreateAsync (ad, token).ConfigureAwait (false), new TextSpan (selectionRange.Offset, selectionRange.Length), doc.GetOptionSet ());
+				var token = default (CancellationToken);
+				var selection = new CSharpSelectionValidator (await SemanticDocument.CreateAsync (ad, token).ConfigureAwait (false), new TextSpan (selectionRange.Offset, selectionRange.Length), doc.DocumentContext.GetOptionSet ());
 				var result = await selection.GetValidSelectionAsync (token).ConfigureAwait (false);
 				if (!result.ContainsValidContext)
 					return;
@@ -91,13 +90,12 @@ namespace MonoDevelop.CSharp.Refactoring
 						doc.Editor.RemoveText (extractionResult.MethodDeclarationNode.SpanStart, "private ".Length);
 					}
 				}
-				await doc.UpdateParseDocument ();
-				var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc, extractionResult.InvocationNameToken.Span.Start).Result;
+				await doc.DocumentContext.UpdateParseDocument ();
+				var info = RefactoringSymbolInfo.GetSymbolInfoAsync (doc.DocumentContext, extractionResult.InvocationNameToken.Span.Start).Result;
 				var sym = info.DeclaredSymbol ?? info.Symbol;
 				if (sym != null)
 					await new MonoDevelop.Refactoring.Rename.RenameRefactoring ().Rename (sym);
-			}
-			catch (Exception e) {
+			} catch (Exception e) {
 				LoggingService.LogError ("Error while extracting method", e);
 			}
 		}

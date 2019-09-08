@@ -35,6 +35,7 @@ using NuGet.PackageManagement;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using NuGet.Packaging.PackageExtraction;
+using NuGet.Packaging.Signing;
 using NuGet.ProjectManagement;
 using NuGet.Protocol.Core.Types;
 
@@ -48,6 +49,7 @@ namespace MonoDevelop.PackageManagement
 			Solution solution,
 			PackageIdentity packageIdentity,
 			DownloadResourceResult downloadResult,
+			INuGetProjectContext context,
 			CancellationToken token)
 		{
 			string globalPackagesFolder = await GetPackagesDirectory (solution);
@@ -59,17 +61,23 @@ namespace MonoDevelop.PackageManagement
 			if (File.Exists (hashPath))
 				return;
 
-			var versionFolderPathContext = new VersionFolderPathContext (
-				packageIdentity,
-				globalPackagesFolder,
-				NullLogger.Instance,
+			var logger = new LoggerAdapter (context);
+			var solutionManager = new MonoDevelopSolutionManager (solution);
+			var clientPolicyContext = ClientPolicyContext.GetClientPolicy (solutionManager.Settings, logger);
+
+			var packageExtractionContext = new PackageExtractionContext (
 				PackageSaveMode.Defaultv3,
-				PackageExtractionBehavior.XmlDocFileSaveMode);
+				PackageExtractionBehavior.XmlDocFileSaveMode,
+				clientPolicyContext,
+				logger);
 
 			downloadResult.PackageStream.Position = 0;
 			await PackageExtractor.InstallFromSourceAsync (
+				downloadResult.PackageSource,
+				packageIdentity,
 				stream => downloadResult.PackageStream.CopyToAsync (stream, BufferSize, token),
-				versionFolderPathContext,
+				defaultPackagePathResolver,
+				packageExtractionContext,
 				token);
 		}
 
@@ -89,12 +97,17 @@ namespace MonoDevelop.PackageManagement
 			if (!IsMissing (solutionManager, packageIdentity))
 				return;
 
-			await PackageDownloader.GetDownloadResourceResultAsync (
-				solutionManager.CreateSourceRepositoryProvider ().GetRepositories (),
-				packageIdentity,
-				solutionManager.Settings,
-				new LoggerAdapter (context),
-				token);
+			using (var sourceCacheContext = new SourceCacheContext ()) {
+				var downloadContext = new PackageDownloadContext (sourceCacheContext);
+
+				await PackageDownloader.GetDownloadResourceResultAsync (
+					solutionManager.CreateSourceRepositoryProvider ().GetRepositories (),
+					packageIdentity,
+					downloadContext,
+					SettingsUtility.GetGlobalPackagesFolder (solutionManager.Settings),
+					new LoggerAdapter (context),
+					token);
+			}
 		}
 
 		public static bool IsMissing (

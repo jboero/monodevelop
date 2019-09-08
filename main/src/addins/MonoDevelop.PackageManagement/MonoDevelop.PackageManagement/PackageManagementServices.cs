@@ -26,6 +26,9 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
+using System;
+using System.IO;
+
 namespace MonoDevelop.PackageManagement
 {
 	public static class PackageManagementServices
@@ -41,8 +44,9 @@ namespace MonoDevelop.PackageManagement
 		static readonly PackageManagementProjectOperations projectOperations;
 		static readonly PackageManagementWorkspace workspace;
 		static readonly PackageManagementCredentialService credentialService;
-		static readonly AnalyzerPackageMonitor analyzerPackageMonitor;
+		//static readonly AnalyzerPackageMonitor analyzerPackageMonitor;
 		static readonly MonoDevelopHttpUserAgent userAgent = new MonoDevelopHttpUserAgent ();
+		static readonly NuGetConfigFileChangedMonitor nuGetConfigFileChangedMonitor = new NuGetConfigFileChangedMonitor ();
 
 		static PackageManagementServices()
 		{
@@ -66,7 +70,10 @@ namespace MonoDevelop.PackageManagement
 
 			PackageManagementBackgroundDispatcher.Initialize ();
 
+			nuGetConfigFileChangedMonitor.MonitorFileChanges ();
+
 			//analyzerPackageMonitor = new AnalyzerPackageMonitor ();
+			MonoDevelop.Refactoring.PackageInstaller.PackageInstallerServiceFactory.PackageServices = new MonoDevelop.PackageManagement.Refactoring.NuGetPackageServicesProxy ();
 		}
 
 		internal static void InitializeCredentialService ()
@@ -104,6 +111,10 @@ namespace MonoDevelop.PackageManagement
 
 		internal static PackageManagementWorkspace Workspace {
 			get { return workspace; }
+		}
+
+		internal static ProjectTargetFrameworkMonitor ProjectTargetFrameworkMonitor {
+			get { return projectTargetFrameworkMonitor;  }
 		}
 	}
 }

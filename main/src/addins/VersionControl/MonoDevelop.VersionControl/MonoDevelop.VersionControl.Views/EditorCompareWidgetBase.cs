@@ -1,4 +1,4 @@
-
+﻿
 //
 // EditorCompareWidgetBase.cs
 //
@@ -37,6 +37,10 @@ using MonoDevelop.Core;
 using MonoDevelop.Components;
 using MonoDevelop.Components.Commands;
 using MonoDevelop.Projects.Text;
+using MonoDevelop.Core.Text;
+using MonoDevelop.Ide.Editor;
+using Microsoft.VisualStudio.Text;
+using MonoDevelop.Ide.TextEditing;
 
 namespace MonoDevelop.VersionControl.Views
 {
@@ -55,33 +59,57 @@ namespace MonoDevelop.VersionControl.Views
 		DiffScrollbar rightDiffScrollBar, leftDiffScrollBar;
 		MiddleArea[] middleAreas;
 
-		protected MonoTextEditor[] editors;
+		internal MonoTextEditor[] editors;
 		protected Widget[] headerWidgets;
 
 		
 		List<Hunk> leftDiff;
-		protected List<Hunk> LeftDiff {
+		internal List<Hunk> LeftDiff {
 			get { return leftDiff; }
 			set {
 				leftDiff = value;
 				OnDiffChanged (EventArgs.Empty);
+				SetDiffEditorVersions ();
 			}
 		}
 		
 		List<Hunk> rightDiff;
-		protected List<Hunk> RightDiff {
+		internal List<Hunk> RightDiff {
 			get { return rightDiff; }
 			set {
 				rightDiff = value;
 				OnDiffChanged (EventArgs.Empty);
+				SetDiffEditorVersions ();
 			}
 		}
-		
-		protected internal abstract MonoTextEditor MainEditor {
+
+		ITextSourceVersion [] diffVersions;
+
+		void SetDiffEditorVersions ()
+		{
+			if (diffVersions == null) // editors.Length never changes
+				diffVersions = new ITextSourceVersion [editors.Length];
+			for (int i = 0; i < editors.Length; i++) {
+				diffVersions [i] = editors [i].Document.Version;
+			}
+		}
+
+		bool IsEditorDiffValid ()
+		{
+			if (diffVersions == null)
+				return false;
+			for (int i = 0; i < editors.Length; i++) {
+				if (diffVersions [i].CompareAge (editors [i].Document.Version) != 0)
+					return false;
+			}
+			return true;
+		}
+
+		internal abstract MonoTextEditor MainEditor {
 			get;
 		}
 		
-		public MonoTextEditor FocusedEditor {
+		internal MonoTextEditor FocusedEditor {
 			get {
 				foreach (MonoTextEditor editor in editors) {
 					
@@ -144,11 +172,15 @@ namespace MonoDevelop.VersionControl.Views
 
 			if (editors.Length == 2) {
 				editors[0].Painted +=  delegate (object sender, PaintEventArgs args) {
+					if (!IsEditorDiffValid ())
+						return;
 					var myEditor = (TextArea)sender;
 					PaintEditorOverlay (myEditor, args, LeftDiff, true);
 				};
 
 				editors[1].Painted +=  delegate (object sender, PaintEventArgs args) {
+					if (!IsEditorDiffValid ())
+						return;
 					var myEditor = (TextArea)sender;
 					PaintEditorOverlay (myEditor, args, LeftDiff, false);
 				};
@@ -157,15 +189,21 @@ namespace MonoDevelop.VersionControl.Views
 				Add (rightDiffScrollBar);
 			} else {
 				editors[0].Painted +=  delegate (object sender, PaintEventArgs args) {
+					if (!IsEditorDiffValid ())
+						return;
 					var myEditor = (TextArea)sender;
 					PaintEditorOverlay (myEditor, args, LeftDiff, true);
 				};
 				editors[1].Painted +=  delegate (object sender, PaintEventArgs args) {
+					if (!IsEditorDiffValid ())
+						return;
 					var myEditor = (TextArea)sender;
 					PaintEditorOverlay (myEditor, args, LeftDiff, false);
 					PaintEditorOverlay (myEditor, args, RightDiff, false);
 				};
 				editors[2].Painted +=  delegate (object sender, PaintEventArgs args) {
+					if (!IsEditorDiffValid ())
+						return;
 					var myEditor = (TextArea)sender;
 					PaintEditorOverlay (myEditor, args, RightDiff, true);
 				};
@@ -231,11 +269,11 @@ namespace MonoDevelop.VersionControl.Views
 		{
 			this.info = info;
 
-			var mimeType = DesktopService.GetMimeTypeForUri (info.Item.Path);
+			var mimeType = IdeServices.DesktopService.GetMimeTypeForUri (info.Item.Path);
 			foreach (var editor in editors) {
 				editor.Document.IgnoreFoldings = true;
 				editor.Document.MimeType = mimeType;
-				editor.Document.ReadOnly = true;
+				editor.Document.IsReadOnly = true;
 
 				editor.Options.ShowFoldMargin = false;
 				editor.Options.ShowIconMargin = false;
@@ -248,10 +286,18 @@ namespace MonoDevelop.VersionControl.Views
 		protected virtual void OnSetVersionControlInfo (VersionControlDocumentInfo info)
 		{
 		}
-		
+
+		internal virtual TextEditorOptions GetTextEditorOptions ()
+		{
+			var options = new TextEditorOptions ();
+			options.CopyFrom (CommonTextEditorOptions.Instance);
+			options.TabsToSpaces = false;
+			return options;
+		}
+
 		protected abstract void CreateComponents ();
 		
-		public static ICollection<Cairo.Rectangle> GetDiffRectangles (MonoTextEditor editor, int startOffset, int endOffset)
+		internal static ICollection<Cairo.Rectangle> GetDiffRectangles (MonoTextEditor editor, int startOffset, int endOffset)
 		{
 			ICollection<Cairo.Rectangle> rectangles = new List<Cairo.Rectangle> ();
 			var startLine = editor.GetLineByOffset (startOffset);
@@ -274,12 +320,14 @@ namespace MonoDevelop.VersionControl.Views
 			diffCache.Clear ();
 		}
 		
-		static List<TextSegment> BreakTextInWords (MonoTextEditor editor, int start, int count)
+		static List<ISegment> BreakTextInWords (MonoTextEditor editor, int start, int count)
 		{
-			return TextBreaker.BreakLinesIntoWords(editor, start, count);
+			var s = Math.Min (start, editor.LineCount);
+			var c = Math.Min (count, editor.LineCount - (s - 1));
+			return TextBreaker.BreakLinesIntoWords(editor, s, c);
 		}
 		
-		static List<Cairo.Rectangle> CalculateChunkPath (MonoTextEditor editor, List<Hunk> diff, List<TextSegment> words, bool useRemove)
+		static List<Cairo.Rectangle> CalculateChunkPath (MonoTextEditor editor, List<Hunk> diff, List<ISegment> words, bool useRemove)
 		{
 			List<Cairo.Rectangle> result = new List<Cairo.Rectangle> ();
 			int startOffset = -1;
@@ -379,11 +427,11 @@ namespace MonoDevelop.VersionControl.Views
 
 		internal static void CaretPositionChanged (object sender, DocumentLocationEventArgs e)
 		{
-			Caret caret = (Caret)sender;
+			CaretImpl caret = (CaretImpl)sender;
 			UpdateCaretPosition (caret);
 		}
 
-		static void UpdateCaretPosition (Caret caret)
+		static void UpdateCaretPosition (CaretImpl caret)
 		{
 //			int offset = caret.Offset;
 //			if (offset < 0 || offset > caret.TextEditorData.Document.TextLength)
@@ -519,7 +567,7 @@ namespace MonoDevelop.VersionControl.Views
 			children.ForEach (child => child.Child.SizeRequest ());
 		}
 
-		public static Cairo.Color GetColor (Hunk hunk, bool removeSide, bool border, double alpha)
+		internal static Cairo.Color GetColor (Hunk hunk, bool removeSide, bool border, double alpha)
 		{
 			Xwt.Drawing.Color result;
 			if (hunk.Removed > 0 && hunk.Inserted > 0) {
@@ -582,64 +630,78 @@ namespace MonoDevelop.VersionControl.Views
 
 		List<TextEditorData> localUpdate = new List<TextEditorData> ();
 
-		void HandleInfoDocumentTextEditorDataDocumentTextReplaced (object sender, DocumentChangeEventArgs e)
+		void HandleInfoDocumentTextEditorDataDocumentTextReplaced (object sender, TextChangeEventArgs e)
 		{
 			foreach (var data in localUpdate.ToArray ()) {
-				data.Document.TextReplaced -= HandleDataDocumentTextReplaced;
-				data.Replace (e.Offset, e.RemovalLength, e.InsertedText.Text);
-				data.Document.TextReplaced += HandleDataDocumentTextReplaced;
+				data.Document.TextChanged -= HandleDataDocumentTextReplaced;
+				foreach (var change in e.TextChanges.Reverse ()) {
+					data.Replace (change.Offset, change.RemovalLength, change.InsertedText.Text);
+				}
+				data.Document.TextChanged += HandleDataDocumentTextReplaced;
 				data.Document.CommitUpdateAll ();
 			}
 		}
 		
 		public void UpdateLocalText ()
 		{
-			var text = info.Document.GetContent<ITextFile> ();
+			var textBuffer = info.Controller.GetContent<ITextBuffer> ();
+			string localText = null;
+			if (textBuffer != null) {
+				localText = textBuffer.CurrentSnapshot.GetText ();
+			} else {
+				localText = TextFileUtility.GetText (info.Item.Path);
+			}
+			 
 			foreach (var data in dict.Values) {
-				data.Document.TextReplaced -= HandleDataDocumentTextReplaced;
-				data.Document.Text = text.Text;
-				data.Document.TextReplaced += HandleDataDocumentTextReplaced;
+				data.Document.TextChanged -= HandleDataDocumentTextReplaced;
+				data.Document.Text = localText;
+				data.Document.TextChanged += HandleDataDocumentTextReplaced;
 			}
 			CreateDiff ();
 		}
 
-		public void SetLocal (TextEditorData data)
+		internal void SetLocal (TextEditorData data)
 		{
 			if (info == null)
 				throw new InvalidOperationException ("Version control info must be set before attaching the merge view to an editor.");
 			dict[data.Document] = data;
-			
-			var editor = info.Document.ParentDocument.Editor;
+
+			var editor = info.Document.GetContent<ITextBuffer> ();
 			if (editor != null) {
-				data.Document.Text = editor.Text;
-				data.Document.ReadOnly = editor.IsReadOnly;
+				data.Document.Text = editor.CurrentSnapshot.GetText ();
+				data.Document.IsReadOnly = editor.IsReadOnly (0);
+			} else {
+				data.Document.Text = TextFileUtility.GetText (info.Item.Path);
+				data.Document.IsReadOnly = true;
 			}
-			
+
 			CreateDiff ();
-			data.Document.TextReplaced += HandleDataDocumentTextReplaced;
+			data.Document.TextChanged += HandleDataDocumentTextReplaced;
 		}
 
-		void HandleDataDocumentTextReplaced (object sender, DocumentChangeEventArgs e)
+		void HandleDataDocumentTextReplaced (object sender, TextChangeEventArgs e)
 		{
 			var data = dict [(TextDocument)sender];
 			localUpdate.Remove (data);
-			var editor = info.Document.ParentDocument.Editor;
-			editor.ReplaceText (e.Offset, e.RemovalLength, e.InsertedText.Text);
+			var editor = info.Document.GetContent<ITextBuffer> ();
+			foreach (var change in e.TextChanges.Reverse ()) {
+				editor.Replace (new Microsoft.VisualStudio.Text.Span (change.Offset, change.RemovalLength), change.InsertedText.Text);
+			}
 			localUpdate.Add (data);
 			UpdateDiff ();
 		}
 
-		public void RemoveLocal (TextEditorData data)
+		internal void RemoveLocal (TextEditorData data)
 		{
 			localUpdate.Remove (data);
-			data.Document.TextReplaced -= HandleDataDocumentTextReplaced;
+			data.Document.TextChanged -= HandleDataDocumentTextReplaced;
 		}
 
-		protected virtual void UndoChange (MonoTextEditor fromEditor, MonoTextEditor toEditor, Hunk hunk)
+		internal virtual void UndoChange (MonoTextEditor fromEditor, MonoTextEditor toEditor, Hunk hunk)
 		{
 			using (var undo = toEditor.OpenUndoGroup ()) {
 				var start = toEditor.Document.GetLine (hunk.InsertStart);
-				int toOffset = start != null ? start.Offset : toEditor.Document.TextLength;
+				int toOffset = start != null ? start.Offset : toEditor.Document.Length;
 
 				int replaceLength = 0;
 				if (start != null && hunk.Inserted > 0) {
@@ -699,7 +761,7 @@ namespace MonoDevelop.VersionControl.Views
 			Hunk selectedHunk = Hunk.Empty;
 			protected override bool OnMotionNotifyEvent (EventMotion evnt)
 			{
-				bool hideButton = widget.MainEditor.Document.ReadOnly;
+				bool hideButton = widget.MainEditor.Document.IsReadOnly;
 				Hunk selectedHunk = Hunk.Empty;
 				if (!hideButton) {
 					int delta = widget.MainEditor.Allocation.Y - Allocation.Y;
@@ -743,7 +805,11 @@ namespace MonoDevelop.VersionControl.Views
 			protected override bool OnButtonPressEvent (EventButton evnt)
 			{
 				if (!evnt.TriggersContextMenu () && evnt.Button == 1 && !selectedHunk.IsEmpty) {
-					widget.UndoChange (fromEditor, toEditor, selectedHunk);
+					try {
+						widget.UndoChange (fromEditor, toEditor, selectedHunk);
+					} catch (Exception e) {
+						LoggingService.LogInternalError ("Error while undoing widget change.", e);
+					}
 					return true;
 				}
 				return base.OnButtonPressEvent (evnt);
@@ -803,7 +869,7 @@ namespace MonoDevelop.VersionControl.Views
 
 			protected override bool OnExposeEvent (EventExpose evnt)
 			{
-				bool hideButton = widget.MainEditor.Document.ReadOnly;
+				bool hideButton = widget.MainEditor.Document.IsReadOnly;
 				using (Cairo.Context cr = Gdk.CairoHelper.Create (evnt.Window)) {
 					cr.Rectangle (evnt.Region.Clipbox.X, evnt.Region.Clipbox.Y, evnt.Region.Clipbox.Width, evnt.Region.Clipbox.Height);
 					cr.Clip ();

@@ -25,11 +25,11 @@
 // THE SOFTWARE.
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using MonoDevelop.Core;
 using MonoDevelop.Core.Assemblies;
 using MonoDevelop.Core.Execution;
-using MonoDevelop.Core;
-using System.Threading.Tasks;
-using MonoDevelop.Projects.MSBuild;
 
 namespace MonoDevelop.Projects
 {
@@ -77,9 +77,24 @@ namespace MonoDevelop.Projects
 			return next.OnGetReferencedAssemblies (configuration);
 		}
 
+		internal protected virtual Task<List<AssemblyReference>> OnGetReferences (ConfigurationSelector configuration, CancellationToken token)
+		{
+			return next.OnGetReferences (configuration, token);
+		}
+
 		internal protected virtual IEnumerable<DotNetProject> OnGetReferencedAssemblyProjects (ConfigurationSelector configuration)
 		{
 			return next.OnGetReferencedAssemblyProjects (configuration);
+		}
+
+		internal protected virtual Task<List<AssemblyReference>> OnGetFacadeAssemblies ()
+		{
+			return next.OnGetFacadeAssemblies ();
+		}
+
+		internal protected virtual Task<List<AssemblyReference>> OnGetFacadeAssemblies (TargetFramework framework)
+		{
+			return next.OnGetFacadeAssemblies (framework);
 		}
 
 		[Obsolete("User overload that takes a RunConfiguration")]
@@ -135,6 +150,7 @@ namespace MonoDevelop.Projects
 			return next.OnGetSupportsFramework (framework);
 		}
 
+		[Obsolete ("Use MSBuild")]
 		internal protected virtual Task<BuildResult> OnCompile (ProgressMonitor monitor, BuildData buildData)
 		{
 			return next.OnCompile (monitor, buildData);

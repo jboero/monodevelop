@@ -27,6 +27,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.IO;
+using System.Reflection;
 using System.Text;
 
 namespace MonoDevelop.Core
@@ -115,6 +116,12 @@ namespace MonoDevelop.Core
 			} catch (EntryPointNotFoundException) {
 			}
 			LoggingService.LogError ("Unable to set GTK# dll directory");
+		}
+
+		[Obsolete ("Use Runtime.LoadAssemblyFrom")]
+		public static Assembly AssemblyLoad (string asmPath)
+		{
+			return Runtime.LoadAssemblyFrom (asmPath);
 		}
 	}
 }

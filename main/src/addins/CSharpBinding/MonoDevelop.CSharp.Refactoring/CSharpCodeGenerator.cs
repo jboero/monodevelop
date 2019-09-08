@@ -1,4 +1,4 @@
-// 
+﻿// 
 // CSharpCodeGenerator.cs
 //  
 // Author:
@@ -25,18 +25,16 @@
 // THE SOFTWARE.
 
 using System;
-using System.Linq;
-using MonoDevelop.Ide.TypeSystem;
-using Microsoft.CodeAnalysis;
-using System.Text;
-using MonoDevelop.Ide.Editor;
-using MonoDevelop.Ide;
 using System.Collections.Generic;
-using MonoDevelop.CSharp.Formatting;
-using Microsoft.CodeAnalysis.Options;
-using MonoDevelop.CSharp.Completion;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using ICSharpCode.NRefactory;
+using Microsoft.CodeAnalysis;
+using MonoDevelop.CSharp.Formatting;
+using MonoDevelop.Ide;
+using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.TypeSystem;
 
 namespace MonoDevelop.CSharp.Refactoring
 {
@@ -49,7 +47,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		//		public MonoDevelop.CSharp.Formatting.CSharpFormattingPolicy Policy {
 		//			get {
 		//				if (policy == null) {
-		//					var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
+		//					var types = MonoDevelop.Ide.IdeServices.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
 		//					if (PolicyParent != null)
 		//						policy = PolicyParent.Get<CSharpFormattingPolicy> (types);
 		//					if (policy == null) {
@@ -67,7 +65,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		//			}
 		//			set {
 		//				base.PolicyParent = value;
-		//				var types = MonoDevelop.Ide.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
+		//				var types = MonoDevelop.Ide.IdeServices.DesktopService.GetMimeTypeInheritanceChain (MonoDevelop.CSharp.Formatting.CSharpFormatter.MimeType);
 		//				policy = value.Get<CSharpFormattingPolicy> (types);
 		//			}
 		//		}
@@ -79,7 +77,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			public ITypeSymbol ImplementingType { get; set; }
 			public Location Part { get; set; }
 
-			public TextEditor Editor { get; set; }
+			public Ide.Editor.TextEditor Editor { get; set; }
 			public DocumentContext DocumentContext { get; set; }
 
 			public bool CreateProtocolMember { get; set; }
@@ -88,7 +86,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			public SemanticModel SemanticModel {
 				get {
 					if (semanticModel == null) {
-						var model = DocumentContext.ParsedDocument.GetAst<SemanticModel> ();
+						var model = DocumentContext.AnalysisDocument.GetSemanticModelAsync ().WaitAndGetResult ();
 						return model;
 					}
 					return semanticModel;
@@ -104,7 +102,7 @@ namespace MonoDevelop.CSharp.Refactoring
 				if (DocumentContext == null || Editor == null || SemanticModel == null || DocumentContext.ParsedDocument == null)
 					return ns + "." + name;
 
-				var model = DocumentContext.ParsedDocument.GetAst<SemanticModel>();
+				var model = DocumentContext.AnalysisDocument.GetSemanticModelAsync ().WaitAndGetResult ();
 
 				if (model == null)
 					return ns + "." + name;
@@ -114,18 +112,13 @@ namespace MonoDevelop.CSharp.Refactoring
 					return ns + "." + name;
 
 
-				return RoslynCompletionData.SafeMinimalDisplayString (type, model, Editor.CaretOffset, Ambience.LabelFormat);
+				return CSharpAmbience.SafeMinimalDisplayString (type, model, Editor.CaretOffset, Ambience.LabelFormat);
 			}
-		}
-
-		static void AppendLine(StringBuilder sb)
-		{
-			sb.AppendLine();
 		}
 
 		public override string WrapInRegions (string regionName, string text)
 		{
-			StringBuilder result = new StringBuilder ();
+			StringBuilder result = Core.StringBuilderCache.Allocate ();
 			AppendIndent (result);
 			result.Append ("#region ");
 			result.Append (regionName);
@@ -134,7 +127,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			AppendLine (result);
 			AppendIndent (result);
 			result.Append ("#endregion");
-			return result.ToString ();
+			return Core.StringBuilderCache.ReturnAndFree (result);
 		}
 
 		static void AppendObsoleteAttribute(StringBuilder result, CodeGenerationOptions options, ISymbol entity)
@@ -195,7 +188,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		//			throw new NotSupportedException ("member " +  member + " is not supported.");
 		//		}
 
-		public static CodeGeneratorMemberResult CreateOverridenMemberImplementation(DocumentContext document, TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
+		public static CodeGeneratorMemberResult CreateOverridenMemberImplementation(DocumentContext document, Ide.Editor.TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
 		{
 			var options = new CodeGenerationOptions {
 				ExplicitDeclaration = explicitDeclaration,
@@ -217,7 +210,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			throw new NotSupportedException("member " + member + " is not supported.");
 		}
 
-		public static CodeGeneratorMemberResult CreateProtocolMemberImplementation(DocumentContext document, TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
+		public static CodeGeneratorMemberResult CreateProtocolMemberImplementation(DocumentContext document, Ide.Editor.TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
 		{
 			//			SetIndentTo (part);
 			var options = new CodeGenerationOptions {
@@ -241,7 +234,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			throw new NotSupportedException("member " + member + " is not supported.");
 		}
 
-		public static CodeGeneratorMemberResult CreatePartialMemberImplementation(DocumentContext document, TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
+		public static CodeGeneratorMemberResult CreatePartialMemberImplementation(DocumentContext document, Ide.Editor.TextEditor editor, ITypeSymbol implementingType, Location part, ISymbol member, bool explicitDeclaration, SemanticModel model)
 		{
 			var options = new CodeGenerationOptions {
 				ExplicitDeclaration = explicitDeclaration,
@@ -330,7 +323,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		{
 			if (type == null)
 				throw new ArgumentNullException("type");
-			result.Append(RoslynCompletionData.SafeMinimalDisplayString (type, options.SemanticModel, options.Part.SourceSpan.Start, Ambience.LabelFormat));
+			result.Append(CSharpAmbience.SafeMinimalDisplayString (type, options.SemanticModel, options.Part.SourceSpan.Start, Ambience.LabelFormat));
 
 			//			var implementingType = options.Part;
 			//			var loc = implementingType.Region.End;
@@ -378,7 +371,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		//		
 		static CodeGeneratorMemberResult GenerateCode (IFieldSymbol field, CodeGenerationOptions options)
 		{
-			StringBuilder result = new StringBuilder ();
+			StringBuilder result = Core.StringBuilderCache.Allocate ();
 			AppendIndent (result);
 			AppendModifiers (result, options, field);
 			result.Append (" ");
@@ -386,7 +379,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			result.Append (" ");
 			result.Append (CSharpAmbience.FilterName (field.Name));
 			result.Append (";");
-			return new CodeGeneratorMemberResult (result.ToString (), -1, -1);
+			return new CodeGeneratorMemberResult (Core.StringBuilderCache.ReturnAndFree (result), -1, -1);
 		}
 
 		static void AppendIndent (StringBuilder result)
@@ -396,7 +389,7 @@ namespace MonoDevelop.CSharp.Refactoring
 
 		static CodeGeneratorMemberResult GenerateCode (IEventSymbol evt, CodeGenerationOptions options)
 		{
-			StringBuilder result = new StringBuilder ();
+			StringBuilder result = Core.StringBuilderCache.Allocate ();
 			AppendObsoleteAttribute (result, options, evt);
 			AppendModifiers (result, options, evt);
 
@@ -415,19 +408,19 @@ namespace MonoDevelop.CSharp.Refactoring
 				result.Append ("add {");
 				AppendIndent (result);
 				result.Append ("// TODO");
-				AppendLine (result);
+				result.AppendLine ();
 				result.Append ("}");
 
 				AppendIndent (result);
 				result.Append ("remove {");
 				AppendIndent (result);
 				result.Append ("// TODO");
-				AppendLine (result);
+				result.AppendLine ();
 				result.Append ("}}");
 			} else {
 				result.Append (";");
 			}
-			return new CodeGeneratorMemberResult (result.ToString ());
+			return new CodeGeneratorMemberResult (Core.StringBuilderCache.ReturnAndFree (result));
 		}
 
 		static void AppendNotImplementedException (StringBuilder result, CodeGenerationOptions options, out int bodyStartOffset, out int bodyEndOffset)
@@ -438,7 +431,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			result.Append (options.GetShortType ("System", "NotImplementedException"));
 			result.Append ("();");
 			bodyEndOffset = result.Length;
-			AppendLine (result);
+			result.AppendLine ();
 		}
 
 		internal static string[] MonoTouchComments = {
@@ -451,7 +444,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			AppendIndent (result);
 			bodyStartOffset = result.Length;
 			foreach (var cmt in MonoTouchComments) {
-				result.AppendLine("//" + cmt);
+				result.Append("//").AppendLine (cmt);
 				AppendIndent (result);
 			}
 			result.Append("throw new ");
@@ -459,13 +452,13 @@ namespace MonoDevelop.CSharp.Refactoring
 			result.Append("();");
 
 			bodyEndOffset = result.Length;
-			AppendLine (result);
+			result.AppendLine ();
 		}
 
 		static CodeGeneratorMemberResult GenerateCode(IMethodSymbol method, CodeGenerationOptions options)
 		{
 			int bodyStartOffset = -1, bodyEndOffset = -1;
-			var result = new StringBuilder();
+			var result = Core.StringBuilderCache.Allocate ();
 			AppendObsoleteAttribute (result, options, method);
 			AppendModifiers (result, options, method);
 			//			if (method.IsPartial)
@@ -581,7 +574,7 @@ namespace MonoDevelop.CSharp.Refactoring
 					}
 					result.Append (");");
 					bodyEndOffset = result.Length;
-					AppendLine (result);
+					result.AppendLine ();
 				} else if (IsMonoTouchModelMember (method)) {
 					AppendMonoTouchTodo (result, options, out bodyStartOffset, out bodyEndOffset);
 				} else if (method.IsAbstract || !(method.IsVirtual || method.IsOverride) || method.ContainingType.TypeKind == TypeKind.Interface) {
@@ -643,18 +636,18 @@ namespace MonoDevelop.CSharp.Refactoring
 						result.Append ("throw new System.NotImplementedException ();");
 					}
 					bodyEndOffset = result.Length;
-					AppendLine (result);
+					result.AppendLine ();
 				}
 				result.Append ("}");
 			}
-			return new CodeGeneratorMemberResult(result.ToString (), bodyStartOffset, bodyEndOffset);
+			return new CodeGeneratorMemberResult(Core.StringBuilderCache.ReturnAndFree (result), bodyStartOffset, bodyEndOffset);
 		}
 
 
 		static CodeGeneratorMemberResult GeneratePartialCode(IMethodSymbol method, CodeGenerationOptions options)
 		{
 			int bodyStartOffset = -1, bodyEndOffset = -1;
-			var result = new StringBuilder();
+			var result = Core.StringBuilderCache.Allocate ();
 			AppendObsoleteAttribute (result, options, method);
 			result.Append("partial ");
 			AppendReturnType (result, options, method.ReturnType);
@@ -682,10 +675,10 @@ namespace MonoDevelop.CSharp.Refactoring
 			var typeParameters = method.TypeParameters;
 			result.AppendLine("{");
 			bodyStartOffset = result.Length;
-			AppendLine (result);
+			result.AppendLine ();
 			bodyEndOffset = result.Length;
 			result.AppendLine("}");
-			return new CodeGeneratorMemberResult(result.ToString(), bodyStartOffset, bodyEndOffset);
+			return new CodeGeneratorMemberResult(Core.StringBuilderCache.ReturnAndFree (result), bodyStartOffset, bodyEndOffset);
 		}
 
 		//		class ThrowsExceptionVisitor : DepthFirstAstVisitor
@@ -723,21 +716,22 @@ namespace MonoDevelop.CSharp.Refactoring
 						var name = Enum.GetName (p.ExplicitDefaultValue.GetType (), p.ExplicitDefaultValue);
 						if (name != null) {
 							AppendReturnType (result, options, p.Type);
-							result.Append ("." + name);
+							result.Append (".");
+							result.Append (name);
 						} else {
 							result.Append ("(");
 							AppendReturnType (result, options, p.Type);
-							result.Append (")" + p.ExplicitDefaultValue);
+							result.Append (")").Append (p.ExplicitDefaultValue);
 						}
 					} else if (p.ExplicitDefaultValue is char) {
-						result.Append ("'" + p.ExplicitDefaultValue + "'");
+						result.Append ("'").Append (p.ExplicitDefaultValue).Append ("'");
 					} else if (p.ExplicitDefaultValue is string) {
-						result.Append ("\"" + CSharpTextEditorIndentation.ConvertToStringLiteral ((string)p.ExplicitDefaultValue) + "\"");
+						result.Append ("\"").Append (CSharpTextEditorIndentation.ConvertToStringLiteral ((string)p.ExplicitDefaultValue)).Append ("\"");
 					} else if (p.ExplicitDefaultValue is bool) {
 						result.Append ((bool)p.ExplicitDefaultValue ? "true" : "false");
 					} else if (p.ExplicitDefaultValue == null) {
 						if (p.Type.IsValueType && p.Type.SpecialType != SpecialType.System_String) {
-							result.Append ("default(" + p.Type.ToMinimalDisplayString (options.SemanticModel, options.Part.SourceSpan.Start) + ")");
+							result.Append ("default(").Append (p.Type.ToMinimalDisplayString (options.SemanticModel, options.Part.SourceSpan.Start)).Append (")");
 						} else {
 							result.Append ("null");
 						}
@@ -755,7 +749,7 @@ namespace MonoDevelop.CSharp.Refactoring
 
 		static string GetModifiers (ITypeSymbol implementingType, Location implementingPart, ISymbol member)
 		{
-			StringBuilder result = new StringBuilder ();
+			var result = Core.StringBuilderCache.Allocate ();
 
 			if (member.DeclaredAccessibility == Accessibility.Public || (member.ContainingType != null && member.ContainingType.TypeKind == TypeKind.Interface)) {
 				result.Append ("public ");
@@ -774,7 +768,7 @@ namespace MonoDevelop.CSharp.Refactoring
 			if (member.IsStatic)
 				result.Append ("static ");
 
-			return result.ToString ();
+			return Core.StringBuilderCache.ReturnAndFree (result);
 		}
 
 		static void AppendModifiers (StringBuilder result, CodeGenerationOptions options, ISymbol member)
@@ -812,7 +806,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		static CodeGeneratorMemberResult GenerateCode (IPropertySymbol property, CodeGenerationOptions options)
 		{
 			var regions = new List<CodeGeneratorBodyRegion> ();
-			var result = new StringBuilder ();
+			var result = Core.StringBuilderCache.Allocate ();
 			AppendObsoleteAttribute (result, options, property);
 			AppendModifiers (result, options, property);
 			AppendReturnType (result, options, property.Type);
@@ -855,10 +849,10 @@ namespace MonoDevelop.CSharp.Refactoring
 							result.Append (";");
 						}
 						bodyEndOffset = result.Length;
-						AppendLine (result);
+						result.AppendLine ();
 					}
 					result.Append ("}");
-					AppendLine (result);
+					result.AppendLine ();
 					regions.Add (new CodeGeneratorBodyRegion (bodyStartOffset, bodyEndOffset));
 				}
 			}
@@ -889,15 +883,15 @@ namespace MonoDevelop.CSharp.Refactoring
 							result.Append (" = value;");
 						}
 						bodyEndOffset = result.Length;
-						AppendLine (result);
+						result.AppendLine ();
 					}
 					result.Append ("}");
-					AppendLine (result);
+					result.AppendLine ();
 					regions.Add (new CodeGeneratorBodyRegion (bodyStartOffset, bodyEndOffset));
 				}
 			}
 			result.Append ("}");
-			return new CodeGeneratorMemberResult (result.ToString (), regions);
+			return new CodeGeneratorMemberResult (Core.StringBuilderCache.ReturnAndFree (result), regions);
 		}
 
 		internal static bool IsMonoTouchModelMember (ISymbol member)
@@ -1006,7 +1000,7 @@ namespace MonoDevelop.CSharp.Refactoring
 
 		public override async void CompleteStatement (MonoDevelop.Ide.Gui.Document doc)
 		{
-			var fixer = new ConstructFixer (doc.GetFormattingOptions ());
+			var fixer = new ConstructFixer (doc.DocumentContext.GetFormattingOptions ());
 			int newOffset = await fixer.TryFix (doc, doc.Editor.CaretOffset, default(CancellationToken));
 			if (newOffset != -1) {
 				doc.Editor.CaretOffset = newOffset;
@@ -1016,7 +1010,7 @@ namespace MonoDevelop.CSharp.Refactoring
 		static CodeGeneratorMemberResult GenerateProtocolCode(IMethodSymbol method, CodeGenerationOptions options)
 		{
 			int bodyStartOffset = -1, bodyEndOffset = -1;
-			var result = new StringBuilder();
+			var result = Core.StringBuilderCache.Allocate ();
 			var exportAttribute = method.GetAttributes ().FirstOrDefault (attr => attr.AttributeClass.Name == "ExportAttribute");
 			if (exportAttribute != null) {
 				result.Append ("[Export(\"");
@@ -1055,17 +1049,17 @@ namespace MonoDevelop.CSharp.Refactoring
 			bodyStartOffset = result.Length;
 			result.Append ("throw new System.NotImplementedException ();");
 			bodyEndOffset = result.Length;
-			AppendLine (result);
+			result.AppendLine ();
 			result.Append ("}");
-			return new CodeGeneratorMemberResult(result.ToString (), bodyStartOffset, bodyEndOffset);
+			return new CodeGeneratorMemberResult(Core.StringBuilderCache.ReturnAndFree (result), bodyStartOffset, bodyEndOffset);
 		}
 
-		public override void AddGlobalNamespaceImport (TextEditor editor, DocumentContext context, string nsName)
+		public override void AddGlobalNamespaceImport (Ide.Editor.TextEditor editor, DocumentContext context, string nsName)
 		{
 			// not used anymore
 		}
 
-		public override void AddLocalNamespaceImport (TextEditor editor, DocumentContext context, string nsName, TextLocation caretLocation)
+		public override void AddLocalNamespaceImport (Ide.Editor.TextEditor editor, DocumentContext context, string nsName, TextLocation caretLocation)
 		{
 			// not used anymore
 		}

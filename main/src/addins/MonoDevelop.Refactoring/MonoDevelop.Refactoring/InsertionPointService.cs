@@ -1,4 +1,4 @@
-﻿//
+//
 // InsertionPointService.cs
 //
 // Author:
@@ -27,42 +27,40 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using MonoDevelop.Ide.Editor;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using System.Threading;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using Microsoft.CodeAnalysis.Text;
+using MonoDevelop.Ide.Editor;
 using MonoDevelop.Ide.TypeSystem;
 
 namespace MonoDevelop.Refactoring
 {
+	[Obsolete ("Not supported in new editor")]
 	public static class InsertionPointService
 	{
-		public static List<InsertionPoint> GetInsertionPoints (IReadonlyTextDocument data, MonoDevelop.Ide.TypeSystem.ParsedDocument parsedDocument, ITypeSymbol type, int part)
+		public static List<InsertionPoint> GetInsertionPoints (IReadonlyTextDocument data, SemanticModel model, ITypeSymbol type, Location location)
+		{
+			return GetInsertionPoints (data, model, type, location.SourceSpan.Start);
+		}
+
+		public static List<InsertionPoint> GetInsertionPoints (
+			IReadonlyTextDocument data, SemanticModel model, ITypeSymbol type, int position, CancellationToken token = default (CancellationToken))
 		{
 			if (data == null)
 				throw new ArgumentNullException (nameof (data));
-			if (parsedDocument == null)
-				throw new ArgumentNullException (nameof (parsedDocument));
+			if (model == null)
+				throw new ArgumentNullException (nameof (model));
 			if (type == null)
 				throw new ArgumentNullException (nameof (type));
 			if (!type.IsDefinedInSource ())
 				throw new ArgumentException ("The given type needs to be defined in source code.", nameof (type));
 
-			// update type from parsed document, since this is always newer.
-			//type = parsedDocument.GetInnermostTypeDefinition (type.GetLocation ()) ?? type;
-			//var realStartLocation = data.OffsetToLocation (offset);
-			var model = parsedDocument.GetAst<SemanticModel> ();
-			return GetInsertionPoints (data, model, type, part);
-		}
+			var result = new List<InsertionPoint> ();
 
-		internal static List<InsertionPoint> GetInsertionPoints (IReadonlyTextDocument data, SemanticModel model, ITypeSymbol type, int part)
-		{
-			List<InsertionPoint> result = new List<InsertionPoint> ();
-
-			type = model.GetEnclosingNamedType (part, default (CancellationToken)) as ITypeSymbol ?? type;
-			var sourceSpan = new TextSpan (part, 0);
+			type = model.GetEnclosingNamedType (position, token) as ITypeSymbol ?? type;
+			var sourceSpan = new TextSpan (position, 0);
 
 			var filePath = data.FileName;
 			var declaringType = type.DeclaringSyntaxReferences.FirstOrDefault (dsr => dsr.SyntaxTree.FilePath == filePath && dsr.Span.Contains (sourceSpan)) ?? type.DeclaringSyntaxReferences.FirstOrDefault ();
@@ -135,11 +133,6 @@ namespace MonoDevelop.Refactoring
 			//foreach (var res in result)
 			//	Console.WriteLine (res);
 			return result;
-		}
-
-		public static List<InsertionPoint> GetInsertionPoints (IReadonlyTextDocument data, MonoDevelop.Ide.TypeSystem.ParsedDocument parsedDocument, ITypeSymbol type, Location location)
-		{
-			return GetInsertionPoints (data, parsedDocument, type, location.SourceSpan.Start);
 		}
 
 		static void CheckEndPoint (IReadonlyTextDocument doc, InsertionPoint point, bool isStartPoint)

@@ -35,15 +35,18 @@ namespace MonoDevelop.Components
 		TaskSeverity severity;
 		Xwt.ImageView imageView;
 		string message;
+		bool markup;
 		TooltipPopoverWindow popover;
-		PopupPosition popupPosition;
+		PopupPosition popupPosition = PopupPosition.Top;
 
 		public InformationPopoverWidget ()
 		{
 			severity = TaskSeverity.Information;
 			imageView = new Xwt.ImageView ();
-			Content = imageView;
+			imageView.Accessible.Role = Xwt.Accessibility.Role.Filler;
 			UpdateIcon ();
+			Content = imageView;
+			CanGetFocus = true;
 		}
 
 		public TaskSeverity Severity {
@@ -65,6 +68,16 @@ namespace MonoDevelop.Components
 			set {
 				message = value;
 				UpdatePopover ();
+
+				this.Accessible.Label = value;
+			}
+		}
+
+		public bool UseMarkup {
+			get { return markup; }
+			set {
+				markup = value;
+				UpdatePopover ();
 			}
 		}
 
@@ -85,11 +98,17 @@ namespace MonoDevelop.Components
 		{
 			switch (severity) {
 			case TaskSeverity.Error:
-				return ImageService.GetIcon ("md-error");
+				return ImageService.GetIcon ("md-error", Gtk.IconSize.Menu);
 			case TaskSeverity.Warning:
-				return ImageService.GetIcon ("md-warning");
+				return ImageService.GetIcon ("md-warning", Gtk.IconSize.Menu);
 			}
-			return ImageService.GetIcon ("md-information");
+			return ImageService.GetIcon ("md-information", Gtk.IconSize.Menu);
+		}
+
+		protected override void OnGotFocus (EventArgs args)
+		{
+			base.OnGotFocus (args);
+			ShowPopover ();
 		}
 
 		protected override void OnMouseEntered (EventArgs args)
@@ -98,16 +117,31 @@ namespace MonoDevelop.Components
 			ShowPopover ();
 		}
 
+		bool WorkaroundNestedDialogFlickering ()
+		{
+			// There seems to be a problem with Gdk.Window focus events when the parent
+			// window is transient for another modal window (i.e. dialogs on top of the Ide preferences window).
+			// A native tooltip seems to confuse Gdk in this case and it rapidly fires LeaveNotify/EnterNotify
+			// events leading to fast flickering of the tooltip.
+			if (ParentWindow != null && Surface.ToolkitEngine.GetNativeWindow (ParentWindow) is Gtk.Window gtkWindow) {
+				if (gtkWindow.TransientFor?.TransientFor != null)
+					return true;
+			}
+			return false;
+		}
+
 		void ShowPopover ()
 		{
 			if (popover != null)
 				popover.Destroy ();
-			popover = new TooltipPopoverWindow {
-				ShowArrow = true,
-				Text = message,
-				Severity = severity
-			};
-			popover.ShowPopup ((Gtk.Widget)this.Surface.NativeWidget, popupPosition);
+			popover = TooltipPopoverWindow.Create (!WorkaroundNestedDialogFlickering ());
+			popover.ShowArrow = true;
+			if (markup)
+				popover.Markup = message;
+			else
+				popover.Text = message;
+			popover.Severity = severity;
+			popover.ShowPopup (this, popupPosition);
 		}
 
 		void UpdatePopover ()
@@ -116,13 +150,38 @@ namespace MonoDevelop.Components
 				ShowPopover ();
 		}
 
+		protected override void OnLostFocus (EventArgs args)
+		{
+			base.OnLostFocus (args);
+			DestroyPopover ();
+		}
+
 		protected override void OnMouseExited (EventArgs args)
 		{
 			base.OnMouseExited (args);
+			DestroyPopover ();
+		}
+
+		protected override void OnPreferredSizeChanged ()
+		{
+			base.OnPreferredSizeChanged ();
+			if (!Visible)
+				DestroyPopover ();
+		}
+
+		void DestroyPopover ()
+		{
 			if (popover != null) {
 				popover.Destroy ();
 				popover = null;
 			}
+		}
+
+		protected override void Dispose (bool disposing)
+		{
+			if (disposing)
+				DestroyPopover ();
+			base.Dispose (disposing);
 		}
 	}
 }

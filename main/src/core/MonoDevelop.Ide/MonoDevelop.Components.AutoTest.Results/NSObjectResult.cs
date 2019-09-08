@@ -34,21 +34,29 @@ using AppKit;
 using Foundation;
 
 using MonoDevelop.Components.MainToolbar;
+using MonoDevelop.Core;
 
 namespace MonoDevelop.Components.AutoTest.Results
 {
 	public class NSObjectResult : AppResult
 	{
 		NSObject ResultObject;
+		int index = -1;
 
 		internal NSObjectResult (NSObject resultObject)
 		{
 			ResultObject = resultObject;
 		}
 
+		internal NSObjectResult (NSObject resultObject, int index)
+		{
+			ResultObject = resultObject;
+			this.index = index;
+		}
+
 		public override string ToString ()
 		{
-			return string.Format ("NSObject: Type: {0}", ResultObject.GetType ().FullName);
+			return string.Format ("NSObject: Type: {0} {1}", ResultObject.GetType ().FullName, this.index);
 		}
 
 		public override void ToXml (XmlElement element)
@@ -95,22 +103,30 @@ namespace MonoDevelop.Components.AutoTest.Results
 			return null;
 		}
 
-		public override AppResult Selected ()
-		{
-			return null;
-		}
-
 		public override AppResult CheckType (Type desiredType)
 		{
-			if (ResultObject.GetType () == desiredType || ResultObject.GetType ().IsSubclassOf (desiredType)) {
+			if (desiredType.IsInstanceOfType (ResultObject)) {
 				return this;
 			}
 
 			return null;
 		}
 
+		protected string[] GetPossibleNSCellValues (NSCell cell) =>
+		new [] { cell.StringValue, cell.Title, cell.AccessibilityLabel, cell.Identifier, cell.AccessibilityTitle };
 		public override AppResult Text (string text, bool exact)
 		{
+			if (ResultObject is NSTableView) {
+				var control = (NSTableView)ResultObject;
+				for (int i = 0; i < control.ColumnCount;i ++)
+				{
+					var cell = control.GetCell (i, index);
+					var possValues = GetPossibleNSCellValues (cell);
+					LoggingService.LogInfo ($"Possible values for NSTableView with column {i} and row {index} -> "+string.Join (", ", possValues));
+					if (possValues.Any (haystack => CheckForText (text, haystack, exact)))
+						return this;
+				}
+			}
 			if (ResultObject is NSControl) {
 				NSControl control = (NSControl)ResultObject;
 				string value = control.StringValue;
@@ -123,6 +139,14 @@ namespace MonoDevelop.Components.AutoTest.Results
 					if (CheckForText (nsButton.Title, text, exact)) {
 						return this;
 					}
+				}
+			}
+
+			if(ResultObject is NSSegmentedControl){
+				NSSegmentedControl control = (NSSegmentedControl)ResultObject;
+				string value = control.GetLabel (this.index);
+				if (CheckForText (value, text, exact)) {
+					return this;
 				}
 			}
 
@@ -151,12 +175,32 @@ namespace MonoDevelop.Components.AutoTest.Results
 
 		public override AppResult Property (string propertyName, object value)
 		{
+			if (ResultObject is NSSegmentedControl) {
+				NSSegmentedControl control = (NSSegmentedControl)ResultObject;
+				if (this.index >= 0 && propertyName == "Sensitive" || propertyName == "Visible") {
+					return control.IsEnabled (this.index) == (bool)value ? this : null;
+				}
+			}
 			return MatchProperty (propertyName, ResultObject, value);
 		}
 
 		public override List<AppResult> NextSiblings ()
 		{
 			return null;
+		}
+
+		public override List<AppResult> Children (bool recursive = true)
+		{
+			if (ResultObject is NSTableView) {
+				var control = (NSTableView)ResultObject;
+				var children = new List<AppResult> ();
+				for (int i = 0; i < control.RowCount; i++) {
+					LoggingService.LogInfo ($"Found row {i} of NSTableView -  {control.Identifier} - {control.AccessibilityIdentifier}");
+					children.Add (DisposeWithResult (new NSObjectResult (control, i)));
+				}
+				return children;
+			}
+			return base.Children(recursive);
 		}
 
 		public override ObjectProperties Properties ()
@@ -166,7 +210,28 @@ namespace MonoDevelop.Components.AutoTest.Results
 
 		public override bool Select ()
 		{
+			if (ResultObject is NSTableView) {
+				var control = (NSTableView)ResultObject;
+				LoggingService.LogInfo($"Found NSTableView with index: {index}");
+				if (index >= 0)
+				{
+					LoggingService.LogInfo ($"Selecting row '{index}' of ");
+					control.SelectRow(index, true);
+					control.PerformClick(0, index);
+				}
+				return true;
+			}
 			return false;
+		}
+
+		public override AppResult Selected ()
+		{
+			if (ResultObject is NSTableView) {
+				var control = (NSTableView)ResultObject;
+				if(control.SelectedRow == index || control.SelectedRows.Contains((nuint)index))
+					return this;
+			}
+			return null;
 		}
 
 		public override bool Click ()
@@ -257,6 +322,7 @@ namespace MonoDevelop.Components.AutoTest.Results
 #region MacPlatform.MacIntegration.MainToolbar.SelectorView
 		public override bool SetActiveConfiguration (string configurationName)
 		{
+			LoggingService.LogDebug ($"Set Active configuration with name as '{configurationName}'");
 			Type type = ResultObject.GetType ();
 			PropertyInfo pinfo = type.GetProperty ("ConfigurationModel");
 			if (pinfo == null) {
@@ -264,7 +330,10 @@ namespace MonoDevelop.Components.AutoTest.Results
 			}
 
 			IEnumerable<IConfigurationModel> model = (IEnumerable<IConfigurationModel>)pinfo.GetValue (ResultObject, null);
-			var configuration = model.FirstOrDefault (c => c.DisplayString == configurationName);
+			LoggingService.LogDebug (string.Format ("Found configurations: {0}",
+				string.Join(", ", model.Select(m => $"['{m.OriginalId}' '{m.DisplayString}']"))));
+			var configuration = model.FirstOrDefault (
+				c => c.DisplayString.Contains(configurationName) || c.OriginalId.Contains(configurationName));
 			if (configuration == null) {
 				return false;
 			}
@@ -274,22 +343,55 @@ namespace MonoDevelop.Components.AutoTest.Results
 				return false;
 			}
 
+			LoggingService.LogDebug ($"Setting the active configuration as: '{configuration.OriginalId}' '{configuration.DisplayString}'");
 			pinfo.SetValue (ResultObject, configuration);
+
+			var activeConfiguration = (IConfigurationModel)pinfo.GetValue (ResultObject);
+			if (activeConfiguration != null) {
+				LoggingService.LogDebug ($"Checking active configuration is actually set: '{configuration.OriginalId}' '{configuration.DisplayString}'");
+				if (configuration.OriginalId == activeConfiguration.OriginalId)
+					return true;
+			}
 			return true;
 		}
 
 		public override bool SetActiveRuntime (string runtimeName)
 		{
+			LoggingService.LogDebug ($"Set Active runtime with name/ID as '{runtimeName}'");
 			Type type = ResultObject.GetType ();
 			PropertyInfo pinfo = type.GetProperty ("RuntimeModel");
 			if (pinfo == null) {
+				LoggingService.LogDebug ($"Could not find 'RuntimeModel' property on {type}");
 				return false;
 			}
 
-			IEnumerable<IRuntimeModel> model = (IEnumerable<IRuntimeModel>)pinfo.GetValue (ResultObject, null);
+			var pObject = pinfo.GetValue (ResultObject, null);
+			LoggingService.LogDebug ($"'RuntimeModel' property on '{type}' is '{pObject}' and is of type '{pinfo.PropertyType}'");
+			var topRunTimeModels = (IEnumerable<IRuntimeModel>)pObject;
+			var model = AllRuntimes (topRunTimeModels);
+			model = model.Where (x => !x.IsSeparator);
 
-			var runtime = model.FirstOrDefault (r => r.GetMutableModel ().FullDisplayString == runtimeName);
+			var runtime = model.FirstOrDefault (r => {
+				var mutableModel = r.GetMutableModel ();
+				LoggingService.LogDebug ($"[IRuntimeModel.IRuntimeMutableModel] FullDisplayString: '{mutableModel.FullDisplayString}' | DisplayString: '{mutableModel.DisplayString}'");
+				if (mutableModel.FullDisplayString.Contains (runtimeName))
+					return true;
+				if (mutableModel.DisplayString.Contains (runtimeName))
+					return true;
+				var execTargetPInfo = r.GetType().GetProperty ("ExecutionTarget");
+				if(execTargetPInfo != null) {
+					if (execTargetPInfo.GetValue (r) is Core.Execution.ExecutionTarget execTarget) {
+						LoggingService.LogDebug ($"[IRuntimeModel.ExecutionTarget] Id: '{execTarget.Id}' | FullName: '{execTarget.FullName}'");
+						if (execTarget.Id != null && execTarget.Id.Contains (runtimeName))
+							return true;
+						if (execTarget.FullName != null && execTarget.FullName.Contains (runtimeName))
+							return true;
+					}
+				}
+				return false;
+			});
 			if (runtime == null) {
+				LoggingService.LogDebug ($"Did not find an IRuntimeModel for '{runtimeName}'");
 				return false;
 			}
 
@@ -298,10 +400,35 @@ namespace MonoDevelop.Components.AutoTest.Results
 				return false;
 			}
 
+			LoggingService.LogDebug ($"Setting ActiveRuntime: Id: '{runtime.GetMutableModel ().FullDisplayString}'");
 			pinfo.SetValue (ResultObject, runtime);
-			return true;
+
+			// Now we need to make sure that the ActiveRuntime is actually set
+			var activeRuntime = (IRuntimeModel)pinfo.GetValue (ResultObject);
+			if(activeRuntime != null) {
+				LoggingService.LogDebug ($"Checking ActiveRuntime: Id: '{activeRuntime.GetMutableModel().FullDisplayString}'");
+				if (activeRuntime.GetMutableModel ().DisplayString == runtime.GetMutableModel ().DisplayString)
+					return true;
+			}
+			return false;
 		}
-#endregion
+
+		IEnumerable<IRuntimeModel> AllRuntimes (IEnumerable<IRuntimeModel> runtimes)
+		{
+			foreach (var runtime in runtimes) {
+				yield return runtime;
+				foreach (var childRuntime in AllRuntimes (runtime.Children))
+					yield return childRuntime;
+			}
+		}
+
+		#endregion
+
+		protected override void Dispose (bool disposing)
+		{
+			ResultObject = null;
+			base.Dispose (disposing);
+		}
 	}
 }
 

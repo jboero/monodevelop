@@ -27,23 +27,24 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Security;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
+
 using Mono.Addins;
 using Mono.Addins.Setup;
-using MonoDevelop.Core;
 using MonoDevelop.Core.Assemblies;
 using MonoDevelop.Core.Execution;
 using MonoDevelop.Core.Instrumentation;
 using MonoDevelop.Core.Setup;
-using System.Security.Cryptography.X509Certificates;
-using System.Net.Security;
-using System.Net;
-using System.Threading.Tasks;
-using System.Collections.Generic;
-
+using MonoDevelop.Core.Web;
 
 namespace MonoDevelop.Core
 {
@@ -58,6 +59,8 @@ namespace MonoDevelop.Core
 		static SynchronizationContext defaultSynchronizationContext;
 		static RuntimePreferences preferences = new RuntimePreferences ();
 		static Thread mainThread;
+		static BasicServiceProvider mainServiceProvider = new BasicServiceProvider ();
+		static bool serviceProviderSealed = false;
 
 		public static void GetAddinRegistryLocation (out string configDir, out string addinsDir, out string databaseDir)
 		{
@@ -80,12 +83,13 @@ namespace MonoDevelop.Core
 			if (initialized)
 				return;
 
-			Counters.RuntimeInitialization.BeginTiming ();
+			using var initTimer = Counters.RuntimeInitialization.BeginTiming ();
 			SetupInstrumentation ();
 
 			Platform.Initialize ();
 
-			mainThread = Thread.CurrentThread;
+			mainThread = mainThread ?? Thread.CurrentThread;
+
 			// Set a default sync context
 			if (SynchronizationContext.Current == null) {
 				defaultSynchronizationContext = new SynchronizationContext ();
@@ -107,9 +111,10 @@ namespace MonoDevelop.Core
 			AddinManager.AddinLoadError += OnLoadError;
 			AddinManager.AddinLoaded += OnLoad;
 			AddinManager.AddinUnloaded += OnUnload;
+			AddinManager.AddinAssembliesLoaded += OnAssembliesLoaded;
 
 			try {
-				Counters.RuntimeInitialization.Trace ("Initializing Addin Manager");
+				initTimer.Trace ("Initializing Addin Manager");
 
 				string configDir, addinsDir, databaseDir;
 				GetAddinRegistryLocation (out configDir, out addinsDir, out databaseDir);
@@ -119,24 +124,26 @@ namespace MonoDevelop.Core
 				if (updateAddinRegistry)
 					AddinManager.Registry.Update (null);
 				setupService = new AddinSetupService (AddinManager.Registry);
-				Counters.RuntimeInitialization.Trace ("Initialized Addin Manager");
+				initTimer.Trace ("Initialized Addin Manager");
 				
 				PropertyService.Initialize ();
 
 				WebRequestHelper.Initialize ();
-				Mono.Addins.Setup.WebRequestHelper.SetRequestHandler (WebRequestHelper.GetResponse);
-				
+				Web.HttpClientProvider.Initialize ();
+				Mono.Addins.Setup.HttpClientProvider.SetHttpClientFactory (Web.HttpClientProvider.CreateHttpClient);
+
 				//have to do this after the addin service and property service have initialized
 				if (UserDataMigrationService.HasSource) {
-					Counters.RuntimeInitialization.Trace ("Migrating User Data from MD " + UserDataMigrationService.SourceVersion);
+					initTimer.Trace ("Migrating User Data from MD " + UserDataMigrationService.SourceVersion);
 					UserDataMigrationService.StartMigration ();
 				}
 				
 				RegisterAddinRepositories ();
 
-				Counters.RuntimeInitialization.Trace ("Initializing Assembly Service");
+				initTimer.Trace ("Initializing Assembly Service");
 				systemAssemblyService = new SystemAssemblyService ();
 				systemAssemblyService.Initialize ();
+				LoadMSBuildLibraries ();
 				
 				initialized = true;
 				
@@ -145,8 +152,6 @@ namespace MonoDevelop.Core
 				AddinManager.AddinLoadError -= OnLoadError;
 				AddinManager.AddinLoaded -= OnLoad;
 				AddinManager.AddinUnloaded -= OnUnload;
-			} finally {
-				Counters.RuntimeInitialization.EndTiming ();
 			}
 		}
 		
@@ -161,7 +166,7 @@ namespace MonoDevelop.Core
 			foreach (AddinRepository rep in reps.GetRepositories ()) {
 				if (rep.Url.StartsWith ("http://go-mono.com/md/") || 
 					(rep.Url.StartsWith ("http://monodevelop.com/files/addins/")) ||
-					(rep.Url.StartsWith ("http://addins.monodevelop.com/") && !validUrls.Contains (rep.Url)))
+				    ((rep.Url.StartsWith ("http://addins.monodevelop.com/") || rep.Url.StartsWith ("https://addins.monodevelop.com/")) && !validUrls.Contains (rep.Url)))
 					reps.RemoveRepository (rep.Url);
 			}
 			
@@ -186,12 +191,12 @@ namespace MonoDevelop.Core
 			else
 				platform = "Linux";
 			
-			return "http://addins.monodevelop.com/" + quality + "/" + platform + "/" + AddinManager.CurrentAddin.Version + "/main.mrep";
+			return "https://addins.monodevelop.com/" + quality + "/" + platform + "/" + AddinManager.CurrentAddin.Version + "/main.mrep";
 		}
 		
 		static void SetupInstrumentation ()
 		{
-			InstrumentationService.Enabled = Runtime.Preferences.EnableInstrumentation;
+			InstrumentationService.Enabled = IsInstrumentationServiceEnabled ();
 			if (InstrumentationService.Enabled) {
 				LoggingService.LogInfo ("Instrumentation Service started");
 				try {
@@ -201,26 +206,42 @@ namespace MonoDevelop.Core
 					LoggingService.LogError ("Instrumentation service could not be published", ex);
 				}
 			}
-			Runtime.Preferences.EnableInstrumentation.Changed += (s,e) => InstrumentationService.Enabled = Runtime.Preferences.EnableInstrumentation;
+			Runtime.Preferences.EnableInstrumentation.Changed += (s,e) => InstrumentationService.Enabled = IsInstrumentationServiceEnabled ();
 		}
-		
+
+		static bool IsInstrumentationServiceEnabled ()
+			=> !string.IsNullOrEmpty (Environment.GetEnvironmentVariable ("MONO_AUTOTEST_CLIENT")) || Runtime.Preferences.EnableInstrumentation;
+
 		static void OnLoadError (object s, AddinErrorEventArgs args)
 		{
 			string msg = "Add-in error (" + args.AddinId + "): " + args.Message;
 			LoggingService.LogError (msg, args.Exception);
 		}
-		
+
 		static void OnLoad (object s, AddinEventArgs args)
 		{
-			Counters.AddinsLoaded.Inc ("Add-in loaded: " + args.AddinId, new Dictionary<string,string> { { "AddinId", args.AddinId } });
+			Counters.AddinsLoaded.Inc (1, "Add-in loaded: " + args.AddinId, new Dictionary<string, object> {
+				{ "AddinId", args.AddinId },
+				{ "LoadTrace", Environment.StackTrace },
+			});
+#if DEBUG
+			LoggingService.LogDebug ("Add-in loaded: {0}: {1}", args.AddinId, Environment.StackTrace);
+#endif
 		}
 		
 		static void OnUnload (object s, AddinEventArgs args)
 		{
 			Counters.AddinsLoaded.Dec ("Add-in unloaded: " + args.AddinId);
 		}
+
+		static void OnAssembliesLoaded (object s, AddinEventArgs args)
+		{
+#if DEBUG
+			LoggingService.LogDebug ("Add-in assemblies loaded: {0}: {1}", args.AddinId, Environment.StackTrace);
+#endif
+		}
 		
-		internal static bool Initialized {
+		public static bool Initialized {
 			get { return initialized; }
 		}
 		
@@ -277,15 +298,8 @@ namespace MonoDevelop.Core
 
 		public static Version Version {
 			get {
-				if (version == null) {
-					version = new Version (BuildInfo.Version);
-					var relId = SystemInformation.GetReleaseId ();
-					if (relId != null && relId.Length >= 9) {
-						int rev;
-						int.TryParse (relId.Substring (relId.Length - 4), out rev);
-						version = new Version (Math.Max (version.Major, 0), Math.Max (version.Minor, 0), Math.Max (version.Build, 0), Math.Max (rev, 0));
-					}
-				}
+				if (version == null)
+					version = new Version (BuildInfo.FullVersion);
 				return version;
 			}
 		}
@@ -296,21 +310,16 @@ namespace MonoDevelop.Core
 			}
 			set {
 				if (mainSynchronizationContext != null && value != null)
-					throw new InvalidOperationException ("The main synchronization context has already been set");
+					LoggingService.LogWarning ($"The main synchronization context is being changed from {mainSynchronizationContext} to {value}");
+
+				mainThread = Thread.CurrentThread;
 				mainSynchronizationContext = value;
-				taskScheduler = null;
+				taskScheduler = new SynchronizationContextTaskScheduler (value);
 			}
 		}
-
 
 		static TaskScheduler taskScheduler;
-		public static TaskScheduler MainTaskScheduler {
-			get {
-				if (taskScheduler == null)
-					RunInMainThread (() => taskScheduler = TaskScheduler.FromCurrentSynchronizationContext ()).Wait ();
-				return taskScheduler;
-			}
-		}
+		public static TaskScheduler MainTaskScheduler => taskScheduler;
 
 		/// <summary>
 		/// Runs an action in the main thread (usually the UI thread). The method returns a task, so it can be awaited.
@@ -326,14 +335,15 @@ namespace MonoDevelop.Core
 					ts.SetException (ex);
 				}
 			} else {
-				MainSynchronizationContext.Post (delegate {
+				MainSynchronizationContext.Post (state => {
+					var (act, tcs) = (ValueTuple<Action, TaskCompletionSource<int>>)state;
 					try {
-						action ();
-						ts.SetResult (0);
+						act ();
+						tcs.SetResult (0);
 					} catch (Exception ex) {
-						ts.SetException (ex);
+						tcs.SetException (ex);
 					}
-				}, null);
+				}, (action, ts));
 			}
 			return ts.Task;
 		}
@@ -351,13 +361,14 @@ namespace MonoDevelop.Core
 					ts.SetException (ex);
 				}
 			} else {
-				MainSynchronizationContext.Post (delegate {
+				MainSynchronizationContext.Post (state => {
+					var (fun, tcs) = (ValueTuple<Func<T>, TaskCompletionSource<T>>)state;
 					try {
-						ts.SetResult (func ());
+						tcs.SetResult (fun ());
 					} catch (Exception ex) {
-						ts.SetException (ex);
+						tcs.SetException (ex);
 					}
-				}, null);
+				}, (func, ts));
 			}
 			return ts.Task;
 		}
@@ -374,12 +385,13 @@ namespace MonoDevelop.Core
 			} else {
 				var ts = new TaskCompletionSource<T> ();
 				MainSynchronizationContext.Post (async state => {
+					var (fun, tcs) = (ValueTuple<Func<Task<T>>, TaskCompletionSource<T>>)state;
 					try {
-						ts.SetResult (await func ());
+						tcs.SetResult (await fun ());
 					} catch (Exception ex) {
-						ts.SetException (ex);
+						tcs.SetException (ex);
 					}
-				}, null);
+				}, (func, ts));
 				return ts.Task;
 			}
 		}
@@ -396,16 +408,22 @@ namespace MonoDevelop.Core
 			} else {
 				var ts = new TaskCompletionSource<int> ();
 				MainSynchronizationContext.Post (async state => {
+					var (fun, tcs) = (ValueTuple<Func<Task>, TaskCompletionSource<int>>)state;
 					try {
-						await func ();
-						ts.SetResult (0);
+						await fun ();
+						tcs.SetResult (0);
 					} catch (Exception ex) {
-						ts.SetException (ex);
+						tcs.SetException (ex);
 					}
-				}, null);
+				}, (func, ts));
 				return ts.Task;
 			}
 		}
+
+		/// <summary>
+		/// The main UI thread of the application. Needed to initialize the JoinableTaskContext.
+		/// </summary>
+		public static Thread MainThread => mainThread;
 
 		/// <summary>
 		/// Returns true if current thread is GUI thread.
@@ -426,6 +444,22 @@ namespace MonoDevelop.Core
 		{
 			if (!IsMainThread)
 				throw new InvalidOperationException ("Operation not supported in background thread");
+		}
+
+		/// <summary>
+		/// Asserts that the current thread is the main thread. It will log a warning if it isn't.
+		/// </summary>
+		public static void CheckMainThread ()
+		{
+			if (IsMainThread) {
+				return;
+			}
+
+			if (System.Diagnostics.Debugger.IsAttached) {
+				System.Diagnostics.Debugger.Break ();
+			}
+
+			LoggingService.LogWarning ("Operation not supported in background thread. Location: " + Environment.StackTrace);
 		}
 
 		public static void SetProcessName (string name)
@@ -461,8 +495,120 @@ namespace MonoDevelop.Core
 		}
 		
 		public static event EventHandler ShuttingDown;
+
+		static void LoadMSBuildLibraries ()
+		{
+			// Explicitly load the msbuild libraries since they are not installed in the GAC
+			var path = systemAssemblyService.CurrentRuntime.GetMSBuildBinPath ("15.0");
+			LoadAssemblyFrom (System.IO.Path.Combine (path, "Microsoft.Build.dll"));
+			LoadAssemblyFrom (System.IO.Path.Combine (path, "Microsoft.Build.Framework.dll"));
+			LoadAssemblyFrom (System.IO.Path.Combine (path, "Microsoft.Build.Tasks.Core.dll"));
+			LoadAssemblyFrom (System.IO.Path.Combine (path, "Microsoft.Build.Utilities.Core.dll"));
+
+			if (Type.GetType ("Mono.Runtime") == null) {
+				AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+			}
+		}
+
+		/// <summary>
+		/// This is necessary on Windows because without it, even though the assemblies are already loaded
+		/// the CLR will still throw FileNotFoundException (unable to load assembly).
+		/// </summary>
+		static System.Reflection.Assembly CurrentDomain_AssemblyResolve (object sender, ResolveEventArgs args)
+		{
+			if (args.Name != null && args.Name.StartsWith ("Microsoft.Build", StringComparison.OrdinalIgnoreCase)) {
+				foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies ()) {
+					if (string.Equals (assembly.FullName, args.Name, StringComparison.OrdinalIgnoreCase)) {
+						return assembly;
+					}
+				}
+			}
+
+			return null;
+		}
+
+		public static Assembly LoadAssemblyFrom (string asmPath)
+		{
+			if (Environment.OSVersion.Platform == PlatformID.Win32NT) {
+				// MEF composition under Win32 requires that all assemblies be loaded in the
+				// Assembly.Load() context so use Assembly.Load() after getting the AssemblyName
+				// (which, on Win32, also contains the full path information so Assembly.Load()
+				// will work).
+				var asmName = AssemblyName.GetAssemblyName (asmPath);
+				return Assembly.Load (asmName);
+			}
+
+			return Assembly.LoadFrom (asmPath);
+		}
+
+		/// <summary>
+		/// Returns the service of the provided type, creating and initializing it if necessary
+		/// </summary>
+		/// <returns>The service.</returns>
+		/// <typeparam name="T">The type of the service being requested</typeparam>
+		public static Task<T> GetService<T> () where T: class
+		{
+			return mainServiceProvider.GetService<T> ();
+		}
+
+		/// <summary>
+		/// Returns the service of the provided type if it has been initialized, null otherwise
+		/// </summary>
+		/// <returns>The service.</returns>
+		/// <typeparam name="T">The type of the service being requested</typeparam>
+		public static T PeekService<T> () where T : class
+		{
+			return mainServiceProvider.PeekService<T> ();
+		}
+
+		/// <summary>
+		/// Registers the implementation of a service
+		/// </summary>
+		/// <typeparam name="ServiceType">The service type.</typeparam>
+		/// <typeparam name="ImplementationType">The implementation type.</typeparam>
+		public static void RegisterServiceType<ServiceType,ImplementationType> () where ServiceType : class where ImplementationType : ServiceType
+		{
+			mainServiceProvider.RegisterServiceType (typeof (ServiceType), typeof (ImplementationType));
+		}
+
+		public static void RegisterService<T> (object service)
+		{
+			mainServiceProvider.RegisterService<T> (service);
+		}
+
+		public static void RegisterService (Type serviceType, object service)
+		{
+			mainServiceProvider.RegisterService (serviceType, service);
+		}
+
+		/// <summary>
+		/// Sets the service provider for this runtime
+		/// </summary>
+		/// <param name="serviceProvider">The new service provider.</param>
+		public static async Task ReplaceServiceProvider (BasicServiceProvider serviceProvider)
+		{
+			if (serviceProviderSealed)
+				throw new InvalidOperationException ("Service provider can't be replaced");
+
+			await mainServiceProvider.Dispose ();
+			mainServiceProvider = serviceProvider;
+		}
+
+		/// <summary>
+		/// Seals the main service provider, so that it can't be replaced anymore
+		/// </summary>
+		public static void SealServiceProvider ()
+		{
+			serviceProviderSealed = true;
+		}
+
+		/// <summary>
+		/// Gets the main service provider.
+		/// </summary>
+		/// <value>The service provider.</value>
+		public static ServiceProvider ServiceProvider => mainServiceProvider;
 	}
-	
+
 	internal static class Counters
 	{
 		public static TimerCounter RuntimeInitialization = InstrumentationService.CreateTimerCounter ("Runtime initialization", "Runtime", id:"Core.RuntimeInitialization");
@@ -477,14 +623,14 @@ namespace MonoDevelop.Core
 		public static TimerCounter TargetRuntimesLoading = InstrumentationService.CreateTimerCounter ("Target runtimes loaded", "Assembly Service", 0, true);
 		public static Counter PcFilesParsed = InstrumentationService.CreateCounter (".pc Files parsed", "Assembly Service");
 		
-		public static Counter FileChangeNotifications = InstrumentationService.CreateCounter ("File change notifications", "File Service");
-		public static Counter FilesRemoved = InstrumentationService.CreateCounter ("Files removed", "File Service");
-		public static Counter FilesCreated = InstrumentationService.CreateCounter ("Files created", "File Service");
-		public static Counter FilesRenamed = InstrumentationService.CreateCounter ("Files renamed", "File Service");
+		public static Counter FileChangeNotifications = InstrumentationService.CreateCounter ("File change notifications", "File Service", id:"FileService.FilesChanged");
+		public static Counter FilesRemoved = InstrumentationService.CreateCounter ("Files removed", "File Service", id:"FileService.FilesRemoved");
+		public static Counter FilesCreated = InstrumentationService.CreateCounter ("Files created", "File Service", id:"FileService.FilesCreated");
+		public static Counter FilesRenamed = InstrumentationService.CreateCounter ("Files renamed", "File Service", id:"FileService.FilesRenamed");
 		public static Counter DirectoriesRemoved = InstrumentationService.CreateCounter ("Directories removed", "File Service");
 		public static Counter DirectoriesCreated = InstrumentationService.CreateCounter ("Directories created", "File Service");
 		public static Counter DirectoriesRenamed = InstrumentationService.CreateCounter ("Directories renamed", "File Service");
-		
+
 		public static Counter LogErrors = InstrumentationService.CreateCounter ("Errors", "Log");
 		public static Counter LogWarnings = InstrumentationService.CreateCounter ("Warnings", "Log");
 		public static Counter LogMessages = InstrumentationService.CreateCounter ("Information messages", "Log");
@@ -500,7 +646,11 @@ namespace MonoDevelop.Core
 		public readonly ConfigurationProperty<bool> EnableAutomatedTesting = ConfigurationProperty.Create ("MonoDevelop.EnableAutomatedTesting", false);
 		public readonly ConfigurationProperty<string> UserInterfaceLanguage = ConfigurationProperty.Create ("MonoDevelop.Ide.UserInterfaceLanguage", "");
 		public readonly ConfigurationProperty<MonoDevelop.Projects.MSBuild.MSBuildVerbosity> MSBuildVerbosity = ConfigurationProperty.Create ("MonoDevelop.Ide.MSBuildVerbosity", MonoDevelop.Projects.MSBuild.MSBuildVerbosity.Normal);
-		public readonly ConfigurationProperty<bool> BuildWithMSBuild = ConfigurationProperty.Create ("MonoDevelop.Ide.BuildWithMSBuild", false);
+
+		[Obsolete]
+		public readonly ConfigurationProperty<bool> BuildWithMSBuild = ConfigurationProperty.CreateObsolete (true);
+
+		public readonly ConfigurationProperty<bool> SkipBuildingUnmodifiedProjects = ConfigurationProperty.Create ("MonoDevelop.Ide.SkipBuildingUnmodifiedProjects", true);
 		public readonly ConfigurationProperty<bool> ParallelBuild = ConfigurationProperty.Create ("MonoDevelop.ParallelBuild", true);
 
 		public readonly ConfigurationProperty<string> AuthorName = ConfigurationProperty.Create ("Author.Name", Environment.UserName, oldName:"ChangeLogAddIn.Name");
@@ -508,5 +658,11 @@ namespace MonoDevelop.Core
 		public readonly ConfigurationProperty<string> AuthorCopyright = ConfigurationProperty.Create ("Author.Copyright", (string) null);
 		public readonly ConfigurationProperty<string> AuthorCompany = ConfigurationProperty.Create ("Author.Company", "");
 		public readonly ConfigurationProperty<string> AuthorTrademark = ConfigurationProperty.Create ("Author.Trademark", "");
+
+		/// <summary>
+		/// Gets or sets a value indicating whether the updater should be enabled for the current session.
+		/// This value won't be stored in the user preferences.
+		/// </summary>
+		public bool EnableUpdaterForCurrentSession { get; set; } = true;
 	}
 }

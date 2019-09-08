@@ -31,6 +31,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace MonoDevelop.Projects.MSBuild.Conditions {
@@ -98,17 +99,14 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 		{
 			return nextChar;
 		}
-		
-		int ReadChar ()
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		void ReadChar ()
 		{
-			try {
-				return nextChar;
-			} finally {
-				if (++position < inputString.Length)
-					nextChar = (int)inputString [position];
-				else
-					nextChar = -1;
-			}
+			if (++position < inputString.Length)
+				nextChar = inputString[position];
+			else
+				nextChar = -1;
 		}
 		
 		public void Expect (TokenType type)
@@ -141,7 +139,7 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 		}
 		
 		// FIXME test this
-		public void Putback (Token token)
+		public void Putback (in Token token)
 		{
 			hasPutback = true;
 			putback = token;
@@ -164,10 +162,10 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 			
 			tokenPosition = position;
 			tokenLength = 0;
-			
-//			int i = PeekChar ();
-			int i = ReadChar ();
-			
+
+			int i = PeekChar ();
+			ReadChar ();
+
 			if (i == -1) {
 				token = new Token (null, TokenType.EOF, tokenPosition);
 				return;
@@ -234,12 +232,11 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 				}
 				
 				string temp = inputString.Substring(tokenPosition, tokenLength);
-				
-				if (keywords.ContainsKey (temp))
-					token = new Token (temp, keywords [temp], tokenPosition);
-				else
-					token = new Token (temp, TokenType.String, tokenPosition);
-					
+
+				if (!keywords.TryGetValue (temp, out TokenType tokenType))
+					tokenType = TokenType.String;
+				token = new Token (temp, tokenType, tokenPosition);
+
 			} else if (ch == '!' && PeekChar () == (int) '=') {
 				token = new Token ("!=", TokenType.NotEqual, tokenPosition);
 				ReadChar ();
@@ -300,9 +297,9 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 		}
 */
 		
-		struct CharToTokenType {
-			public char ch;
-			public TokenType tokenType;
+		readonly struct CharToTokenType {
+			public readonly char ch;
+			public readonly TokenType tokenType;
 			
 			public CharToTokenType (char ch, TokenType tokenType)
 			{
@@ -311,7 +308,7 @@ namespace MonoDevelop.Projects.MSBuild.Conditions {
 			}
 		}
 		
-		static CharToTokenType[] charToTokenType = {
+		readonly static CharToTokenType[] charToTokenType = {
 			new CharToTokenType ('<', TokenType.Less),
 			new CharToTokenType ('>', TokenType.Greater),
 			new CharToTokenType ('=', TokenType.Equal),

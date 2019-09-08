@@ -25,12 +25,15 @@
 // THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
+using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.Editor.Extension;
 using NUnit.Framework;
 
 namespace Mono.TextEditor.Tests.Actions
 {
 	[TestFixture()]
-	public class DeleteActionTests : TextEditorTestBase
+	class DeleteActionTests : TextEditorTestBase
 	{
 		[Test]
 		public void TestBackspace ()
@@ -215,5 +218,37 @@ namespace Mono.TextEditor.Tests.Actions
 			DeleteActions.NextSubword (data);
 			Check (data, @"      $");
 		}
+
+		[Test]
+		public void TestBackspaceUTF32 ()
+		{
+			var data = Create (@"12🚀$34");
+			DeleteActions.Backspace (data);
+			Check (data, @"12$34");
+		}
+
+		[Test]
+		public void TestDeleteUTF32 ()
+		{
+			var data = Create (@"12$🚀34");
+			DeleteActions.Delete (data);
+			Check (data, @"12$34");
+		}
+
+		// Bug 624076: No backspace on any smart-indented line in web editors
+		[Test]
+		public void TestVSTS624076 ()
+		{
+			var data = Create ("    \n$");
+			// set indent tracker without smart backspace functionality.
+			data.IndentationTracker = new SmartIndentModeTests.TestIndentTracker("     ", IndentationTrackerFeatures.None);
+			data.Options.IndentStyle = IndentStyle.Virtual;
+			data.Caret.Location = new DocumentLocation (2, 5);
+
+			DeleteActions.Backspace (data);
+			// behavior : virtual indent is converted into real indent and 1 space of the real indent is deleted 
+			Check (data, "    \n    $");
+		}
+
 	}
 }

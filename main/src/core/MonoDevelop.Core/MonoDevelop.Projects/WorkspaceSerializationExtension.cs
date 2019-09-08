@@ -38,20 +38,18 @@ namespace MonoDevelop.Projects
 		public override bool CanRead (FilePath file, Type expectedType)
 		{
 			if (expectedType.IsAssignableFrom (typeof(Workspace))) {
-				string ext = Path.GetExtension (file).ToLower ();
-				if (ext == ".mdw")
+				string ext = Path.GetExtension (file);
+				if (string.Equals (ext, ".mdw", StringComparison.OrdinalIgnoreCase))
 					return true;
 			}
 			return false;
 		}
 
-		public override Task<WorkspaceItem> LoadWorkspaceItem (ProgressMonitor monitor, string fileName)
+		public override async Task<WorkspaceItem> LoadWorkspaceItem (ProgressMonitor monitor, string fileName)
 		{
-			return Task.Run (async () => {
-				var workspaceItem = ReadWorkspaceItemFile (fileName, monitor);
-				await workspaceItem.LoadUserProperties ();
-				return workspaceItem;
-			});
+			var workspaceItem = ReadWorkspaceItemFile (fileName, monitor);
+			await workspaceItem.LoadUserProperties ().ConfigureAwait (false);
+			return workspaceItem;
 		}
 
 		WorkspaceItem ReadWorkspaceItemFile (FilePath fileName, ProgressMonitor monitor)

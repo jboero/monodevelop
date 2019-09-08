@@ -57,12 +57,19 @@ namespace MonoDevelop.Ide.ProgressMonitoring
 		{
 		}
 		
-		public MessageDialogProgressMonitor (bool showProgress, bool allowCancel, bool showDetails, bool hideWhenDone): base (Runtime.MainSynchronizationContext)
+		public MessageDialogProgressMonitor (bool showProgress, bool allowCancel, bool showDetails, bool hideWhenDone)
+			: this (showProgress, allowCancel, showDetails, hideWhenDone, null)
+		{
+		}
+
+		public MessageDialogProgressMonitor (bool showProgress, bool allowCancel, bool showDetails, bool hideWhenDone, Components.Window parent)
+			: base (Runtime.MainSynchronizationContext)
 		{
 			if (showProgress) {
-				dialog = new ProgressDialog (MessageService.RootWindow, allowCancel, showDetails);
+				var parentWindow = parent ?? IdeServices.DesktopService.GetFocusedTopLevelWindow ();
+				dialog = new ProgressDialog (parentWindow, allowCancel, showDetails);
 				dialog.Message = "";
-				MessageService.PlaceDialog (dialog, MessageService.RootWindow);
+				MessageService.PlaceDialog (dialog, parentWindow);
 				dialog.Show ();
 				dialog.CancellationTokenSource = CancellationTokenSource;
 				DispatchService.RunPendingEvents ();
@@ -115,7 +122,7 @@ namespace MonoDevelop.Ide.ProgressMonitoring
 		protected override void OnErrorReported (string message, Exception exception)
 		{
 			if (dialog != null) {
-				dialog.WriteText (GettextCatalog.GetString ("ERROR: ") + Errors [Errors.Length - 1] + "\n");
+				dialog.WriteText (GettextCatalog.GetString ("ERROR: ") + Errors [Errors.Length - 1].DisplayMessage + "\n");
 				DispatchService.RunPendingEvents ();
 			}
 			base.OnErrorReported (message, exception);
@@ -137,8 +144,8 @@ namespace MonoDevelop.Ide.ProgressMonitoring
 			
 			if (showDetails)
 				return;
-			
-			this.ShowResultDialog ();
+
+			this.ShowResultDialog (hideWhenDone ? MessageService.RootWindow : dialog);
 		}
 	}
 }

@@ -34,6 +34,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 
 using AppKit;
+using CoreFoundation;
 using Foundation;
 using CoreGraphics;
 
@@ -48,26 +49,31 @@ using MonoDevelop.Ide.Desktop;
 using MonoDevelop.MacInterop;
 using MonoDevelop.Components;
 using MonoDevelop.Components.MainToolbar;
-using MonoDevelop.MacIntegration.MacMenu;
 using MonoDevelop.Components.Extensions;
 using System.Runtime.InteropServices;
 using ObjCRuntime;
 using System.Diagnostics;
 using Xwt.Mac;
+using MonoDevelop.Components.Mac;
+using System.Reflection;
+using MacPlatform;
+using MonoDevelop.Projects;
+using System.Threading.Tasks;
 
 namespace MonoDevelop.MacIntegration
 {
 	public class MacPlatformService : PlatformService
 	{
 		const string monoDownloadUrl = "http://www.mono-project.com/download/";
+		static readonly TimerCounter timer = InstrumentationService.CreateTimerCounter ("Mac Platform Initialization", "Platform Service");
+		static readonly TimerCounter mimeTimer = InstrumentationService.CreateTimerCounter ("Mac Mime Database", "Platform Service");
 
-		TimerCounter timer = InstrumentationService.CreateTimerCounter ("Mac Platform Initialization", "Platform Service");
-		TimerCounter mimeTimer = InstrumentationService.CreateTimerCounter ("Mac Mime Database", "Platform Service");
+		readonly ITimeTracker initTracker;
 
 		static bool initedGlobal;
 		bool setupFail, initedApp;
 
-		Lazy<Dictionary<string, string>> mimemap;
+		readonly Lazy<Dictionary<string, string>> mimemap = new Lazy<Dictionary<string, string>> (LoadMimeMap);
 
 		static string applicationMenuName;
 
@@ -78,9 +84,59 @@ namespace MonoDevelop.MacIntegration
 			set {
 				if (applicationMenuName != value) {
 					applicationMenuName = value;
-					OnApplicationMenuNameChanged ();
 				}
 			}
+		}
+
+		[DllImport(Constants.ObjectiveCLibrary)]
+		private static extern IntPtr class_getInstanceMethod(IntPtr classHandle, IntPtr Selector);
+
+		[DllImport(Constants.ObjectiveCLibrary)]
+		private static extern IntPtr method_getImplementation(IntPtr method);
+
+		[DllImport(Constants.ObjectiveCLibrary)]
+		private static extern IntPtr imp_implementationWithBlock(ref BlockLiteral block);
+
+		[DllImport(Constants.ObjectiveCLibrary)]
+		private static extern void method_setImplementation(IntPtr method, IntPtr imp);
+
+		[MonoNativeFunctionWrapper]
+		delegate void AccessibilitySetValueForAttributeDelegate (IntPtr self, IntPtr selector, IntPtr valueHandle, IntPtr attributeHandle);
+		delegate void SwizzledAccessibilitySetValueForAttributeDelegate (IntPtr block, IntPtr self, IntPtr valueHandle, IntPtr attributeHandle);
+
+		static IntPtr originalAccessibilitySetValueForAttributeMethod;
+		void SwizzleNSApplication ()
+		{
+			// Swizzle accessibilitySetValue:forAttribute: so that we can detect when VoiceOver gets enabled
+			var nsApplicationClassHandle = Class.GetHandle ("NSApplication");
+			var accessibilitySetValueForAttributeSelector = Selector.GetHandle ("accessibilitySetValue:forAttribute:");
+
+			var accessibilitySetValueForAttributeMethod = class_getInstanceMethod (nsApplicationClassHandle, accessibilitySetValueForAttributeSelector);
+			originalAccessibilitySetValueForAttributeMethod = method_getImplementation (accessibilitySetValueForAttributeMethod);
+
+			var block = new BlockLiteral ();
+
+			SwizzledAccessibilitySetValueForAttributeDelegate d = accessibilitySetValueForAttribute;
+			block.SetupBlock (d, null);
+			var imp = imp_implementationWithBlock (ref block);
+			method_setImplementation (accessibilitySetValueForAttributeMethod, imp);
+		}
+
+		[MonoPInvokeCallback (typeof (SwizzledAccessibilitySetValueForAttributeDelegate))]
+		static void accessibilitySetValueForAttribute (IntPtr block, IntPtr self, IntPtr valueHandle, IntPtr attributeHandle)
+		{
+			var d = Marshal.GetDelegateForFunctionPointer<AccessibilitySetValueForAttributeDelegate> (originalAccessibilitySetValueForAttributeMethod);
+			d (self, Selector.GetHandle ("accessibilitySetValue:forAttribute:"), valueHandle, attributeHandle);
+
+			NSString attrString = (NSString)ObjCRuntime.Runtime.GetNSObject (attributeHandle);
+			var val = (NSNumber)ObjCRuntime.Runtime.GetNSObject (valueHandle);
+
+			if (attrString == "AXEnhancedUserInterface" && !IdeTheme.AccessibilityEnabled) {
+				if (val.BoolValue) {
+					ShowVoiceOverNotice ();
+				}
+			}
+			AccessibilityInUse = val.BoolValue;
 		}
 
 		public MacPlatformService ()
@@ -89,23 +145,61 @@ namespace MonoDevelop.MacIntegration
 				throw new Exception ("Only one MacPlatformService instance allowed");
 			initedGlobal = true;
 
-			timer.BeginTiming ();
+			initTracker = timer.BeginTiming ();
 
 			var dir = Path.GetDirectoryName (typeof(MacPlatformService).Assembly.Location);
 
 			if (ObjCRuntime.Dlfcn.dlopen (Path.Combine (dir, "libxammac.dylib"), 0) == IntPtr.Zero)
 				LoggingService.LogFatalError ("Unable to load libxammac");
 
-			mimemap = new Lazy<Dictionary<string, string>> (LoadMimeMapAsync);
-
-			//make sure the menu app name is correct even when running Mono 2.6 preview, or not running from the .app
-			Carbon.SetProcessName (BrandingService.ApplicationName);
-
 			CheckGtkVersion (2, 24, 14);
 
 			Xwt.Toolkit.CurrentEngine.RegisterBackend<IExtendedTitleBarWindowBackend,ExtendedTitleBarWindowBackend> ();
 			Xwt.Toolkit.CurrentEngine.RegisterBackend<IExtendedTitleBarDialogBackend,ExtendedTitleBarDialogBackend> ();
+
+			var description = XamMacBuildInfo.Value;
+			if (string.IsNullOrEmpty (description)) {
+				LoggingService.LogWarning ("Failed to parse version of Xamarin.Mac used at runtime");
+			} else {
+				LoggingService.LogInfo ("Using {0}", description);
+			}
 		}
+
+		static string GetInfoPart (string line)
+		{
+			return line.Split (':') [1].Trim ();
+		}
+
+		static Lazy<string> XamMacBuildInfo = new Lazy<string> (() => {
+			const string buildInfoResource = "Xamarin.Mac.buildinfo";
+			var asm = System.Reflection.Assembly.GetExecutingAssembly ();
+
+			string version, hash, branch;
+
+			try {
+				using (var stream = asm.GetManifestResourceStream (buildInfoResource))
+				using (var sr = new StreamReader (stream)) {
+					// Version: 4.4.0.36
+					// Hash: 0c7c49a6
+					// Branch: master
+					// Build date: 2018 - 03 - 12 15:24:46 - 0400 -- discarded
+
+					version = GetInfoPart (sr.ReadLine ());
+					hash = GetInfoPart (sr.ReadLine ());
+					branch = GetInfoPart (sr.ReadLine ());
+
+					return $"Xamarin.Mac {version} ({branch} / {hash})";
+				}
+			} catch {
+				return string.Empty;
+			}
+		});
+
+		internal override string GetNativeRuntimeDescription ()
+		{
+			return XamMacBuildInfo.Value;
+		}
+
 
 		static void CheckGtkVersion (uint major, uint minor, uint micro)
 		{
@@ -137,23 +231,180 @@ namespace MonoDevelop.MacIntegration
 			}
 		}
 
+		const string FoundationLib = "/System/Library/Frameworks/Foundation.framework/Versions/Current/Foundation";
+
+		delegate void NSUncaughtExceptionHandler (IntPtr exception);
+
+		static readonly NSUncaughtExceptionHandler uncaughtHandler = HandleUncaughtException;
+		static NSUncaughtExceptionHandler oldHandler;
+
+		static void HandleUncaughtException(IntPtr exceptionPtr)
+		{
+			// It's non-null guaranteed by objc.
+			Debug.Assert (exceptionPtr != IntPtr.Zero);
+
+			var nsException = ObjCRuntime.Runtime.GetNSObject<NSException> (exceptionPtr);
+			try {
+				throw new MarshalledObjCException (nsException);
+			} catch (MarshalledObjCException e) {
+				LoggingService.LogFatalError ("Unhandled ObjC Exception", e);
+				// Is there a way to figure out if it's going to crash us? Maybe check MarshalObjectiveCExceptionMode and MarshalManagedExceptionMode?
+			}
+
+			// Invoke the default xamarin.mac one, so if it bubbles up an exception, the caller receives it.
+			oldHandler?.Invoke (exceptionPtr);
+		}
+
+		sealed class MarshalledObjCException : ObjCException
+		{
+			public MarshalledObjCException (NSException exception) : base (exception)
+			{
+				const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.SetField;
+
+				var trace = new [] { new StackTrace (true), };
+				//// Otherwise exception stacktrace is not gathered.
+				typeof (Exception)
+					.InvokeMember ("captured_traces", flags, null, this, new object [] { trace });
+			}
+		}
+
+		[DllImport (FoundationLib)]
+		static extern void NSSetUncaughtExceptionHandler (NSUncaughtExceptionHandler handler);
+
+		[DllImport (FoundationLib)]
+		static extern NSUncaughtExceptionHandler NSGetUncaughtExceptionHandler ();
+
+		static void RegisterUncaughtExceptionHandler ()
+		{
+			oldHandler = NSGetUncaughtExceptionHandler ();
+			NSSetUncaughtExceptionHandler (uncaughtHandler);
+		}
+
 		public override Xwt.Toolkit LoadNativeToolkit ()
 		{
-			var path = Path.GetDirectoryName (GetType ().Assembly.Location);
-			System.Reflection.Assembly.LoadFrom (Path.Combine (path, "Xwt.XamMac.dll"));
-			var loaded = Xwt.Toolkit.Load (Xwt.ToolkitType.XamMac);
+			var loaded = NativeToolkitHelper.LoadCocoa ();
 
 			loaded.RegisterBackend<Xwt.Backends.IDialogBackend, ThemedMacDialogBackend> ();
 			loaded.RegisterBackend<Xwt.Backends.IWindowBackend, ThemedMacWindowBackend> ();
 			loaded.RegisterBackend<Xwt.Backends.IAlertDialogBackend, ThemedMacAlertDialogBackend> ();
 
+			RegisterUncaughtExceptionHandler ();
 
 			// We require Xwt.Mac to initialize MonoMac before we can execute any code using MonoMac
-			timer.Trace ("Installing App Event Handlers");
+			initTracker.Trace ("Installing App Event Handlers");
 			GlobalSetup ();
-			timer.EndTiming ();
+			initTracker.End ();
+
+			var appDelegate = NSApplication.SharedApplication.Delegate as Xwt.Mac.AppDelegate;
+			if (appDelegate != null) {
+				appDelegate.Terminating += async (object o, TerminationEventArgs e) => {
+					if (MonoDevelop.Ide.IdeApp.IsRunning) {
+						// If GLib the mainloop is still running that means NSApplication.Terminate() was called
+						// before Gtk.Application.Quit(). Cancel Cocoa termination and exit the mainloop.
+						e.Reply = NSApplicationTerminateReply.Cancel;
+
+						await IdeApp.Exit();
+					} else {
+						// The mainloop has already exited and we've already cleaned up our application state
+						// so it's now safe to terminate Cocoa.
+						e.Reply = NSApplicationTerminateReply.Now;
+					}
+				};
+				appDelegate.ShowDockMenu += AppDelegate_ShowDockMenu;
+			}
+
+			// Listen to the AtkCocoa notification for the presence of VoiceOver
+			SwizzleNSApplication ();
+
+			var nc = NSNotificationCenter.DefaultCenter;
+			nc.AddObserver ((NSString)"AtkCocoaAccessibilityEnabled", (NSNotification) => {
+				LoggingService.LogInfo ($"VoiceOver on {IdeTheme.AccessibilityEnabled}");
+				if (!IdeTheme.AccessibilityEnabled) {
+					ShowVoiceOverNotice ();
+				}
+			}, NSApplication.SharedApplication);
+
+			// Now that Cocoa has been initialized we can check whether the keyboard focus mode is turned on
+			// See System Preferences - Keyboard - Shortcuts - Full Keyboard Access
+			var keyboardMode = NSUserDefaults.StandardUserDefaults.IntForKey ("AppleKeyboardUIMode");
+			// 0 - Text boxes and lists only
+			// 2 - All controls
+			// 3 - All controls + keyboard access
+			if (keyboardMode != 0) {
+				Gtk.Rc.ParseString ("style \"default\" { engine \"xamarin\" { focusstyle = 2 } }");
+				Gtk.Rc.ParseString ("style \"radio-or-check-box\" { engine \"xamarin\" { focusstyle = 2 } } ");
+			}
+			AccessibilityKeyboardFocusInUse = (keyboardMode != 0);
+
+			// Disallow window tabbing globally
+			if (MacSystemInformation.OsVersion >= MacSystemInformation.Sierra)
+				NSWindow.AllowsAutomaticWindowTabbing = false;
+
+
+			// At this point, Cocoa should have been initialized; it is initialized along with Gtk+ at the beginning of IdeStartup.Run
+			// If LaunchReason is still Unknown at this point, it means we have missed the NSApplicationDidLaunch notification for some reason and
+			// we fall back to it being a Normal startup to unblock anything waiting for that notification.
+			if (IdeApp.LaunchReason == IdeApp.LaunchType.Unknown) {
+				LoggingService.LogWarning ("Missed NSApplicationDidLaunch notification, assuming normal startup");
+				IdeApp.LaunchReason = IdeApp.LaunchType.Normal;
+			}
 
 			return loaded;
+		}
+
+		void AppDelegate_ShowDockMenu (object sender, ShowDockMenuArgs e)
+		{
+			if (((FilePath)NSBundle.MainBundle.BundlePath).Extension != ".app")
+				return;
+			var menu = new NSMenu ();
+			var newInstanceMenuItem = new NSMenuItem ();
+			newInstanceMenuItem.Title = GettextCatalog.GetString ("New Instance");
+			newInstanceMenuItem.Activated += NewInstanceMenuItem_Activated;
+			menu.AddItem (newInstanceMenuItem);
+			e.DockMenu = menu;
+		}
+
+		static void NewInstanceMenuItem_Activated (object sender, EventArgs e)
+		{
+			var bundlePath = NSBundle.MainBundle.BundlePath;
+			NSWorkspace.SharedWorkspace.LaunchApplication (NSUrl.FromFilename (bundlePath), NSWorkspaceLaunchOptions.NewInstance, new NSDictionary (), out NSError error);
+			if (error != null)
+				LoggingService.LogError ($"Failed to start new instance: {error.LocalizedDescription}");
+		}
+
+		// The Enabled key needs to be controlled through NSUserDefaults so that it can be
+		// set from the command line. This lets users who require accessibility features to
+		// enabled to control it through the commandline, if it has been disabled from inside the software
+		const string EnabledKey = "com.monodevelop.AccessibilityEnabled";
+		const string VoiceOverNoticeShownKey = "MonoDevelop.VoiceOver.Show";
+		static void ShowVoiceOverNotice ()
+		{
+			if (PropertyService.Get<bool> (VoiceOverNoticeShownKey, false)) {
+				return;
+			}
+
+			// Show the VoiceOver notice once
+			PropertyService.Set (VoiceOverNoticeShownKey, true);
+
+			var alert = new NSAlert ();
+			alert.MessageText = GettextCatalog.GetString ("Assistive Technology Detected");
+			alert.InformativeText = GettextCatalog.GetString ("{0} has detected an assistive technology (such as VoiceOver) is running. Do you want to restart {0} and enable the accessibility features?", BrandingService.ApplicationName);
+			alert.AddButton (GettextCatalog.GetString ("Restart and enable"));
+			alert.AddButton (GettextCatalog.GetString ("No"));
+
+			var result = alert.RunModal ();
+			switch (result) {
+			case 1000:
+				NSUserDefaults defaults = NSUserDefaults.StandardUserDefaults;
+				defaults.SetBool (true, EnabledKey);
+				defaults.Synchronize ();
+
+				IdeApp.Restart ();
+				break;
+
+			default:
+				break;
+			}
 		}
 
 		protected override string OnGetMimeTypeForUri (string uri)
@@ -172,14 +423,14 @@ namespace MonoDevelop.MacIntegration
 
 		internal static void OpenUrl (string url)
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				NSWorkspace.SharedWorkspace.OpenUrl (new NSUrl (url));
 			});
 		}
 
 		public override void OpenFile (string filename)
 		{
-			Gtk.Application.Invoke (delegate {
+			Gtk.Application.Invoke ((o, args) => {
 				NSWorkspace.SharedWorkspace.OpenFile (filename);
 			});
 		}
@@ -192,7 +443,7 @@ namespace MonoDevelop.MacIntegration
 			get { return "OSX"; }
 		}
 
-		Dictionary<string, string> LoadMimeMapAsync ()
+		static Dictionary<string, string> LoadMimeMap ()
 		{
 			var map = new Dictionary<string, string> ();
 			// All recent Macs should have this file; if not we'll just die silently
@@ -201,21 +452,26 @@ namespace MonoDevelop.MacIntegration
 				return map;
 			}
 
-			mimeTimer.BeginTiming ();
+			using var time = mimeTimer.BeginTiming ();
 			try {
 				var loader = new MimeMapLoader (map);
 				loader.LoadMimeMap ("/etc/apache2/mime.types");
 			} catch (Exception ex){
 				LoggingService.LogError ("Could not load Apache mime database", ex);
 			}
-			mimeTimer.EndTiming ();
 			return map;
 		}
+
+		string currentCommandMenuPath, currentAppMenuPath;
 
 		public override bool SetGlobalMenu (CommandManager commandManager, string commandMenuAddinPath, string appMenuAddinPath)
 		{
 			if (setupFail)
 				return false;
+
+			// avoid reinitialization of the same menu structure
+			if (initedApp == true && currentCommandMenuPath == commandMenuAddinPath && currentAppMenuPath == appMenuAddinPath)
+				return true;
 
 			try {
 				InitApp (commandManager);
@@ -225,7 +481,6 @@ namespace MonoDevelop.MacIntegration
 				var rootMenu = NSApplication.SharedApplication.MainMenu;
 				if (rootMenu == null) {
 					rootMenu = new NSMenu ();
-					NSApplication.SharedApplication.MainMenu = rootMenu;
 				} else {
 					rootMenu.RemoveAllItems ();
 				}
@@ -235,8 +490,17 @@ namespace MonoDevelop.MacIntegration
 
 				CommandEntrySet ces = commandManager.CreateCommandEntrySet (commandMenuAddinPath);
 				foreach (CommandEntry ce in ces) {
-					rootMenu.AddItem (new MDSubMenuItem (commandManager, (CommandEntrySet) ce));
+					var item = new MDSubMenuItem (commandManager, (CommandEntrySet)ce);
+					rootMenu.AddItem (item);
+					if (ce.CommandId as string == "Help" && item.HasSubmenu && NSApplication.SharedApplication.HelpMenu == null)
+						NSApplication.SharedApplication.HelpMenu = item.Submenu;
 				}
+				// Assign the main menu after loading the items. Otherwise a weird application menu appears.
+				if (NSApplication.SharedApplication.MainMenu == null)
+					NSApplication.SharedApplication.MainMenu = rootMenu;
+
+				currentCommandMenuPath = commandMenuAddinPath;
+				currentAppMenuPath = appMenuAddinPath;
 			} catch (Exception ex) {
 				try {
 					var m = NSApplication.SharedApplication.MainMenu;
@@ -244,11 +508,19 @@ namespace MonoDevelop.MacIntegration
 						m.Dispose ();
 					}
 					NSApplication.SharedApplication.MainMenu = null;
-				} catch {}
+					m = NSApplication.SharedApplication.HelpMenu;
+					if (m != null) {
+						m.Dispose ();
+					}
+					NSApplication.SharedApplication.HelpMenu = null;
+				} catch (Exception e2) {
+					LoggingService.LogError ("Could not uninstall global menu", e2);
+				}
 				LoggingService.LogError ("Could not install global menu", ex);
 				setupFail = true;
 				return false;
 			}
+
 			return true;
 		}
 
@@ -258,7 +530,7 @@ namespace MonoDevelop.MacIntegration
 				return;
 			var m = NSApplication.SharedApplication.MainMenu;
 			if (m != null) {
-				foreach (NSMenuItem item in m.ItemArray ()) {
+				foreach (NSMenuItem item in m.Items) {
 					var submenu = item.Submenu as MDMenu;
 					if (submenu != null && submenu.FlashIfContainsCommand (args.CommandId))
 						return;
@@ -278,18 +550,22 @@ namespace MonoDevelop.MacIntegration
 			commandManager.GetCommand (EditCommands.DefaultPolicies).Text = GettextCatalog.GetString ("Policies...");
 			commandManager.GetCommand (HelpCommands.About).Text = GetAboutCommandText ();
 			commandManager.GetCommand (MacIntegrationCommands.HideWindow).Text = GetHideWindowCommandText ();
-			commandManager.GetCommand (ToolCommands.AddinManager).Text = GettextCatalog.GetString ("Add-ins...");
+			commandManager.GetCommand (ToolCommands.AddinManager).Text = GettextCatalog.GetString ("Extensions...");
 
 			initedApp = true;
 
-			IdeApp.Workbench.RootWindow.DeleteEvent += HandleDeleteEvent;
+			IdeApp.Initialized += (s, e) => {
+				IdeApp.Workbench.RootWindow.DeleteEvent += HandleDeleteEvent;
 
-			if (MacSystemInformation.OsVersion >= MacSystemInformation.Lion) {
-				IdeApp.Workbench.RootWindow.Realized += (sender, args) => {
-					var win = GtkQuartz.GetWindow ((Gtk.Window) sender);
-					win.CollectionBehavior |= NSWindowCollectionBehavior.FullScreenPrimary;
-				};
-			}
+				if (MacSystemInformation.OsVersion >= MacSystemInformation.Lion) {
+					IdeApp.Workbench.RootWindow.Realized += (sender, args) => {
+						var win = GtkQuartz.GetWindow ((Gtk.Window)sender);
+						win.CollectionBehavior |= NSWindowCollectionBehavior.FullScreenPrimary;
+						if (MacSystemInformation.OsVersion >= MacSystemInformation.Sierra)
+							win.TabbingMode = NSWindowTabbingMode.Disallowed;
+					};
+				}
+			};
 
 			PatchGtkTheme ();
 			NSNotificationCenter.DefaultCenter.AddObserver (NSCell.ControlTintChangedNotification, notif => Core.Runtime.RunInMainThread (
@@ -299,27 +575,29 @@ namespace MonoDevelop.MacIntegration
 				}));
 
 
-			Styles.Changed += (s, a) => {
-				var colorPanel = NSColorPanel.SharedColorPanel;
-				if (colorPanel.ContentView?.Superview?.Window == null)
-					LoggingService.LogWarning ("Updating shared color panel appearance failed, no valid window.");
-				IdeTheme.ApplyTheme (colorPanel.ContentView.Superview.Window);
-				var appearance = colorPanel.ContentView.Superview.Window.Appearance;
-				if (appearance == null)
-					appearance = NSAppearance.GetAppearance (IdeApp.Preferences.UserInterfaceTheme == Theme.Light ? NSAppearance.NameAqua : NSAppearance.NameVibrantDark);
-				// The subviews of the shared NSColorPanel do not inherit the appearance of the main panel window
-				// and need to be updated recursively.
-				UpdateColorPanelSubviewsAppearance (colorPanel.ContentView.Superview, appearance);
-			};
-			
-			// FIXME: Immediate theme switching disabled, until NSAppearance issues are fixed 
+			if (MacSystemInformation.OsVersion < MacSystemInformation.Mojave) { // the shared color panel has full automatic theme support on Mojave
+				Styles.Changed += (s, a) => {
+					var colorPanel = NSColorPanel.SharedColorPanel;
+					if (colorPanel.ContentView?.Superview?.Window == null)
+						LoggingService.LogWarning ("Updating shared color panel appearance failed, no valid window.");
+					IdeTheme.ApplyTheme (colorPanel.ContentView.Superview.Window);
+					var appearance = colorPanel.ContentView.Superview.Window.Appearance;
+					if (appearance == null)
+						appearance = IdeTheme.GetAppearance ();
+					// The subviews of the shared NSColorPanel do not inherit the appearance of the main panel window
+					// and need to be updated recursively.
+					UpdateColorPanelSubviewsAppearance (colorPanel.ContentView.Superview, appearance);
+				};
+			}
+
+			// FIXME: Immediate theme switching disabled, until NSAppearance issues are fixed
 			//IdeApp.Preferences.UserInterfaceTheme.Changed += (s,a) => PatchGtkTheme ();
 		}
 
 		static void UpdateColorPanelSubviewsAppearance (NSView view, NSAppearance appearance)
 		{
 			if (view.Class.Name == "NSPageableTableView")
-					((NSTableView)view).BackgroundColor = Styles.BackgroundColor.ToNSColor ();
+					((NSTableView)view).BackgroundColor = Xwt.Mac.Util.ToNSColor (Styles.BackgroundColor);
 			view.Appearance = appearance;
 
 			foreach (var subview in view.Subviews)
@@ -334,19 +612,6 @@ namespace MonoDevelop.MacIntegration
 		static string GetHideWindowCommandText ()
 		{
 			return GettextCatalog.GetString ("Hide {0}", ApplicationMenuName);
-		}
-
-		static void OnApplicationMenuNameChanged ()
-		{
-			Command aboutCommand = IdeApp.CommandService.GetCommand (HelpCommands.About);
-			if (aboutCommand != null)
-				aboutCommand.Text = GetAboutCommandText ();
-
-			Command hideCommand = IdeApp.CommandService.GetCommand (MacIntegrationCommands.HideWindow);
-			if (hideCommand != null)
-				hideCommand.Text = GetHideWindowCommandText ();
-
-			Carbon.SetProcessName (ApplicationMenuName);
 		}
 
 		// VV/VK: Disable tint based color generation
@@ -389,60 +654,51 @@ namespace MonoDevelop.MacIntegration
 //			Gtk.Rc.ParseString (gtkrc);
 		}
 
+		static TimeToCodeMetadata.DocumentType GetDocumentTypeFromFilename (string filename)
+		{
+			if (Projects.Services.ProjectService.IsWorkspaceItemFile (filename) || Projects.Services.ProjectService.IsSolutionItemFile (filename)) {
+				return TimeToCodeMetadata.DocumentType.Solution;
+			}
+			return TimeToCodeMetadata.DocumentType.File;
+		}
+
 		void GlobalSetup ()
 		{
 			//FIXME: should we remove these when finalizing?
 			try {
-				ApplicationEvents.Quit += delegate (object sender, ApplicationQuitEventArgs e)
-				{
-					// We can only attempt to quit safely if all windows are GTK windows and not modal
-					if (!IsModalDialogRunning ()) {
-						e.UserCancelled = !IdeApp.Exit ();
-						e.Handled = true;
-						return;
-					}
-
-					// When a modal dialog is running, things are much harder. We can't just shut down MD behind the
-					// dialog, and aborting the dialog may not be appropriate.
-					//
-					// There's NSTerminateLater but I'm not sure how to access it from carbon, maybe
-					// we need to swizzle methods into the app's NSApplicationDelegate.
-					// Also, it stops the main CFRunLoop and enters a special runloop mode, not sure how that would
-					// interact with GTK+.
-
-					// For now, just bounce
-					NSApplication.SharedApplication.RequestUserAttention (NSRequestUserAttentionType.CriticalRequest);
-					// and abort the quit.
-					e.UserCancelled = true;
-					e.Handled = true;
-				};
-
 				ApplicationEvents.Reopen += delegate (object sender, ApplicationEventArgs e) {
-					if (IdeApp.Workbench != null && IdeApp.Workbench.RootWindow != null) {
-						IdeApp.Workbench.RootWindow.Deiconify ();
-						IdeApp.Workbench.RootWindow.Visible = true;
-
-						IdeApp.Workbench.RootWindow.Present ();
-						e.Handled = true;
-					}
+					e.Handled = true;
+					IdeApp.BringToFront ();
 				};
 
 				ApplicationEvents.OpenDocuments += delegate (object sender, ApplicationDocumentEventArgs e) {
-					//OpenFiles may pump the mainloop, but can't do that from an AppleEvent, so use a brief timeout
-					GLib.Timeout.Add (10, delegate {
-						IdeApp.OpenFiles (e.Documents.Select (
-							doc => new FileOpenInformation (doc.Key, null, doc.Value, 1, OpenDocumentOptions.DefaultInternal))
-						);
+					//OpenFiles may pump the mainloop, but can't do that from an AppleEvent
+					GLib.Idle.Add (delegate {
+						Ide.WelcomePage.WelcomePageService.HideWelcomePageOrWindow ();
+						var trackTTC = IdeStartupTracker.StartupTracker.StartTimeToCodeLoadTimer ();
+						IdeApp.OpenFilesAsync (e.Documents.Select (
+							doc => new FileOpenInformation (doc.Key, null, doc.Value, 1, OpenDocumentOptions.DefaultInternal)),
+							null
+						).ContinueWith ((result) => {
+							if (!trackTTC) {
+								return;
+							}
+
+							var firstFile = e.Documents.First ().Key;
+
+							IdeStartupTracker.StartupTracker.TrackTimeToCode (GetDocumentTypeFromFilename (firstFile));
+						});
 						return false;
 					});
 					e.Handled = true;
 				};
 
 				ApplicationEvents.OpenUrls += delegate (object sender, ApplicationUrlEventArgs e) {
-					GLib.Timeout.Add (10, delegate {
+					GLib.Idle.Add (delegate {
+						var trackTTC = IdeStartupTracker.StartupTracker.StartTimeToCodeLoadTimer ();
 						// Open files via the monodevelop:// URI scheme, compatible with the
 						// common TextMate scheme: http://blog.macromates.com/2007/the-textmate-url-scheme/
-						IdeApp.OpenFiles (e.Urls.Select (url => {
+						IdeApp.OpenFilesAsync (e.Urls.Select (url => {
 							try {
 								var uri = new Uri (url);
 								if (uri.Host != "open")
@@ -463,7 +719,14 @@ namespace MonoDevelop.MacIntegration
 								LoggingService.LogError ("Invalid TextMate URI: " + url, ex);
 								return null;
 							}
-						}).Where (foi => foi != null));
+						}).Where (foi => foi != null), null).ContinueWith ((result) => {
+							if (!trackTTC) {
+								return;
+							}
+							var firstFile = e.Urls.First ();
+
+							IdeStartupTracker.StartupTracker.TrackTimeToCode (GetDocumentTypeFromFilename (firstFile));
+						});
 						return false;
 					});
 				};
@@ -480,8 +743,21 @@ namespace MonoDevelop.MacIntegration
 			}
 		}
 
-		[DllImport ("/usr/lib/libobjc.dylib", EntryPoint = "objc_msgSend")]
-		public extern static IntPtr IntPtr_objc_msgSend_IntPtr (IntPtr receiver, IntPtr selector, IntPtr arg1);
+		private static NSImage applicationIcon;
+		internal static NSImage ApplicationIcon {
+			get {
+				if (applicationIcon == null) {
+					// use the bundle icon by default
+					// if run from a bundle, this will be the icon from the bundle icon file.
+					// if not run from a bundle, this will be the default file icon of the mono framework folder.
+					applicationIcon = NSWorkspace.SharedWorkspace.IconForFile (NSBundle.MainBundle.BundlePath);
+				}
+				return applicationIcon;
+			}
+			private set {
+				NSApplication.SharedApplication.ApplicationIconImage = applicationIcon = value;
+			}
+		}
 
 		static void SetupDockIcon ()
 		{
@@ -506,11 +782,7 @@ namespace MonoDevelop.MacIntegration
 			}
 
 			if (File.Exists (iconFile)) {
-				var image = new NSImage ();
-				var imageFile = new NSString (iconFile);
-
-				IntPtr p = IntPtr_objc_msgSend_IntPtr (image.Handle, Selector.GetHandle ("initByReferencingFile:"), imageFile.Handle);
-				NSApplication.SharedApplication.ApplicationIconImage = ObjCRuntime.Runtime.GetNSObject<NSImage> (p);
+				ApplicationIcon = new NSImage (iconFile, lazy: true);
 			}
 		}
 
@@ -533,10 +805,12 @@ namespace MonoDevelop.MacIntegration
 		}
 
 		[GLib.ConnectBefore]
-		static void HandleDeleteEvent (object o, Gtk.DeleteEventArgs args)
+		static async void HandleDeleteEvent (object o, Gtk.DeleteEventArgs args)
 		{
 			args.RetVal = true;
-			NSApplication.SharedApplication.Hide (NSApplication.SharedApplication);
+			if (await IdeApp.Workspace.Close ()) {
+				IdeApp.Workbench.Hide ();
+			}
 		}
 
 		public static Gdk.Pixbuf GetPixbufFromNSImageRep (NSImageRep rep, int width, int height)
@@ -680,18 +954,21 @@ namespace MonoDevelop.MacIntegration
 			checkUniqueName.Add ("MonoDevelop");
 			checkUniqueName.Add (BrandingService.ApplicationName);
 
-			string def = MonoDevelop.MacInterop.CoreFoundation.GetApplicationUrl (filename,
-				MonoDevelop.MacInterop.CoreFoundation.LSRolesMask.All);
+			NSUrl url = CreateNSUrl (filename);
+
+			var def = global::CoreServices.LaunchServices.GetDefaultApplicationUrlForUrl (url);
 
 			var apps = new List<DesktopApplication> ();
 
-			foreach (var app in MonoDevelop.MacInterop.CoreFoundation.GetApplicationUrls (filename,
-				MonoDevelop.MacInterop.CoreFoundation.LSRolesMask.All)) {
-				if (string.IsNullOrEmpty (app) || !checkUniquePath.Add (app))
-					continue;
-				var name = NSFileManager.DefaultManager.DisplayName (app);
-				if (checkUniqueName.Add (name))
-					apps.Add (new MacDesktopApplication (app, name, def != null && def == app));
+			var retrievedApps = global::CoreServices.LaunchServices.GetApplicationUrlsForUrl (url, global::CoreServices.LSRoles.All);
+			if (retrievedApps != null) {
+				foreach (var app in retrievedApps) {
+					if (string.IsNullOrEmpty (app.Path) || !checkUniquePath.Add (app.Path))
+						continue;
+					if (checkUniqueName.Add (app.LastPathComponent)) {
+						apps.Add (new MacDesktopApplication (app.Path, Path.GetFileNameWithoutExtension (app.LastPathComponent), def != null && def == app));
+					}
+				}
 			}
 
 			apps.Sort ((DesktopApplication a, DesktopApplication b) => {
@@ -704,6 +981,14 @@ namespace MonoDevelop.MacIntegration
 			return apps;
 		}
 
+		static NSUrl CreateNSUrl (string filename)
+		{
+			if (Uri.TryCreate (filename, UriKind.Absolute, out Uri hyperlink) && !hyperlink.IsFile)
+				return NSUrl.FromString (filename);
+
+			return NSUrl.FromFilename (filename);
+		}
+
 		class MacDesktopApplication : DesktopApplication
 		{
 			public MacDesktopApplication (string app, string name, bool isDefault) : base (app, name, isDefault)
@@ -712,8 +997,11 @@ namespace MonoDevelop.MacIntegration
 
 			public override void Launch (params string[] files)
 			{
-				foreach (var file in files)
-					NSWorkspace.SharedWorkspace.OpenFile (file, Id);
+				NSWorkspace.SharedWorkspace.OpenUrls (
+					Array.ConvertAll (files, file => CreateNSUrl (file)),
+					NSBundle.FromPath (Id).BundleIdentifier,
+					NSWorkspaceLaunchOptions.Default,
+					NSAppleEventDescriptor.DescriptorWithBoolean (true));
 			}
 		}
 
@@ -761,6 +1049,89 @@ namespace MonoDevelop.MacIntegration
 		{
 			window.Present ();
 			NSApplication.SharedApplication.ActivateIgnoringOtherApps (true);
+		}
+
+		public override Window GetParentForModalWindow ()
+		{
+			try {
+				var window = NSApplication.SharedApplication.ModalWindow;
+				if (window != null)
+					return window;
+			} catch (Exception e) {
+				LoggingService.LogInternalError ("Getting SharedApplication.ModalWindow failed", e);
+			}
+			try {
+				var window = NSApplication.SharedApplication.KeyWindow;
+				if (window != null)
+					return window;
+			} catch (Exception e) {
+				LoggingService.LogInternalError ("Getting SharedApplication.KeyWindow failed", e);
+			}
+			try {
+				var window = NSApplication.SharedApplication.MainWindow;
+				if (window != null)
+					return window;
+			} catch (Exception e) {
+				LoggingService.LogInternalError ("Getting SharedApplication.MainWindow failed", e);
+			}
+			return null;
+		}
+
+		bool HasAnyDockWindowFocused ()
+		{
+			foreach (var window in Gtk.Window.ListToplevels ()) {
+				if (!window.HasToplevelFocus) {
+					continue;
+				}
+				if (window is Components.Docking.DockFloatingWindow floatingWindow) {
+					return true;
+				}
+				if (window is IdeWindow ideWindow && ideWindow.Child is Components.Docking.AutoHideBox) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		bool CheckIfTopWindowIsWorkbench ()
+		{
+			foreach (var window in Gtk.Window.ListToplevels ()) {
+				if (!window.HasToplevelFocus) {
+					continue;
+				}
+				if (window is DefaultWorkbench) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		public override Window GetFocusedTopLevelWindow ()
+		{
+			if (NSApplication.SharedApplication.KeyWindow != null) {
+				if (IdeApp.Workbench?.RootWindow?.Visible == true) {
+					//if is a docking window then return the current root window
+					if (CheckIfTopWindowIsWorkbench () || HasAnyDockWindowFocused ()) {
+						return MessageService.RootWindow;
+					}
+				}
+				return NSApplication.SharedApplication.KeyWindow;
+			}
+			return null;
+		}
+
+		public override void FocusWindow (Window window)
+		{
+			try {
+				NSWindow nswindow = window; // will also get an NSWindow from a Gtk.Window
+				if (nswindow != null) {
+					nswindow.MakeKeyAndOrderFront (nswindow);
+					return;
+				}
+			} catch (Exception ex) {
+				LoggingService.LogError ("Focusing window failed: not an NSWindow", ex);
+			}
+			base.FocusWindow (window);
 		}
 
 		static Cairo.Color ConvertColor (NSColor color)
@@ -832,9 +1203,10 @@ namespace MonoDevelop.MacIntegration
 		internal override void RemoveWindowShadow (Gtk.Window window)
 		{
 			if (window == null)
-				throw new ArgumentNullException ("window");
-			NSWindow w = GtkQuartz.GetWindow (window);
-			w.HasShadow = false;
+				throw new ArgumentNullException (nameof(window));
+			var w = GtkQuartz.GetWindow (window);
+			if (w != null)
+				w.HasShadow = false;
 		}
 
 		internal override IMainToolbarView CreateMainToolbar (Gtk.Window window)
@@ -864,7 +1236,7 @@ namespace MonoDevelop.MacIntegration
 				return base.GetIsFullscreen (window);
 			}
 
-			NSWindow nswin = GtkQuartz.GetWindow (window);
+			NSWindow nswin = window;
 			return (nswin.StyleMask & NSWindowStyle.FullScreenWindow) != 0;
 		}
 
@@ -882,10 +1254,13 @@ namespace MonoDevelop.MacIntegration
 
 		public override bool IsModalDialogRunning ()
 		{
-			var toplevels = GtkQuartz.GetToplevels ();
+			if (NSApplication.SharedApplication.ModalWindow != null)
+				return true;
 
-			// Check GtkWindow's Modal flag or for a visible NSPanel
-			return toplevels.Any (t => (t.Value != null && t.Value.Modal && t.Value.Visible) || (t.Key.IsVisible && (t.Key is NSPanel)));
+			var toplevels = Gtk.Window.ListToplevels ();
+			var ret = toplevels.Any (w => w.Modal && w.Visible && GtkQuartz.GetWindow (w)?.DebugDescription.StartsWith ("<_NSFullScreenTileDividerWindow", StringComparison.Ordinal) != true);
+
+			return ret;
 		}
 
 		internal override void AddChildWindow (Gtk.Window parent, Gtk.Window child)
@@ -952,19 +1327,173 @@ namespace MonoDevelop.MacIntegration
 			var proc = new Process ();
 
 			var path = bundlePath.Combine ("Contents", "MacOS");
-			var psi = new ProcessStartInfo (path.Combine ("mdtool")) {
+			//assume renames of mdtool end with "tool"
+			var mdtool = Directory.EnumerateFiles (path, "*tool").Single();
+			var psi = new ProcessStartInfo (mdtool) {
 				CreateNoWindow = true,
 				UseShellExecute = false,
 				WorkingDirectory = path,
 				Arguments = "--start-app-bundle",
 			};
 
-			var recentWorkspace = reopen ? DesktopService.RecentFiles.GetProjects ().FirstOrDefault ()?.FileName : string.Empty;
+			var recentWorkspace = reopen ? IdeServices.DesktopService.RecentFiles.GetProjects ().FirstOrDefault ()?.FileName : string.Empty;
 			if (!string.IsNullOrEmpty (recentWorkspace))
 				psi.Arguments += " " + recentWorkspace;
 
 			proc.StartInfo = psi;
 			proc.Start ();
+		}
+
+		internal override IPlatformTelemetryDetails CreatePlatformTelemetryDetails ()
+		{
+			return MacTelemetryDetails.CreateTelemetryDetails ();
+		}
+
+		internal override MemoryMonitor CreateMemoryMonitor () => new MacMemoryMonitor ();
+
+		internal class MacMemoryMonitor : MemoryMonitor, IDisposable
+		{
+			const MemoryPressureFlags notificationFlags = MemoryPressureFlags.Critical | MemoryPressureFlags.Warn | MemoryPressureFlags.Normal;
+			internal DispatchSource.MemoryPressure DispatchSource { get; private set; }
+
+			public MacMemoryMonitor ()
+			{
+				DispatchSource = new DispatchSource.MemoryPressure (notificationFlags, DispatchQueue.MainQueue);
+				DispatchSource.SetEventHandler (() => {
+					var metadata = CreateMemoryMetadata (DispatchSource.PressureFlags);
+
+					var args = new PlatformMemoryStatusEventArgs (metadata);
+					OnStatusChanged (args);
+				});
+				DispatchSource.Resume ();
+			}
+
+			static MacPlatformMemoryMetadata CreateMemoryMetadata (MemoryPressureFlags flags)
+			{
+				var platformMemoryStatus = GetPlatformMemoryStatus (flags);
+				Interop.SysCtl ("vm.compressor_bytes_used", out long osCompressedMemory);
+				Interop.SysCtl ("vm.vm_page_free_target", out long osFreePagesTarget);
+				Interop.SysCtl ("vm.page_free_count", out long osFreePages);
+				Interop.SysCtl ("vm.pagesize", out long pagesize);
+
+				KernelInterop.GetCompressedMemoryInfo (out ulong appCompressedMemory, out ulong appVirtualMemory);
+
+				return new MacPlatformMemoryMetadata {
+					MemoryStatus = platformMemoryStatus,
+					OSVirtualMemoryFreeTarget = osFreePagesTarget * pagesize,
+					OSTotalFreeVirtualMemory = osFreePages * pagesize,
+					OSTotalCompressedMemory = osCompressedMemory,
+					ApplicationVirtualMemory = appVirtualMemory,
+					ApplicationCompressedMemory = appCompressedMemory,
+				};
+			}
+
+			static PlatformMemoryStatus GetPlatformMemoryStatus (MemoryPressureFlags flags)
+			{
+				switch (flags) {
+				case MemoryPressureFlags.Critical:
+					return PlatformMemoryStatus.Critical;
+				case MemoryPressureFlags.Warn:
+					return PlatformMemoryStatus.Low;
+				case MemoryPressureFlags.Normal:
+					return PlatformMemoryStatus.Normal;
+				default:
+					LoggingService.LogError ("Unknown MemoryPressureFlags value {0}", flags.ToString ());
+					return PlatformMemoryStatus.Normal;
+				}
+			}
+
+			public void Dispose ()
+			{
+				if (DispatchSource != null) {
+					DispatchSource.Cancel ();
+					DispatchSource.Dispose ();
+					DispatchSource = null;
+				}
+			}
+
+			class MacPlatformMemoryMetadata : PlatformMemoryMetadata
+			{
+				// sysctl - vm.vm_page_free_target
+				public long OSVirtualMemoryFreeTarget {
+					get => GetProperty<long> ();
+					set => SetProperty (value);
+				}
+
+				// sysctl - vm.compressor_bytes_used
+				public long OSTotalCompressedMemory {
+					get => GetProperty<long> ();
+					set => SetProperty (value);
+				}
+
+				// sysctl - vm.page_free_count
+				public long OSTotalFreeVirtualMemory {
+					get => GetProperty<long> ();
+					set => SetProperty (value);
+				}
+
+				// task_vm_info_t.compressed
+				public ulong ApplicationCompressedMemory {
+					get => GetProperty<ulong> ();
+					set => SetProperty (value);
+				}
+
+				// task_vm_info_t.virtual_size
+				public ulong ApplicationVirtualMemory {
+					get => GetProperty<ulong> ();
+					set => SetProperty (value);
+				}
+			}
+		}
+
+		internal override ThermalMonitor CreateThermalMonitor ()
+		{
+			if (MacSystemInformation.OsVersion < new Version (10, 10, 3))
+				return base.CreateThermalMonitor ();
+
+			return new MacThermalMonitor ();
+		}
+
+		internal class MacThermalMonitor : ThermalMonitor, IDisposable
+		{
+			NSObject observer;
+			public MacThermalMonitor ()
+			{
+				observer = NSProcessInfo.Notifications.ObserveThermalStateDidChange ((o, args) => {
+					var metadata = new PlatformThermalMetadata {
+						ThermalStatus = ToPlatform (NSProcessInfo.ProcessInfo.ThermalState),
+					};
+
+					var thermalArgs = new PlatformThermalStatusEventArgs (metadata);
+					OnStatusChanged (thermalArgs);
+				});
+			}
+
+			static PlatformThermalStatus ToPlatform (NSProcessInfoThermalState status)
+			{
+				switch (status)
+				{
+				case NSProcessInfoThermalState.Nominal:
+					return PlatformThermalStatus.Normal;
+				case NSProcessInfoThermalState.Fair:
+					return PlatformThermalStatus.Fair;
+				case NSProcessInfoThermalState.Critical:
+					return PlatformThermalStatus.Critical;
+				case NSProcessInfoThermalState.Serious:
+					return PlatformThermalStatus.Serious;
+				default:
+					LoggingService.LogError ("Unknown NSProcessInfoThermalState value {0}", status.ToString ());
+					return PlatformThermalStatus.Normal;
+				}
+			}
+
+			public void Dispose ()
+			{
+				if (observer != null) {
+					NSNotificationCenter.DefaultCenter.RemoveObserver (observer);
+					observer = null;
+				}
+			}
 		}
 	}
 
@@ -979,6 +1508,14 @@ namespace MonoDevelop.MacIntegration
 
 	public class ThemedMacDialogBackend : Xwt.Mac.DialogBackend
 	{
+		public ThemedMacDialogBackend ()
+		{
+		}
+
+		public ThemedMacDialogBackend (IntPtr ptr) : base (ptr)
+		{
+		}
+
 		public override void InitializeBackend (object frontend, Xwt.Backends.ApplicationContext context)
 		{
 			base.InitializeBackend (frontend, context);
@@ -988,6 +1525,14 @@ namespace MonoDevelop.MacIntegration
 
 	public class ThemedMacAlertDialogBackend : Xwt.Mac.AlertDialogBackend
 	{
+		public ThemedMacAlertDialogBackend ()
+		{
+		}
+
+		public ThemedMacAlertDialogBackend (IntPtr ptr) : base (ptr)
+		{
+		}
+
 		public override void Initialize (Xwt.Backends.ApplicationContext actx)
 		{
 			base.Initialize (actx);

@@ -40,6 +40,7 @@ using MonoDevelop.Ide.Gui.Components;
 using MonoDevelop.Ide.Gui.Dialogs;
 using System.Linq;
 using MonoDevelop.Ide.Tasks;
+using MonoDevelop.Ide.Projects.FileNesting;
 
 namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 {
@@ -55,12 +56,16 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		
 		protected override void Initialize ()
 		{
+			base.Initialize ();
+
 			IdeApp.Workspace.FileAddedToProject += OnAddFile;
 			IdeApp.Workspace.FileRemovedFromProject += OnRemoveFile;
 			IdeApp.Workspace.FileRenamedInProject += OnRenameFile;
 			IdeApp.Workspace.FilePropertyChangedInProject += OnFilePropertyChanged;
 			IdeApp.Workspace.ActiveConfigurationChanged += IdeAppWorkspaceActiveConfigurationChanged;
 			FileService.FileRemoved += OnSystemFileDeleted;
+			FileService.FileCreated += OnSystemFileCreated;
+			FileNestingService.NestingRulesChanged += OnFileNestingRulesChanged;
 		}
 
 		public override void Dispose ()
@@ -71,6 +76,10 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			IdeApp.Workspace.FilePropertyChangedInProject -= OnFilePropertyChanged;
 			IdeApp.Workspace.ActiveConfigurationChanged -= IdeAppWorkspaceActiveConfigurationChanged;
 			FileService.FileRemoved -= OnSystemFileDeleted;
+			FileService.FileCreated -= OnSystemFileCreated;
+			FileNestingService.NestingRulesChanged -= OnFileNestingRulesChanged;
+
+			base.Dispose ();
 		}
 
 		public override void OnNodeAdded (object dataObject)
@@ -216,6 +225,36 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			}
 		}
 
+		void OnSystemFileCreated (object sender, FileEventArgs args)
+		{
+			if (!args.Any (f => f.IsDirectory))
+				return;
+
+			// When a folder is created, we need to refresh the parent if the folder was created externally.
+			ITreeBuilder tb = Context.GetTreeBuilder ();
+			var dirs = args.Where (d => d.IsDirectory).Select (d => d.FileName).ToArray ();
+
+			foreach (var p in IdeApp.Workspace.GetAllProjects ()) {
+				foreach (var dir in dirs) {
+					if (tb.MoveToObject (new ProjectFolder (dir, p))) {
+						if (tb.MoveToParent ())
+							tb.UpdateAll ();
+					} else if (tb.MoveToObject (new ProjectFolder (dir.ParentDirectory, p))) {
+						tb.UpdateAll ();
+					} else if (dir.ParentDirectory == p.BaseDirectory) {
+						if (tb.MoveToObject (p))
+							tb.UpdateAll ();
+					}
+				}
+			}
+		}
+
+		void OnFileNestingRulesChanged (Project obj)
+		{
+			ITreeBuilder tb = Context.GetTreeBuilder (obj);
+			tb?.UpdateAll ();
+		}
+
 		void AddFile (ProjectFile file, Project project)
 		{
 			if (!file.Visible || file.Flags.HasFlag (ProjectItemFlags.Hidden))
@@ -306,12 +345,25 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 				} else {
 					// We can't use IsExternalToProject here since the ProjectFile has
 					// already been removed from the project
-					string parentPath = file.IsLink
+					FilePath parentPath = file.IsLink
 						? project.BaseDirectory.Combine (file.Link.IsNullOrEmpty? file.FilePath.FileName : file.Link.ToString ()).ParentDirectory
 						: file.FilePath.ParentDirectory;
 					
-					if (!tb.MoveToObject (new ProjectFolder (parentPath, project)))
-						return;
+					if (!tb.MoveToObject (new ProjectFolder (parentPath, project))) {
+						if (project.UseFileWatcher && parentPath.IsChildPathOf (project.BaseDirectory)) {
+							// Keep looking for folder higher up the tree so any empty folders
+							// can be removed.
+							while (parentPath != project.BaseDirectory) {
+								parentPath = parentPath.ParentDirectory;
+								if (tb.MoveToObject (new ProjectFolder (parentPath, project))) {
+									tb.UpdateAll ();
+									break;
+								}
+							}
+						} else {
+							return;
+						}
+					}
 				}
 			}
 			
@@ -319,8 +371,15 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 				ProjectFolder f = (ProjectFolder) tb.DataItem;
 				if (!Directory.Exists (f.Path) && !project.Files.GetFilesInVirtualPath (f.Path.ToRelative (project.BaseDirectory)).Any ())
 					tb.Remove (true);
-				else
+				else if (project.UseFileWatcher) {
+					// Ensure empty folders are removed if they are not part of the project.
+					while (!tb.HasChildren () && tb.MoveToParent ()) {
+						tb.UpdateAll ();
+					}
 					break;
+				} else {
+					break;
+				}
 			}
 		}
 		
@@ -364,9 +423,8 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 					tb.Update ();
 			}
 		}
-		
 	}
-	
+
 	class ProjectNodeCommandHandler: FolderCommandHandler
 	{
 		public override string GetFolderPath (object dataObject)
@@ -401,13 +459,19 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			project.ParentSolution.StartupItem = project;
 			await project.ParentSolution.SaveUserProperties ();
 		}
-		
+
 		public override void DeleteItem ()
 		{
 			Project prj = CurrentNode.DataItem as Project;
 			IdeApp.ProjectOperations.RemoveSolutionItem (prj);
 		}
-		
+
+		[CommandUpdateHandler (EditCommands.Delete)]
+		public void UpdateRemoveItem (CommandInfo info)
+		{
+			info.Text = GettextCatalog.GetString ("Remove");
+		}
+
 		[CommandHandler (ProjectCommands.AddReference)]
 		public async void AddReferenceToProject ()
 		{
@@ -502,6 +566,11 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 		public override void OnNodeDrop (object dataObject, DragOperation operation)
 		{
 			base.OnNodeDrop (dataObject, operation);
+		}
+
+		public override bool CanHandleDropFromChild (object [] dataObjects, DragOperation operation, DropPosition position)
+		{
+			return ProjectFolderCommandHandler.CanHandleDropFromChild (dataObjects, position);
 		}
 	}
 }

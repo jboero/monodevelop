@@ -84,15 +84,12 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			SolutionFolder sf = (SolutionFolder) dataObject;
 			return sf.IsRoot || sf.ParentFolder.IsRoot ? (object) sf.ParentSolution : (object) sf.ParentFolder;
 		}
-		
-		public override int CompareObjects (ITreeNavigator thisNode, ITreeNavigator otherNode)
-		{
-			if (otherNode.DataItem is SolutionFolder)
-				return DefaultSort;
-			else
-				return -1;
-		}
 
+		public override int GetSortIndex (ITreeNavigator node)
+		{
+			return -1000;
+		}
+		
 		public override void OnNodeAdded (object dataObject)
 		{
 			SolutionFolder folder = (SolutionFolder) dataObject;
@@ -324,16 +321,18 @@ namespace MonoDevelop.Ide.Gui.Pads.ProjectPad
 			}
 		}
 		
-/*		[CommandHandler (ProjectCommands.AddNewFiles)]
+		[CommandHandler (ProjectCommands.AddNewFiles)]
 		protected void OnAddNewFiles ()
 		{
-			SolutionFolder folder = (SolutionFolder) CurrentNode.DataItem;
-			if (IdeApp.ProjectOperations.CreateProjectFile (null, folder.BaseDirectory)) {
-				IdeApp.ProjectOperations.Save (folder.ParentSolution);
-				CurrentNode.Expanded = true;
+			var folder = (SolutionFolder) CurrentNode.DataItem;
+			if (!IdeApp.ProjectOperations.CreateSolutionFolderFile (folder)) {
+				return;
 			}
-		}*/
-		
+			CurrentNode.Expanded = true;
+			if (IdeApp.Workbench.ActiveDocument != null)
+				IdeApp.Workbench.ActiveDocument.Select ();
+		}
+
 		[CommandHandler (ProjectCommands.AddFiles)]
 		protected async void OnAddFiles ()
 		{
